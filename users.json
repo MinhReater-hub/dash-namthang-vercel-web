@@ -1,0 +1,68 @@
+{
+  "admin": {
+    "password": "123",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Tài khoản DEV"
+  },
+  "rachgia": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Rạch Giá"],
+    "display_name": "Quản lý Rạch Giá"
+  },
+  "camau": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Cà Mau"],
+    "display_name": "Quản lý Cà Mau"
+  },
+  "angiang": {
+    "password": "123",
+    "role": "region",
+    "regions": ["An Giang"],
+    "display_name": "Quản lý An Giang"
+  },
+  "phuquoc": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Phú Quốc"],
+    "display_name": "Quản lý Phú Quốc"
+  },
+  "soctrang": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Sóc Trăng"],
+    "display_name": "Quản lý Sóc Trăng"
+  },
+  "vinhlong": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Vĩnh Long"],
+    "display_name": "Quản lý Vĩnh Long"
+  },
+  "baclieu": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Bạc Liêu"],
+    "display_name": "Quản lý Bạc Liêu"
+  },
+  "cantho": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Cần Thơ"],
+    "display_name": "Quản lý Cần Thơ"
+  },
+  "haugiang": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Hậu Giang"],
+    "display_name": "Quản lý Hậu Giang"
+  },
+  "hohoanganh": {
+    "password": "123",
+    "role": "region",
+    "regions": ["Cần Thơ", "Hậu Giang", "Sóc Trăng"],
+    "display_name": "Quản lý Miền Tây"
+  }
+}

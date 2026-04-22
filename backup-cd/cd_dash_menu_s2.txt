@@ -1,0 +1,770 @@
+from pathlib import Path
+import re
+from datetime import datetime
+import pandas as pd
+from dash import Dash, html, dcc, Input, Output, State, ctx, dash_table, no_update
+import dash_bootstrap_components as dbc
+import plotly.express as px
+
+# =========================
+# TIMEZONE: VIETNAM
+# =========================
+VN_TZ = "Asia/Ho_Chi_Minh"
+
+def to_vn_datetime(series: pd.Series, assume_tz_if_naive: str = "UTC") -> pd.Series:
+    s = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(s.dt, "tz", None) is not None:
+            return s.dt.tz_convert(VN_TZ).dt.tz_localize(None)
+        return s.dt.tz_localize(assume_tz_if_naive).dt.tz_convert(VN_TZ).dt.tz_localize(None)
+    except Exception:
+        return pd.to_datetime(series, errors="coerce")
+
+# =========================
+# NUMBER FORMAT: VIETNAM (.)
+# =========================
+def fmt_vn(n) -> str:
+    try:
+        if n is None or (isinstance(n, float) and pd.isna(n)):
+            return "0"
+        return f"{float(n):,.0f}".replace(",", ".")
+    except Exception:
+        return str(n)
+
+# =========================
+# DATA
+# =========================
+BASE_DIR = Path("output")
+EXCEL_FILE = BASE_DIR / "bao_cao_doanh_thu_tong_hop.xlsx"
+
+df_dt = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_Thang_KhuVuc")
+df_lh = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_LH_KV_Thang")
+df_hd = pd.read_excel(EXCEL_FILE, sheet_name="HopDong_KV_Thang")
+
+for df in [df_dt, df_lh, df_hd]:
+    df["thang_nam"] = pd.to_datetime(df["thang_nam"]).dt.to_period("M").dt.to_timestamp()
+    df["thang_nam_vn"] = to_vn_datetime(df["thang_nam"])
+    df["thang_label"] = df["thang_nam_vn"].dt.strftime("%m/%Y")
+    df["nam"] = df["thang_nam_vn"].dt.year
+
+MONTH_OPTIONS = sorted(df_dt["thang_label"].unique())
+
+DARK_BG = "#1e1e2f"
+LIGHT_BG = "#ffffff"
+
+def apply_time_axis(fig):
+    fig.update_xaxes(
+        tickformat="%m/%Y",
+        dtick="M1",
+        ticklabelmode="period"
+    )
+    for tr in fig.data:
+        if getattr(tr, "type", "") == "bar":
+            tr.update(xperiod="M1", xperiodalignment="middle")
+    return fig
+
+def apply_theme(fig, theme):
+    fig = apply_time_axis(fig)
+    if theme == "dark":
+        fig.update_layout(
+            plot_bgcolor=DARK_BG,
+            paper_bgcolor=DARK_BG,
+            font_color="white",
+            xaxis=dict(gridcolor="#333"),
+            yaxis=dict(gridcolor="#333"),
+            legend_title_text="",
+            hovermode="x unified"
+        )
+    else:
+        fig.update_layout(
+            plot_bgcolor=LIGHT_BG,
+            paper_bgcolor=LIGHT_BG,
+            font_color="black",
+            xaxis=dict(gridcolor="#ddd"),
+            yaxis=dict(gridcolor="#ddd"),
+            legend_title_text="",
+            hovermode="x unified"
+        )
+    return fig
+
+# =========================
+# APP
+# =========================
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], suppress_callback_exceptions=True)
+
+app.layout = dbc.Container(fluid=True, children=[
+    dcc.Store(id="menu", data="dt"),
+    dcc.Store(id="page", data=1),
+    dcc.Store(id="theme", data="dark"),
+
+    # NEW: chat state
+    dcc.Store(id="ai-chat-history", data=[]),
+
+    # NEW: refresh "last updated" (file mtime)  (KHÔNG reload data)
+    dcc.Interval(id="refresh-meta", interval=30 * 1000, n_intervals=0),
+
+    # ===== Top bar (hamburger + title + theme) =====
+    dbc.Row([
+        dbc.Col(
+            dbc.Button("☰", id="open-menu", color="secondary", outline=True, className="me-2"),
+            width="auto"
+        ),
+        dbc.Col(
+            html.Div(
+                id="top-title",
+                style={"fontSize": "18px", "fontWeight": "700", "letterSpacing": "1px"}
+            )
+        ),
+        dbc.Col(
+            dbc.Button("🌙 / ☀️", id="toggle-theme", color="secondary", className="float-end"),
+            width="auto"
+        )
+    ], className="my-2 align-items-center"),
+
+    # Card hiển thị thời gian cập nhật dữ liệu + download
+    dbc.Row([
+        dbc.Col(
+            dbc.Card(
+                dbc.CardBody([
+                    html.Div("DỮ LIỆU CẬP NHẬT LÚC", style={"fontWeight": "700", "opacity": 0.85}),
+                    dbc.Row([
+                        dbc.Col(html.Div(id="data-updated-at", style={"fontSize": "18px", "fontWeight": "800"})),
+                        dbc.Col(
+                            dbc.Button("Tải Excel", id="btn-download-excel", color="secondary",
+                                       outline=True, className="float-end"),
+                            width="auto"
+                        )
+                    ], className="g-2 align-items-center")
+                ]),
+                style={"border": "1px solid #3b3b57", "boxShadow": "0 0 20px rgba(90,80,255,0.15)"}
+            ),
+            md=6
+        )
+    ], className="mb-2"),
+
+    # ===== Offcanvas Sidebar Menu =====
+    dbc.Offcanvas(
+        id="sidebar",
+        title=html.Div(["📊 ", html.Span("DASHBOARD MENU")]),
+        is_open=False,
+        placement="start",
+        scrollable=True,
+        style={"backgroundColor": DARK_BG, "color": "white"},
+        children=[
+            html.Div("Chọn dashboard:", style={"fontWeight": "700", "marginBottom": "10px"}),
+            dbc.Button("DOANH THU", id="btn-dt", color="primary", className="w-100 mb-2"),
+            dbc.Button("LOẠI HÌNH", id="btn-lh", color="warning", className="w-100 mb-2"),
+            dbc.Button("HỢP ĐỒNG", id="btn-hd", color="success", className="w-100 mb-2"),
+            html.Hr(style={"borderColor": "#444"}),
+            html.Div("Điều hướng trang:", style={"fontWeight": "700", "marginBottom": "10px"}),
+            dbc.Button("Page 1", id="go-page-1", color="secondary", outline=True, className="w-100 mb-2"),
+            dbc.Button("Page 2", id="go-page-2", color="secondary", outline=True, className="w-100"),
+        ]
+    ),
+
+    # AI Chat Offcanvas
+    dbc.Offcanvas(
+        id="ai-box",
+        title=html.Div(["🤖 ", html.Span("AI INSIGHTS")]),
+        is_open=False,
+        placement="end",
+        scrollable=True,
+        style={"backgroundColor": DARK_BG, "color": "white", "width": "420px"},
+        children=[
+            html.Div(
+                "Hỏi bất kỳ câu nào về dữ liệu trong dashboard. Ví dụ: "
+                "“cho tôi doanh thu của khu vực nào cao nhất trong năm 2025”.",
+                style={"opacity": 0.85, "marginBottom": "10px"}
+            ),
+            dbc.Textarea(
+                id="ai-input",
+                placeholder="Nhập câu hỏi...",
+                style={"backgroundColor": "#141423", "color": "white", "border": "1px solid #3b3b57"}
+            ),
+            dbc.Row([
+                dbc.Col(dbc.Button("Gửi", id="ai-send", color="info", className="mt-2 w-100")),
+                dbc.Col(dbc.Button("Xoá chat", id="ai-clear", color="secondary", outline=True, className="mt-2 w-100")),
+            ], className="g-2"),
+            html.Hr(style={"borderColor": "#444"}),
+            dcc.Loading(html.Div(id="ai-output"), type="default")
+        ]
+    ),
+
+    dcc.Loading(html.Div(id="content"), type="default"),
+
+    dbc.Button("◀", id="prev-page", className="position-fixed bottom-0 start-0 m-4"),
+    dbc.Button("▶", id="next-page", className="position-fixed bottom-0 end-0 m-4"),
+
+    # floating AI button (không đè nút ▶)
+    dbc.Button(
+        "🤖",
+        id="open-ai",
+        color="info",
+        className="position-fixed end-0 me-4",
+        style={"bottom": "88px", "borderRadius": "999px", "width": "56px", "height": "56px",
+               "boxShadow": "0 0 22px rgba(0,255,255,0.25)", "fontSize": "22px"}
+    ),
+
+    dcc.Download(id="download-excel")
+])
+
+# =========================
+# META: last updated time (KHÔNG reload data)
+# =========================
+@app.callback(
+    Output("data-updated-at", "children"),
+    Input("refresh-meta", "n_intervals")
+)
+def show_last_updated(_):
+    try:
+        ts = EXCEL_FILE.stat().st_mtime
+        dt_local = pd.to_datetime(ts, unit="s", utc=True).tz_convert(VN_TZ)
+        return dt_local.strftime("%d/%m/%Y %H:%M:%S (VN)")
+    except Exception:
+        return "Không đọc được thời gian cập nhật"
+
+# download excel
+@app.callback(
+    Output("download-excel", "data"),
+    Input("btn-download-excel", "n_clicks"),
+    prevent_initial_call=True
+)
+def download_excel(_):
+    try:
+        return dcc.send_file(str(EXCEL_FILE))
+    except Exception:
+        return no_update
+
+# ===== Offcanvas toggle (menu) =====
+@app.callback(
+    Output("sidebar", "is_open"),
+    Input("open-menu", "n_clicks"),
+    Input("btn-dt", "n_clicks"),
+    Input("btn-lh", "n_clicks"),
+    Input("btn-hd", "n_clicks"),
+    State("sidebar", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_sidebar(n_open, a, b, c, is_open):
+    if ctx.triggered_id == "open-menu":
+        return not is_open
+    return False
+
+# ===== AI toggle =====
+@app.callback(
+    Output("ai-box", "is_open"),
+    Input("open-ai", "n_clicks"),
+    State("ai-box", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_ai(n, is_open):
+    return not is_open
+
+@app.callback(
+    Output("menu","data"),
+    Input("btn-dt","n_clicks"),
+    Input("btn-lh","n_clicks"),
+    Input("btn-hd","n_clicks"),
+    prevent_initial_call=True
+)
+def switch_menu(a,b,c):
+    if ctx.triggered_id == "btn-lh": return "lh"
+    if ctx.triggered_id == "btn-hd": return "hd"
+    return "dt"
+
+@app.callback(
+    Output("page","data"),
+    Input("next-page","n_clicks"),
+    Input("prev-page","n_clicks"),
+    Input("go-page-1","n_clicks"),
+    Input("go-page-2","n_clicks"),
+    State("page","data"),
+    prevent_initial_call=True
+)
+def switch_page(n1,n2,g1,g2,p):
+    if ctx.triggered_id == "go-page-1":
+        return 1
+    if ctx.triggered_id == "go-page-2":
+        return 2
+    return 2 if ctx.triggered_id=="next-page" else 1
+
+@app.callback(
+    Output("theme","data"),
+    Input("toggle-theme","n_clicks"),
+    State("theme","data"),
+    prevent_initial_call=True
+)
+def toggle_theme(n, theme):
+    return "light" if theme=="dark" else "dark"
+
+@app.callback(
+    Output("top-title", "children"),
+    Input("menu", "data"),
+    Input("page", "data"),
+)
+def update_top_title(menu, page):
+    m = {"dt": "DOANH THU", "lh": "LOẠI HÌNH", "hd": "HỢP ĐỒNG"}.get(menu, "DASHBOARD")
+    return f"{m}  •  PAGE {page}"
+
+# =========================
+# PAGES
+# =========================
+def page_1(prefix, title):
+    return dbc.Container(fluid=True, children=[
+        html.H3(title, className="text-center my-3"),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-month",
+                    options=[{"label":m,"value":m} for m in MONTH_OPTIONS],
+                    multi=True,
+                    placeholder="Chọn tháng"
+                ), md=6
+            )
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TỔNG"), html.H4(id=f"{prefix}-p1-kpi1")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("SỐ CUỐC"), html.H4(id=f"{prefix}-p1-kpi2")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TRUNG BÌNH"), html.H4(id=f"{prefix}-p1-kpi3")])), md=4),
+        ], className="mb-4"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-line-kv"), md=12),
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-line"), md=6),
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-bar"), md=6),
+        ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-pie"), md=6),
+        ])
+    ])
+
+def page_2(prefix, title, df, dim):
+    return dbc.Container(fluid=True, children=[
+        html.H3(title, className="text-center my-3"),
+        html.Div(id=f"{prefix}-insight", className="text-center mb-3",
+                 style={"fontSize":"18px","fontWeight":"bold"}),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-dim",
+                    options=[{"label":x,"value":x} for x in sorted(df[dim].unique())],
+                    value=sorted(df[dim].unique())[0]
+                ), md=3
+            ),
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-month-p2",
+                    options=[{"label":m,"value":m} for m in MONTH_OPTIONS],
+                    multi=True,
+                    placeholder="Chọn tháng"
+                ), md=4
+            )
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TỔNG"), html.H4(id=f"{prefix}-kpi1")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("SỐ CUỐC"), html.H4(id=f"{prefix}-kpi2")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TRUNG BÌNH"), html.H4(id=f"{prefix}-kpi3")])), md=4),
+        ], className="mb-4"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-line"), md=6),
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-bar"), md=6),
+        ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-pie"), md=6),
+        ]),
+
+        dash_table.DataTable(
+            id=f"{prefix}-table",
+            page_size=12,
+            style_header={"backgroundColor":"#222","color":"white"},
+            style_cell={"backgroundColor":DARK_BG,"color":"white","textAlign":"center"}
+        )
+    ])
+
+@app.callback(
+    Output("content","children"),
+    Input("menu","data"),
+    Input("page","data")
+)
+def render(menu,page):
+    if menu=="dt":
+        return page_1("dt","DOANH THU TỔNG – TOÀN TẬP ĐOÀN") if page==1 else page_2("dt","PHÂN TÍCH DOANH THU THEO KHU VỰC",df_dt,"khu_vuc")
+    if menu=="lh":
+        return page_1("lh","DOANH THU LOẠI HÌNH – TOÀN TẬP ĐOÀN") if page==1 else page_2("lh","PHÂN TÍCH LOẠI HÌNH THEO KHU VỰC",df_lh,"khu_vuc")
+    return page_1("hd","HỢP ĐỒNG – TOÀN TẬP ĐOÀN") if page==1 else page_2("hd","PHÂN TÍCH HỢP ĐỒNG THEO KHU VỰC",df_hd,"khu_vuc")
+
+# =========================
+# CHART + KPI callbacks
+# =========================
+def callbacks(prefix, df, value_col):
+    @app.callback(
+        Output(f"{prefix}-p1-kpi1","children"),
+        Output(f"{prefix}-p1-kpi2","children"),
+        Output(f"{prefix}-p1-kpi3","children"),
+        Output(f"{prefix}-p1-line-kv","figure"),
+        Output(f"{prefix}-p1-line","figure"),
+        Output(f"{prefix}-p1-bar","figure"),
+        Output(f"{prefix}-p1-pie","figure"),
+        Input(f"{prefix}-month","value"),
+        Input("theme","data"),
+    )
+    def p1(months, theme):
+        dff = df if not months else df[df["thang_label"].isin(months)]
+
+        total = dff[value_col].sum()
+        sc = dff["tong_so_cuoc"].sum() if "tong_so_cuoc" in dff else 0
+        avg = total / max(sc, 1)
+
+        g = dff.groupby("thang_nam_vn", as_index=False).agg({value_col: "sum"}).sort_values("thang_nam_vn")
+        g["val_fmt"] = g[value_col].apply(fmt_vn)
+
+        if "khu_vuc" in dff.columns:
+            gkv = (
+                dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False)
+                   .agg({value_col: "sum"})
+                   .sort_values("thang_nam_vn")
+            )
+            fig_kv = px.line(gkv, x="thang_nam_vn", y=value_col, color="khu_vuc", markers=True)
+            fig_kv.update_traces(line_shape="spline", line_width=3, marker_size=7)
+            fig_kv.update_layout(
+                title="Xu hướng theo tháng (tất cả khu vực)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(l=10, r=10, t=60, b=10)
+            )
+            fig_kv = apply_theme(fig_kv, theme)
+        else:
+            fig_kv = apply_theme(px.line(g, x="thang_nam_vn", y=value_col), theme)
+
+        fig_line = apply_theme(px.line(g, x="thang_nam_vn", y=value_col, markers=True), theme)
+        fig_line.update_traces(line_shape="spline", line_width=3, marker_size=7)
+
+        fig_bar = px.bar(g, x="thang_nam_vn", y=value_col, text="val_fmt")
+        fig_bar.update_traces(textposition="outside", cliponaxis=False)
+        fig_bar.update_layout(margin=dict(t=20))
+        fig_bar = apply_theme(fig_bar, theme)
+
+        fig_pie = apply_theme(px.pie(g, names=g["thang_nam_vn"].dt.strftime("%m/%Y"), values=value_col), theme)
+
+        return (fmt_vn(total), fmt_vn(sc), fmt_vn(avg), fig_kv, fig_line, fig_bar, fig_pie)
+
+    @app.callback(
+        Output(f"{prefix}-kpi1","children"),
+        Output(f"{prefix}-kpi2","children"),
+        Output(f"{prefix}-kpi3","children"),
+        Output(f"{prefix}-p2-line","figure"),
+        Output(f"{prefix}-p2-bar","figure"),
+        Output(f"{prefix}-p2-pie","figure"),
+        Output(f"{prefix}-table","data"),
+        Output(f"{prefix}-insight","children"),
+        Output(f"{prefix}-table","style_cell"),
+        Output(f"{prefix}-table","style_header"),
+        Input(f"{prefix}-dim","value"),
+        Input(f"{prefix}-month-p2","value"),
+        Input("theme","data"),
+    )
+    def p2(dim, months, theme):
+        dff = df[df["khu_vuc"] == dim]
+        if months:
+            dff = dff[dff["thang_label"].isin(months)]
+        dff = dff.sort_values("thang_nam_vn")
+
+        total = dff[value_col].sum()
+        sc = dff["tong_so_cuoc"].sum() if "tong_so_cuoc" in dff else 0
+        avg = total / max(sc, 1)
+        insight = f"Tổng {fmt_vn(total)} – {dim}"
+
+        # =========================
+        # UPGRADE: LH Page 2 Line chart (tách theo loại hình, Top8 + Khác)
+        # =========================
+        if prefix == "lh" and value_col == "tong_doanh_thu" and ("loai_hinh" in dff.columns):
+            g = (
+                dff.groupby(["thang_nam_vn", "loai_hinh"], as_index=False)
+                   .agg({value_col: "sum"})
+                   .sort_values("thang_nam_vn")
+            )
+
+            # Top 8 theo tổng doanh thu để chart không rối
+            top = (
+                g.groupby("loai_hinh", as_index=False)[value_col].sum()
+                 .sort_values(value_col, ascending=False)
+            )
+            top_keep = top["loai_hinh"].head(8).tolist()
+
+            g2 = g.copy()
+            g2["loai_hinh"] = g2["loai_hinh"].where(g2["loai_hinh"].isin(top_keep), "Khác")
+            g2 = (
+                g2.groupby(["thang_nam_vn", "loai_hinh"], as_index=False)
+                   .agg({value_col: "sum"})
+                   .sort_values("thang_nam_vn")
+            )
+
+            fig1 = px.line(
+                g2, x="thang_nam_vn", y=value_col, color="loai_hinh",
+                markers=True
+            )
+            fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+            fig1.update_layout(
+                title="Doanh thu theo tháng • Tách theo loại hình (Top 8 + Khác)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                margin=dict(l=10, r=10, t=70, b=10)
+            )
+            fig1 = apply_theme(fig1, theme)
+            # techy: slider để zoom timeline
+            fig1.update_xaxes(rangeslider_visible=True)
+
+        else:
+            fig1 = apply_theme(px.line(dff, x="thang_nam_vn", y=value_col, markers=True), theme)
+            fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+
+        dff_bar = dff.copy()
+        if "tong_so_cuoc" in dff_bar.columns:
+            dff_bar["sc_fmt"] = dff_bar["tong_so_cuoc"].apply(fmt_vn)
+        else:
+            dff_bar["sc_fmt"] = "0"
+
+        fig2 = px.bar(dff_bar, x="thang_nam_vn", y="tong_so_cuoc", text="sc_fmt")
+        fig2.update_traces(textposition="outside", cliponaxis=False)
+        fig2.update_layout(margin=dict(t=20))
+        fig2 = apply_theme(fig2, theme)
+
+        fig3 = apply_theme(px.pie(dff, names=dff["thang_nam_vn"].dt.strftime("%m/%Y"), values=value_col), theme)
+
+        dff_table = dff.copy()
+        num_cols = dff_table.select_dtypes(include="number").columns
+        for c in num_cols:
+            dff_table[c] = dff_table[c].apply(fmt_vn)
+
+        if theme == "light":
+            style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}
+            style_header = {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"}
+        else:
+            style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}
+            style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
+
+        return (fmt_vn(total), fmt_vn(sc), fmt_vn(avg), fig1, fig2, fig3, dff_table.to_dict("records"),
+                insight, style_cell, style_header)
+
+callbacks("dt", df_dt, "tong_doanh_thu")
+callbacks("lh", df_lh, "tong_doanh_thu")
+callbacks("hd", df_hd, "tong_so_cuoc")
+
+# =========================
+# AI: analytics over in-memory data
+# =========================
+def detect_year(text: str):
+    m = re.search(r"(19|20)\d{2}", text)
+    return int(m.group()) if m else None
+
+def detect_month_label(text: str):
+    m = re.search(r"\b(0?[1-9]|1[0-2])\s*/\s*((19|20)\d{2})\b", text)
+    if not m:
+        return None
+    mm = int(m.group(1))
+    yy = int(m.group(2))
+    return f"{mm:02d}/{yy}"
+
+def detect_top_n(text: str):
+    m = re.search(r"\btop\s*(\d+)\b", text.lower())
+    return int(m.group(1)) if m else None
+
+def parse_two_regions(question: str):
+    q = question.strip()
+    if "khu vực" not in q.lower() and "khu vuc" not in q.lower():
+        return None
+    parts = re.split(r"\b(và|va|,)\b", q, flags=re.IGNORECASE)
+    cand = [p.strip() for p in parts if p.strip() and p.strip().lower() not in ["và", "va", ","]]
+    cand = sorted(cand, key=len, reverse=True)
+    if len(cand) >= 2:
+        return cand[0], cand[1]
+    return None
+
+def choose_dataset(question: str):
+    q = question.lower()
+    if "hợp đồng" in q or "hop dong" in q or "số cuốc" in q or "so cuoc" in q:
+        return "hd", df_hd, "tong_so_cuoc"
+    if "loại hình" in q or "loai hinh" in q:
+        return "lh", df_lh, "tong_doanh_thu"
+    return "dt", df_dt, "tong_doanh_thu"
+
+def answer_question(question: str) -> str:
+    if not question or not question.strip():
+        return "Bạn hãy nhập câu hỏi trước nhé."
+
+    key, df, value_col = choose_dataset(question)
+    q = question.lower()
+    year = detect_year(q)
+    month_label = detect_month_label(q)
+    top_n = detect_top_n(q)
+
+    dff = df.copy()
+    if year is not None and "nam" in dff.columns:
+        dff = dff[dff["nam"] == year]
+
+    if month_label is not None and "thang_label" in dff.columns:
+        dff = dff[dff["thang_label"] == month_label]
+
+    if dff.empty:
+        if month_label and year:
+            return f"Mình không thấy dữ liệu cho {month_label} (năm {year}) trong dataset hiện tại."
+        if year is not None:
+            return f"Mình không thấy dữ liệu cho năm {year} trong dataset hiện tại."
+        return "Mình không thấy dữ liệu phù hợp trong dataset hiện tại."
+
+    want_max = ("cao nhất" in q) or ("lớn nhất" in q) or ("nhieu nhat" in q) or ("max" in q)
+    want_min = ("thấp nhất" in q) or ("nhỏ nhất" in q) or ("it nhat" in q) or ("min" in q)
+    want_trend = ("xu hướng" in q) or ("trend" in q) or ("tăng" in q) or ("giảm" in q)
+    want_best_month = ("tháng cao nhất" in q) or ("cao nhất theo tháng" in q) or ("max tháng" in q)
+    want_worst_month = ("tháng thấp nhất" in q) or ("thấp nhất theo tháng" in q) or ("min tháng" in q)
+    want_compare = ("so sánh" in q) or ("compare" in q)
+
+    metric = "doanh thu" if value_col != "tong_so_cuoc" else "số cuốc"
+    yr_text = f" trong năm {year}" if year is not None else ""
+    mo_text = f" tháng {month_label}" if month_label is not None else ""
+
+    if want_compare and "khu_vuc" in dff.columns:
+        pair = parse_two_regions(question)
+        if pair:
+            a, b = pair
+            all_regions = dff["khu_vuc"].astype(str).unique().tolist()
+            ra = next((x for x in all_regions if a.lower() in x.lower()), None)
+            rb = next((x for x in all_regions if b.lower() in x.lower()), None)
+            if ra and rb:
+                ga = dff[dff["khu_vuc"] == ra][value_col].sum()
+                gb = dff[dff["khu_vuc"] == rb][value_col].sum()
+                diff = ga - gb
+                sign = "cao hơn" if diff >= 0 else "thấp hơn"
+                return (f"So sánh{yr_text}{mo_text}: **{ra} = {fmt_vn(ga)}**, **{rb} = {fmt_vn(gb)}** ({metric}). "
+                        f"**{ra}** {sign} **{rb}** khoảng **{fmt_vn(abs(diff))}**.")
+        return "Bạn hãy ghi rõ 2 khu vực để so sánh, ví dụ: “so sánh khu vực HN và HCM năm 2025”."
+
+    if top_n and ("khu_vuc" in dff.columns) and ("khu vực" in q or "khu vuc" in q or "kv" in q):
+        g = dff.groupby("khu_vuc", as_index=False)[value_col].sum().sort_values(value_col, ascending=False).head(top_n)
+        lines = [f"{i+1}. **{r['khu_vuc']}**: **{fmt_vn(r[value_col])}**" for i, r in g.iterrows()]
+        return f"Top {top_n} khu vực{yr_text}{mo_text} theo {metric}:\n- " + "\n- ".join(lines)
+
+    if "khu vực" in q or "khu vuc" in q or "kv" in q:
+        if "khu_vuc" not in dff.columns:
+            return "Dataset này không có cột khu_vuc để phân tích theo khu vực."
+        g = dff.groupby("khu_vuc", as_index=False)[value_col].sum()
+        if want_min:
+            row = g.sort_values(value_col, ascending=True).iloc[0]
+            label = "thấp nhất"
+        else:
+            row = g.sort_values(value_col, ascending=False).iloc[0]
+            label = "cao nhất"
+        return f"Khu vực {label}{yr_text}{mo_text} là **{row['khu_vuc']}** với **{fmt_vn(row[value_col])}** ({metric})."
+
+    if want_best_month or want_worst_month:
+        g = dff.groupby("thang_label", as_index=False)[value_col].sum()
+        if g.empty:
+            return "Không đủ dữ liệu theo tháng để tính."
+        if want_worst_month:
+            row = g.sort_values(value_col, ascending=True).iloc[0]
+            label = "thấp nhất"
+        else:
+            row = g.sort_values(value_col, ascending=False).iloc[0]
+            label = "cao nhất"
+        return f"Tháng {label}{yr_text} là **{row['thang_label']}** với **{fmt_vn(row[value_col])}** ({metric})."
+
+    if want_trend and "thang_nam_vn" in dff.columns:
+        g = dff.groupby("thang_nam_vn", as_index=False)[value_col].sum().sort_values("thang_nam_vn")
+        if len(g) < 2:
+            return "Chưa đủ số tháng để nhận xét xu hướng."
+        first = g.iloc[0][value_col]
+        last = g.iloc[-1][value_col]
+        delta = last - first
+        direction = "tăng" if delta > 0 else ("giảm" if delta < 0 else "đi ngang")
+        return (f"Xu hướng{yr_text}{mo_text}: dữ liệu có xu hướng **{direction}** "
+                f"(từ **{fmt_vn(first)}** lên **{fmt_vn(last)}**, chênh **{fmt_vn(abs(delta))}**) theo {metric}.")
+
+    if ("tổng" in q) or ("tong" in q) or ("total" in q):
+        total = dff[value_col].sum()
+        return f"Tổng {metric}{yr_text}{mo_text} là **{fmt_vn(total)}**."
+
+    if ("trung bình" in q) or ("trung binh" in q) or ("average" in q):
+        if "tong_so_cuoc" in dff.columns and value_col != "tong_so_cuoc":
+            total = dff[value_col].sum()
+            sc = dff["tong_so_cuoc"].sum()
+            avg = total / max(sc, 1)
+            return f"Trung bình{yr_text}{mo_text} (doanh thu / số cuốc) là **{fmt_vn(avg)}**."
+        else:
+            avg = dff[value_col].mean()
+            return f"Giá trị trung bình{yr_text}{mo_text} là **{fmt_vn(avg)}**."
+
+    samples = [
+        "cho tôi doanh thu của khu vực nào cao nhất trong năm 2025",
+        "top 5 khu vực doanh thu năm 2025",
+        "tổng doanh thu tháng 03/2025 là bao nhiêu",
+        "tháng cao nhất năm 2025 là tháng nào",
+        "xu hướng doanh thu năm 2025 tăng hay giảm",
+        "so sánh khu vực HN và HCM năm 2025",
+        "trung bình doanh thu trên số cuốc năm 2025"
+    ]
+    return "Mình có thể trả lời các dạng câu hỏi như:\n- " + "\n- ".join(samples)
+
+@app.callback(
+    Output("ai-chat-history", "data"),
+    Output("ai-output", "children"),
+    Input("ai-send", "n_clicks"),
+    Input("ai-clear", "n_clicks"),
+    State("ai-input", "value"),
+    State("ai-chat-history", "data"),
+    prevent_initial_call=True
+)
+def ai_chat(n_send, n_clear, question, history):
+    history = history or []
+
+    if ctx.triggered_id == "ai-clear":
+        return [], []
+
+    ans = answer_question(question)
+
+    history.append({"role": "user", "text": question or ""})
+    history.append({"role": "ai", "text": ans})
+
+    rendered = []
+    for item in history[-12:]:
+        if item["role"] == "user":
+            rendered.append(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.Div("Bạn", style={"fontWeight": "800", "opacity": 0.85}),
+                        html.Div(item["text"])
+                    ]),
+                    style={"backgroundColor": "#141423", "border": "1px solid #3b3b57", "marginBottom": "10px"}
+                )
+            )
+        else:
+            rendered.append(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.Div("AI", style={"fontWeight": "800", "opacity": 0.9}),
+                        dcc.Markdown(item["text"])
+                    ]),
+                    style={"backgroundColor": "#0f1b2b", "border": "1px solid #224a66", "marginBottom": "10px"}
+                )
+            )
+
+    return history, rendered
+
+@app.callback(
+    Output("ai-input", "value"),
+    Input("ai-send", "n_clicks"),
+    prevent_initial_call=True
+)
+def clear_ai_input(_):
+    return ""
+
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
+    app.run(debug=True)

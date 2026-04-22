@@ -1,0 +1,330 @@
+from pathlib import Path
+import pandas as pd
+
+from dash import Dash, html, dcc, Input, Output, State, ctx, dash_table, no_update
+import dash_bootstrap_components as dbc
+import plotly.express as px
+
+BASE_DIR = Path("output")
+EXCEL_FILE = BASE_DIR / "bao_cao_doanh_thu_tong_hop.xlsx"
+
+df = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_Thang_KhuVuc", engine="openpyxl")
+
+df["thang_nam"] = (
+    pd.to_datetime(df["thang_nam"])
+    .dt.to_period("M")
+    .dt.to_timestamp()
+)
+df["thang_label"] = df["thang_nam"].dt.strftime("%m/%Y")
+
+df["doanh_thu_tren_cuoc"] = (df["tong_doanh_thu"] / df["tong_so_cuoc"]).fillna(0)
+
+MIN_DATE = df["thang_nam"].min()
+MAX_DATE = df["thang_nam"].max()
+KHU_VUC_LIST = sorted(df["khu_vuc"].unique())
+MONTH_OPTIONS = sorted(df["thang_label"].unique())
+
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
+
+app.layout = dbc.Container(fluid=True, children=[
+    dcc.Store(id="page-store", data=1),
+    html.Div(id="page-content"),
+
+    dbc.Button("◀", id="prev-page",
+               className="position-fixed bottom-0 start-0 m-4"),
+    dbc.Button("▶", id="next-page",
+               className="position-fixed bottom-0 end-0 m-4"),
+
+    dcc.Download(id="download-excel")
+])
+
+
+def page_1():
+    return dbc.Container(fluid=True, children=[
+
+        html.H3("NAM THẮNG GROUP - DASHBOARD - DOANH THU TỔNG HỢP",
+                className="text-center my-3"),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id="month-p1",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS],
+                    placeholder="Chọn tháng (MM/YYYY)",
+                    clearable=True
+                ),
+                md=3
+            ),
+            dbc.Col(
+                dcc.DatePickerRange(
+                    id="date-p1",
+                    min_date_allowed=MIN_DATE,
+                    max_date_allowed=MAX_DATE,
+                    start_date=MIN_DATE,
+                    end_date=MAX_DATE,
+                    display_format="MM/YYYY"
+                ),
+                md=6
+            )
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="p1-bar-dt"), md=6),
+            dbc.Col(dcc.Graph(id="p1-bar-sc"), md=6),
+        ]),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="p1-pie"), md=6),
+            dbc.Col(dcc.Graph(id="p1-line"), md=6),
+        ]),
+    ])
+
+
+def page_2():
+    return dbc.Container(fluid=True, children=[
+
+        html.H3("PHÂN TÍCH CHI TIẾT THEO KHU VỰC",
+                className="text-center my-3"),
+
+        html.Div(id="insight-text",
+                 className="text-center mb-3",
+                 style={"fontSize": "18px", "fontWeight": "bold"}),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id="khu-vuc",
+                    options=[{"label": k, "value": k} for k in KHU_VUC_LIST],
+                    value=KHU_VUC_LIST[0],
+                    clearable=False
+                ), md=3
+            ),
+            dbc.Col(
+                dcc.Dropdown(
+                    id="month-p2",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS],
+                    placeholder="Chọn tháng (MM/YYYY)",
+                    clearable=True
+                ),
+                md=3
+            ),
+            dbc.Col(
+                dcc.DatePickerRange(
+                    id="date-p2",
+                    min_date_allowed=MIN_DATE,
+                    max_date_allowed=MAX_DATE,
+                    start_date=MIN_DATE,
+                    end_date=MAX_DATE,
+                    display_format="MM/YYYY"
+                ), md=4
+            ),
+            dbc.Col(
+                dbc.Button("Export Excel",
+                           id="export-btn",
+                           color="success"),
+                md=2
+            ),
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody([
+                html.H6("TỔNG DOANH THU"),
+                html.H4(id="kpi-dt")
+            ])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([
+                html.H6("TỔNG SỐ CUỐC"),
+                html.H4(id="kpi-sc")
+            ])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([
+                html.H6("DOANH THU / CUỐC"),
+                html.H4(id="kpi-avg")
+            ])), md=4),
+        ], className="mb-4"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="line-dt"), md=6),
+            dbc.Col(dcc.Graph(id="bar-sc"), md=6),
+        ]),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="pie-dt"), md=6),
+        ]),
+
+        dbc.Card([
+            dbc.CardHeader("BẢNG DỮ LIỆU DOANH THU CHI TIẾT THEO THÁNG"),
+            dbc.CardBody(
+                dash_table.DataTable(
+                    id="table",
+                    page_size=12,
+                    style_header={"backgroundColor": "#222", "color": "white"},
+                    style_cell={
+                        "backgroundColor": "#1e1e2f",
+                        "color": "white",
+                        "textAlign": "center"
+                    }
+                )
+            )
+        ], className="mt-3"),
+
+        html.Hr(),
+        html.Div(id="ai-summary",
+                 style={"fontSize": "16px",
+                        "lineHeight": "1.6",
+                        "color": "#d0d0d0"})
+    ])
+
+
+@app.callback(
+    Output("page-store", "data"),
+    Input("next-page", "n_clicks"),
+    Input("prev-page", "n_clicks"),
+    State("page-store", "data"),
+    prevent_initial_call=True
+)
+def switch_page(n1, n2, page):
+    if ctx.triggered_id == "next-page":
+        return 2
+    if ctx.triggered_id == "prev-page":
+        return 1
+    return page
+
+@app.callback(
+    Output("page-content", "children"),
+    Input("page-store", "data")
+)
+def render_page(page):
+    return page_1() if page == 1 else page_2()
+
+
+@app.callback(
+    Output("p1-bar-dt", "figure"),
+    Output("p1-bar-sc", "figure"),
+    Output("p1-pie", "figure"),
+    Output("p1-line", "figure"),
+    Input("date-p1", "start_date"),
+    Input("date-p1", "end_date"),
+    Input("month-p1", "value")
+)
+def update_page_1(start, end, month):
+
+    dff = df.copy()
+    if month:
+        dff = dff[dff["thang_label"] == month]
+    else:
+        dff = dff[(dff["thang_nam"] >= start) & (dff["thang_nam"] <= end)]
+
+    return (
+        px.bar(dff, x="khu_vuc", y="tong_doanh_thu",
+               title="Tổng Doanh Thu Theo Khu Vực (VNĐ)"),
+        px.bar(dff, x="khu_vuc", y="tong_so_cuoc",
+               title="Tổng Số Cuốc Xe Theo Khu Vực"),
+        px.pie(dff, names="khu_vuc", values="tong_doanh_thu",
+               hole=0.4, title="Cơ Cấu Doanh Thu Theo Khu Vực (%)"),
+        px.line(dff, x="thang_nam", y="tong_doanh_thu",
+                color="khu_vuc", markers=True,
+                title="Xu Hướng Doanh Thu Theo Thời Gian & Khu Vực")
+            .update_xaxes(tickformat="%m/%Y")
+    )
+
+
+@app.callback(
+    Output("kpi-dt", "children"),
+    Output("kpi-sc", "children"),
+    Output("kpi-avg", "children"),
+    Output("line-dt", "figure"),
+    Output("bar-sc", "figure"),
+    Output("pie-dt", "figure"),
+    Output("table", "data"),
+    Output("table", "columns"),
+    Output("insight-text", "children"),
+    Output("ai-summary", "children"),
+    Input("khu-vuc", "value"),
+    Input("date-p2", "start_date"),
+    Input("date-p2", "end_date"),
+    Input("month-p2", "value")
+)
+def update_page_2(khu, start, end, month):
+
+    dff = df[df["khu_vuc"] == khu]
+
+    if month:
+        dff = dff[dff["thang_label"] == month]
+    else:
+        dff = dff[(dff["thang_nam"] >= start) & (dff["thang_nam"] <= end)]
+
+    dff = dff.sort_values("thang_nam")
+
+    total_dt = dff["tong_doanh_thu"].sum()
+    total_sc = dff["tong_so_cuoc"].sum()
+    avg = total_dt / max(total_sc, 1)
+
+    insight = "Không đủ dữ liệu để phân tích xu hướng"
+    if dff["thang_nam"].nunique() >= 2:
+        last2 = dff.groupby("thang_nam")["tong_doanh_thu"].sum().tail(2)
+        pct = (last2.iloc[1] - last2.iloc[0]) / last2.iloc[0] * 100
+        arrow = "↑" if pct >= 0 else "↓"
+        color = "lime" if pct >= 0 else "red"
+        insight = html.Span(
+            f"Doanh thu tháng {last2.index[1].strftime('%m/%Y')} "
+            f"{arrow} {abs(pct):.1f}% so với tháng {last2.index[0].strftime('%m/%Y')}",
+            style={"color": color}
+        )
+
+    table_df = dff.copy()
+    table_df["thang_nam"] = table_df["thang_nam"].dt.strftime("%m/%Y")
+
+    ai_summary = html.Ul([
+        html.Li(f"Tổng doanh thu khu vực {khu}: {total_dt:,.0f} VNĐ."),
+        html.Li(f"Tổng số cuốc: {total_sc:,.0f}, trung bình {avg:,.0f} VNĐ/cuốc."),
+        html.Li("Khuyến nghị: tập trung duy trì tăng trưởng ổn định.")
+    ])
+
+    return (
+        f"{total_dt:,.0f}",
+        f"{total_sc:,.0f}",
+        f"{avg:,.0f}",
+        px.line(dff, x="thang_nam", y="tong_doanh_thu",
+                markers=True, title=f"Xu Hướng Doanh Thu – {khu}")
+            .update_xaxes(tickformat="%m/%Y"),
+        px.bar(dff, x="thang_nam", y="tong_so_cuoc",
+               title=f"Số Cuốc Xe Theo Tháng – {khu}")
+            .update_xaxes(tickformat="%m/%Y"),
+        px.pie(dff.assign(thang=dff["thang_nam"].dt.strftime("%m/%Y")),
+               names="thang", values="tong_doanh_thu",
+               hole=0.4, title=f"Cơ Cấu Doanh Thu Theo Tháng – {khu}"),
+        table_df.to_dict("records"),
+        [{"name": c, "id": c} for c in table_df.columns],
+        insight,
+        ai_summary
+    )
+
+
+@app.callback(
+    Output("download-excel", "data"),
+    Input("export-btn", "n_clicks"),
+    State("khu-vuc", "value"),
+    State("date-p2", "start_date"),
+    State("date-p2", "end_date"),
+    State("month-p2", "value"),
+    prevent_initial_call=True
+)
+def export_excel(n_clicks, khu, start, end, month):
+
+    if ctx.triggered_id != "export-btn" or not n_clicks:
+        return no_update
+
+    dff = df[df["khu_vuc"] == khu]
+
+    if month:
+        dff = dff[dff["thang_label"] == month]
+    else:
+        dff = dff[(dff["thang_nam"] >= start) & (dff["thang_nam"] <= end)]
+
+    return dcc.send_data_frame(
+        dff.to_excel,
+        f"bao_cao_doanh_thu_{khu}.xlsx",
+        index=False
+    )
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8050, debug=False)

@@ -1,0 +1,248 @@
+from pathlib import Path
+import pandas as pd
+from dash import Dash, html, dcc, Input, Output, State, ctx, dash_table, no_update
+import dash_bootstrap_components as dbc
+import plotly.express as px
+
+# ================= LOAD DATA =================
+BASE_DIR = Path("output")
+EXCEL_FILE = BASE_DIR / "bao_cao_doanh_thu_tong_hop.xlsx"
+
+df_dt = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_Thang_KhuVuc")
+df_lh = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_LH_KV_Thang")
+df_hd = pd.read_excel(EXCEL_FILE, sheet_name="HopDong_KV_Thang")
+
+for df in [df_dt, df_lh, df_hd]:
+    df["thang_nam"] = pd.to_datetime(df["thang_nam"]).dt.to_period("M").dt.to_timestamp()
+    df["thang_label"] = df["thang_nam"].dt.strftime("%m/%Y")
+
+MONTH_OPTIONS = sorted(df_dt["thang_label"].unique())
+MIN_DATE = df_dt["thang_nam"].min()
+MAX_DATE = df_dt["thang_nam"].max()
+
+# ================= THEME =================
+DARK_BG = "#1e1e2f"
+LIGHT_BG = "#ffffff"
+
+def apply_theme(fig, theme):
+    if theme == "dark":
+        fig.update_layout(
+            plot_bgcolor=DARK_BG,
+            paper_bgcolor=DARK_BG,
+            font_color="white",
+            xaxis=dict(gridcolor="#333"),
+            yaxis=dict(gridcolor="#333"),
+            legend_title_text=""
+        )
+    else:
+        fig.update_layout(
+            plot_bgcolor=LIGHT_BG,
+            paper_bgcolor=LIGHT_BG,
+            font_color="black",
+            xaxis=dict(gridcolor="#ddd"),
+            yaxis=dict(gridcolor="#ddd"),
+            legend_title_text=""
+        )
+    return fig
+
+# ================= APP =================
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
+
+app.layout = dbc.Container(fluid=True, children=[
+    dcc.Store(id="menu", data="dt"),
+    dcc.Store(id="page", data=1),
+    dcc.Store(id="theme", data="dark"),
+
+    dbc.Row([
+        dbc.Col(dbc.Button("DOANH THU", id="btn-dt", color="primary")),
+        dbc.Col(dbc.Button("LOẠI HÌNH", id="btn-lh", color="warning")),
+        dbc.Col(dbc.Button("HỢP ĐỒNG", id="btn-hd", color="success")),
+        dbc.Col(
+            dbc.Button("🌙 / ☀️", id="toggle-theme", color="secondary"),
+            width="auto"
+        )
+    ], className="my-2"),
+
+    html.Div(id="content"),
+
+    dbc.Button("◀", id="prev-page", className="position-fixed bottom-0 start-0 m-4"),
+    dbc.Button("▶", id="next-page", className="position-fixed bottom-0 end-0 m-4"),
+
+    dcc.Download(id="download-excel")
+])
+
+# ================= MENU =================
+@app.callback(
+    Output("menu","data"),
+    Input("btn-dt","n_clicks"),
+    Input("btn-lh","n_clicks"),
+    Input("btn-hd","n_clicks"),
+    prevent_initial_call=True
+)
+def switch_menu(a,b,c):
+    if ctx.triggered_id == "btn-lh": return "lh"
+    if ctx.triggered_id == "btn-hd": return "hd"
+    return "dt"
+
+@app.callback(
+    Output("page","data"),
+    Input("next-page","n_clicks"),
+    Input("prev-page","n_clicks"),
+    State("page","data"),
+    prevent_initial_call=True
+)
+def switch_page(n1,n2,p):
+    return 2 if ctx.triggered_id=="next-page" else 1
+
+@app.callback(
+    Output("theme","data"),
+    Input("toggle-theme","n_clicks"),
+    State("theme","data"),
+    prevent_initial_call=True
+)
+def toggle_theme(n, theme):
+    return "light" if theme=="dark" else "dark"
+
+# ================= PAGES =================
+def page_1(prefix, title):
+    return dbc.Container(fluid=True, children=[
+        html.H3(title, className="text-center my-3"),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-month",
+                    options=[{"label":m,"value":m} for m in MONTH_OPTIONS],
+                    multi=True,
+                    placeholder="Chọn tháng"
+                ), md=6
+            )
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-line"), md=6),
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-bar"), md=6),
+        ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p1-pie"), md=6),
+        ])
+    ])
+
+def page_2(prefix, title, df, dim):
+    return dbc.Container(fluid=True, children=[
+        html.H3(title, className="text-center my-3"),
+        html.Div(id=f"{prefix}-insight", className="text-center mb-3",
+                 style={"fontSize":"18px","fontWeight":"bold"}),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-dim",
+                    options=[{"label":x,"value":x} for x in sorted(df[dim].unique())],
+                    value=sorted(df[dim].unique())[0]
+                ), md=3
+            ),
+            dbc.Col(
+                dcc.Dropdown(
+                    id=f"{prefix}-month-p2",
+                    options=[{"label":m,"value":m} for m in MONTH_OPTIONS],
+                    multi=True,
+                    placeholder="Chọn tháng"
+                ), md=4
+            )
+        ], className="mb-3"),
+
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TỔNG"), html.H4(id=f"{prefix}-kpi1")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("SỐ CUỐC"), html.H4(id=f"{prefix}-kpi2")])), md=4),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("TRUNG BÌNH"), html.H4(id=f"{prefix}-kpi3")])), md=4),
+        ], className="mb-4"),
+
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-line"), md=6),
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-bar"), md=6),
+        ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f"{prefix}-p2-pie"), md=6),
+        ]),
+
+        dash_table.DataTable(
+            id=f"{prefix}-table",
+            page_size=12,
+            style_header={"backgroundColor":"#222","color":"white"},
+            style_cell={"backgroundColor":DARK_BG,"color":"white","textAlign":"center"}
+        )
+    ])
+
+@app.callback(
+    Output("content","children"),
+    Input("menu","data"),
+    Input("page","data")
+)
+def render(menu,page):
+    if menu=="dt":
+        return page_1("dt","DOANH THU TỔNG – TOÀN TẬP ĐOÀN") if page==1 else page_2("dt","PHÂN TÍCH DOANH THU THEO KHU VỰC",df_dt,"khu_vuc")
+    if menu=="lh":
+        return page_1("lh","DOANH THU LOẠI HÌNH – TOÀN TẬP ĐOÀN") if page==1 else page_2("lh","PHÂN TÍCH LOẠI HÌNH THEO KHU VỰC",df_lh,"khu_vuc")
+    return page_1("hd","HỢP ĐỒNG – TOÀN TẬP ĐOÀN") if page==1 else page_2("hd","PHÂN TÍCH HỢP ĐỒNG THEO KHU VỰC",df_hd,"khu_vuc")
+
+# ================= CALLBACKS =================
+def callbacks(prefix, df, value_col):
+    # --- Page 1 ---
+    @app.callback(
+        Output(f"{prefix}-p1-line","figure"),
+        Output(f"{prefix}-p1-bar","figure"),
+        Output(f"{prefix}-p1-pie","figure"),
+        Input(f"{prefix}-month","value"),
+        Input("theme","data"),
+    )
+    def p1(months, theme):
+        dff = df if not months else df[df["thang_label"].isin(months)]
+        g = dff.groupby("thang_nam",as_index=False).agg({value_col:"sum"})
+        return (
+            apply_theme(px.line(g,x="thang_nam",y=value_col), theme),
+            apply_theme(px.bar(g,x="thang_nam",y=value_col), theme),
+            apply_theme(px.pie(g,names=g["thang_nam"].dt.strftime("%m/%Y"),values=value_col), theme)
+        )
+
+    # --- Page 2 ---
+    @app.callback(
+        Output(f"{prefix}-kpi1","children"),
+        Output(f"{prefix}-kpi2","children"),
+        Output(f"{prefix}-kpi3","children"),
+        Output(f"{prefix}-p2-line","figure"),
+        Output(f"{prefix}-p2-bar","figure"),
+        Output(f"{prefix}-p2-pie","figure"),
+        Output(f"{prefix}-table","data"),
+        Output(f"{prefix}-insight","children"),
+        Input(f"{prefix}-dim","value"),
+        Input(f"{prefix}-month-p2","value"),
+        Input("theme","data"),
+    )
+    def p2(dim, months, theme):
+        dff = df[df["khu_vuc"]==dim]
+        if months:
+            dff = dff[dff["thang_label"].isin(months)]
+        total = dff[value_col].sum()
+        sc = dff["tong_so_cuoc"].sum() if "tong_so_cuoc" in dff else 0
+        avg = total / max(sc,1)
+        insight = f"Tổng {total:,.0f} – {dim}"
+        return (
+            f"{total:,.0f}",
+            f"{sc:,.0f}",
+            f"{avg:,.0f}",
+            apply_theme(px.line(dff,x="thang_nam",y=value_col), theme),
+            apply_theme(px.bar(dff,x="thang_nam",y="tong_so_cuoc"), theme),
+            apply_theme(px.pie(dff,names=dff["thang_nam"].dt.strftime("%m/%Y"),values=value_col), theme),
+            dff.to_dict("records"),
+            insight
+        )
+
+# --- Register callbacks ---
+callbacks("dt", df_dt, "tong_doanh_thu")
+callbacks("lh", df_lh, "tong_doanh_thu")
+callbacks("hd", df_hd, "tong_so_cuoc")
+
+# ================= RUN =================
+if __name__ == "__main__":
+    app.run(debug=True)

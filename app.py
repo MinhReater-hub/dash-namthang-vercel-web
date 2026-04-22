@@ -1,0 +1,9834 @@
+
+from pathlib import Path
+import re
+from datetime import datetime
+from io import BytesIO
+import base64
+import math
+import copy
+
+import numpy as np
+import pandas as pd
+from dash import Dash, html, dcc, Input, Output, State, ctx, dash_table, no_update, ALL
+import dash_bootstrap_components as dbc
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import unicodedata
+from dash.exceptions import PreventUpdate
+import os
+import json
+import hmac
+from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
+from werkzeug.security import check_password_hash
+
+VN_TZ = "Asia/Ho_Chi_Minh"
+
+# =========================================================
+# LIGHT UI + COMPANY LOGO
+# =========================================================
+APP_LIGHT_BG = "#f5f7fb"
+CARD_LIGHT_BG = "#ffffff"
+BORDER_LIGHT = "#dfe5ef"
+TEXT_LIGHT_UI = "#1f2937"
+MUTED_LIGHT_UI = "#667085"
+FONT_UI_FAMILY = '"DejaVu Sans", Arial, "Helvetica Neue", Helvetica, sans-serif'
+
+EXEC_SHADOW = "0 20px 45px rgba(15, 23, 42, 0.08)"
+EXEC_SHADOW_SOFT = "0 14px 28px rgba(15, 23, 42, 0.06)"
+EXEC_RADIUS = "22px"
+
+def _resolve_first_existing_path(candidates):
+    for p in candidates:
+        try:
+            pp = Path(p)
+            if pp.exists():
+                return pp
+        except Exception:
+            continue
+    return None
+
+LOGO_PATH = _resolve_first_existing_path([
+    "/mnt/data/Logo NamThangGroup không nền.png",
+    "Logo NamThangGroup không nền.png",
+    "assets/Logo NamThangGroup không nền.png",
+])
+
+def _load_logo_data_uri(path: Path | None):
+    try:
+        if path.exists():
+            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
+            return f"data:{mime};base64,{b64}"
+    except Exception:
+        pass
+    return None
+
+COMPANY_LOGO_SRC = _load_logo_data_uri(LOGO_PATH)
+
+# =========================================================
+# GREEN ACCENT
+# =========================================================
+GREEN_PRIMARY = "#16a34a"
+GREEN_BORDER = "#22c55e"
+GREEN_SOFT = "#dcfce7"
+GREEN_SHADOW = "rgba(34,197,94,0.18)"
+GREEN_SHADOW_STRONG = "rgba(34,197,94,0.28)"
+NAVY_PRIMARY = "#0f172a"
+SLATE_PRIMARY = "#334155"
+AMBER_PRIMARY = "#f59e0b"
+
+PAGE_NAV_LEFT_BASE = {
+    "position": "fixed",
+    "top": "50%",
+    "left": "16px",
+    "zIndex": 9999,
+}
+PAGE_NAV_RIGHT_BASE = {
+    "position": "fixed",
+    "top": "50%",
+    "right": "16px",
+    "zIndex": 9999,
+}
+
+def to_vn_datetime(series: pd.Series, assume_tz_if_naive: str = VN_TZ) -> pd.Series:
+    s = pd.to_datetime(series, errors="coerce")
+    try:
+        if getattr(s.dt, "tz", None) is not None:
+            return s.dt.tz_convert(VN_TZ).dt.tz_localize(None)
+        return s.dt.tz_localize(assume_tz_if_naive).dt.tz_convert(VN_TZ).dt.tz_localize(None)
+    except Exception:
+        return pd.to_datetime(series, errors="coerce")
+
+def fmt_vn(n) -> str:
+    try:
+        if n is None or (isinstance(n, float) and pd.isna(n)):
+            return "0"
+        return f"{float(n):,.0f}".replace(",", ".")
+    except Exception:
+        return str(n)
+
+def fmt_pct(n, digits: int = 1) -> str:
+    try:
+        if n is None or (isinstance(n, float) and pd.isna(n)):
+            return "0%"
+        return f"{float(n):.{digits}f}%"
+    except Exception:
+        return "0%"
+
+def find_col(df: pd.DataFrame, candidates):
+    cols = list(df.columns)
+    norm = {str(c).strip().lower(): c for c in cols}
+    for cand in candidates:
+        key = str(cand).strip().lower()
+        if key in norm:
+            return norm[key]
+    return None
+
+def norm_text(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = (s.replace("\u200b", " ")
+           .replace("\ufeff", " ")
+           .replace("\xa0", " ")
+           .replace("\t", " ")
+           .replace("\r", " ")
+           .replace("\n", " "))
+    s = s.strip().lower()
+    s = s.replace("đ", "d")
+    s = s.replace("hđ", "hop dong").replace("hd", "hop dong")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9\s]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+LH_CANON = ["Xe Công ty", "Xe thương quyền hợp tác", "Xe thương quyền trả góp"]
+HD_CANON = ["Hợp đồng thường", "Tuyến chiến lược", "Xe tiện chuyến"]
+
+LH_MAP = {
+    "xe cong ty": "Xe Công ty",
+    "xe thuong quyen hop tac": "Xe thương quyền hợp tác",
+    "xe thuong quyen tra gop": "Xe thương quyền trả góp",
+}
+
+HD_MAP = {
+    "hop dong thuong": "Hợp đồng thường",
+    "tuyen chien luoc": "Tuyến chiến lược",
+    "xe tien chuyen": "Xe tiện chuyến",
+    "hop dong thong thuong": "Hợp đồng thường",
+    "hop dong binh thuong": "Hợp đồng thường",
+    "hop dong thuong le": "Hợp đồng thường",
+    "hop dong thuong quy": "Hợp đồng thường",
+    "hop dong thuong (thuong)": "Hợp đồng thường",
+    "hop dong  thuong": "Hợp đồng thường",
+    "hop dong thuong ": "Hợp đồng thường",
+    "hd thuong": "Hợp đồng thường",
+    "tuyen chuyen luoc": "Tuyến chiến lược",
+}
+
+def map_to_canon(series: pd.Series, mapping: dict) -> pd.Series:
+    s = series.astype(str).map(norm_text)
+    mapping_norm = {norm_text(k): v for k, v in mapping.items()}
+    out = s.map(mapping_norm)
+    m = out.isna()
+    if m.any():
+        ss = s[m]
+        out.loc[m & ss.str.contains(r"\bhop dong\b") & ss.str.contains(r"\bthuong\b")] = "Hợp đồng thường"
+        out.loc[m & ss.str.contains(r"\btuyen\b") & (ss.str.contains("chien luoc") | ss.str.contains("chuyen luoc"))] = "Tuyến chiến lược"
+        out.loc[m & ss.str.contains(r"\bxe\b") & ss.str.contains("tien chuyen")] = "Xe tiện chuyến"
+    return out.fillna("Khác")
+
+# =========================
+# DATA
+# =========================
+EXCEL_FILE = _resolve_first_existing_path([
+    "output/bao_cao_doanh_thu_tong_hop.xlsx",
+    "/mnt/data/bao_cao_doanh_thu_tong_hop.xlsx",
+    "bao_cao_doanh_thu_tong_hop.xlsx",
+])
+
+DATA_LOAD_ERROR = None
+
+def _empty_dashboard_df(kind: str) -> pd.DataFrame:
+    base_cols = ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "tong_doanh_thu", "tong_so_cuoc"]
+    if kind == "lh":
+        base_cols += ["loai_hinh_std"]
+    if kind == "hd":
+        base_cols += ["loai_hop_dong_std"]
+    return pd.DataFrame(columns=list(dict.fromkeys(base_cols)))
+
+if EXCEL_FILE is not None:
+    try:
+        df_dt = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_Thang_KhuVuc")
+        df_lh = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_LH_KV_Thang")
+        df_hd = pd.read_excel(EXCEL_FILE, sheet_name="HopDong_KV_Thang")
+    except Exception as e:
+        DATA_LOAD_ERROR = f"Lỗi đọc file Excel: {e}"
+        df_dt = _empty_dashboard_df("dt")
+        df_lh = _empty_dashboard_df("lh")
+        df_hd = _empty_dashboard_df("hd")
+else:
+    DATA_LOAD_ERROR = "Không tìm thấy file Excel dữ liệu. Hãy kiểm tra lại đường dẫn 'bao_cao_doanh_thu_tong_hop.xlsx'."
+    df_dt = _empty_dashboard_df("dt")
+    df_lh = _empty_dashboard_df("lh")
+    df_hd = _empty_dashboard_df("hd")
+
+for df in [df_dt, df_lh, df_hd]:
+    df["thang_nam"] = pd.to_datetime(df["thang_nam"]).dt.to_period("M").dt.to_timestamp()
+    df["thang_nam_vn"] = to_vn_datetime(df["thang_nam"])
+    df["thang_nam_vn"] = pd.to_datetime(df["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    df["thang_label"] = df["thang_nam_vn"].dt.strftime("%m/%Y")
+    df["nam"] = df["thang_nam_vn"].dt.year
+
+REGION_CANON_MAP = {
+    "ct": "Cần Thơ",
+    "hg": "Hậu Giang",
+    "st": "Sóc Trăng",
+    "c t": "Cần Thơ",
+    "h g": "Hậu Giang",
+    "s t": "Sóc Trăng",
+    "can tho": "Cần Thơ",
+    "tp can tho": "Cần Thơ",
+    "tp. can tho": "Cần Thơ",
+    "thanh pho can tho": "Cần Thơ",
+    "cần thơ": "Cần Thơ",
+    "cantho": "Cần Thơ",
+    "hau giang": "Hậu Giang",
+    "hậu giang": "Hậu Giang",
+    "haugiang": "Hậu Giang",
+    "soc trang": "Sóc Trăng",
+    "sóc trăng": "Sóc Trăng",
+    "soctrang": "Sóc Trăng",
+}
+PINNED_REGIONS = ["Cần Thơ"]
+
+def canon_region_name(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    s0 = re.sub(r"\s+", " ", str(x)).strip()
+    key = norm_text(s0)
+    if key in REGION_CANON_MAP:
+        return REGION_CANON_MAP[key]
+    return s0
+
+for df in [df_dt, df_lh, df_hd]:
+    if "khu_vuc" in df.columns:
+        df["khu_vuc"] = df["khu_vuc"].apply(canon_region_name)
+
+
+# =========================
+# AUTH / RBAC
+# =========================
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _auth_users_candidates() -> list[Path]:
+    out = []
+    env_path = os.getenv("DASH_USERS_FILE")
+    if env_path:
+        out.append(Path(env_path))
+    out.extend([
+        Path("users.json"),
+        Path("/mnt/data/users.json"),
+        Path("config/users.json"),
+    ])
+    seen = []
+    for item in out:
+        try:
+            rp = item.resolve()
+        except Exception:
+            rp = item
+        if str(rp) not in seen:
+            seen.append(str(rp))
+    return [Path(x) for x in seen]
+
+def _default_user_store() -> dict:
+    return {
+        "admin": {
+            "display_name": "Quản trị tổng",
+            "password": os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
+            "role": "admin",
+            "regions": ["*"],
+        }
+    }
+
+def _auth_store_source() -> str:
+    for candidate in _auth_users_candidates():
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except Exception:
+            continue
+    return "default"
+
+def _normalize_region_list(values) -> list[str]:
+    values = values if isinstance(values, list) else ([values] if values not in [None, ""] else [])
+    out = []
+    for item in values:
+        canon = canon_region_name(item)
+        if canon is None:
+            continue
+        canon = str(canon).strip()
+        if canon:
+            out.append(canon)
+    return list(dict.fromkeys(out))
+
+def _normalize_auth_user_record(username: str, raw: dict) -> dict:
+    raw = raw or {}
+    regions = raw.get("regions", raw.get("region", []))
+    if raw.get("all_regions") is True:
+        regions = ["*"]
+    if isinstance(regions, str):
+        regions = [regions]
+    role_raw = str(raw.get("role", "")).strip().lower()
+    regions_norm = _normalize_region_list(regions)
+    is_admin = role_raw in {"admin", "super", "global", "all"} or ("*" in [str(x).strip() for x in regions if x is not None])
+    return {
+        "username": str(username).strip().lower(),
+        "display_name": str(raw.get("display_name") or raw.get("full_name") or username).strip(),
+        "role": "admin" if is_admin else "region",
+        "regions": [] if is_admin else regions_norm,
+        "password": raw.get("password"),
+        "password_hash": raw.get("password_hash"),
+        "is_active": bool(raw.get("is_active", True)),
+    }
+
+def _slugify_username(value: str) -> str:
+    txt = norm_text(value)
+    txt = re.sub(r"[^a-z0-9]+", "", txt)
+    return txt or "user"
+
+def _all_dashboard_regions() -> list[str]:
+    try:
+        regions = [str(x).strip() for x in globals().get("ALL_REGIONS", []) if str(x).strip()]
+    except Exception:
+        regions = []
+    regions = [canon_region_name(x) for x in regions]
+    return [str(x) for x in regions if x not in [None, "", "Tổng hợp"]]
+
+def _auto_region_user_store() -> dict:
+    default_region_password = os.getenv("DEFAULT_REGION_PASSWORD", "123456")
+    auto_store = {}
+    for region_name in _all_dashboard_regions():
+        username = _slugify_username(region_name)
+        auto_store[username] = {
+            "display_name": f"Quản lý {region_name}",
+            "password": default_region_password,
+            "role": "region",
+            "regions": [region_name],
+            "is_active": True,
+        }
+    return auto_store
+
+def load_auth_user_store() -> dict:
+    store = None
+    for candidate in _auth_users_candidates():
+        try:
+            if candidate.exists():
+                store = json.loads(candidate.read_text(encoding="utf-8-sig"))
+                break
+        except Exception:
+            continue
+    if store is None:
+        store = {}
+    merged_store = {}
+    merged_store.update(_default_user_store())
+    merged_store.update(_auto_region_user_store())
+    if isinstance(store, dict):
+        merged_store.update(store)
+    users = {}
+    if isinstance(merged_store, dict):
+        for username, payload in merged_store.items():
+            rec = _normalize_auth_user_record(username, payload if isinstance(payload, dict) else {})
+            if rec["username"] and rec.get("is_active", True):
+                users[rec["username"]] = rec
+    return users
+
+def _verify_password(user_record: dict, password: str) -> bool:
+    if not user_record:
+        return False
+    raw_password = "" if password is None else str(password)
+    hashed = user_record.get("password_hash")
+    if hashed:
+        try:
+            return bool(check_password_hash(str(hashed), raw_password))
+        except Exception:
+            return False
+    plain = user_record.get("password")
+    if plain is None:
+        return False
+    return hmac.compare_digest(str(plain), raw_password)
+
+def current_auth_user() -> dict | None:
+    if not has_request_context():
+        return None
+    raw = session.get("dash_auth_user")
+    if not isinstance(raw, dict):
+        return None
+    username = str(raw.get("username", "")).strip()
+    if not username:
+        return None
+    users = load_auth_user_store()
+    rec = users.get(username)
+    if rec is None:
+        return None
+    return {
+        "username": rec["username"],
+        "display_name": rec.get("display_name") or rec["username"],
+        "role": rec.get("role", "region"),
+        "regions": rec.get("regions", []),
+    }
+
+def current_user_region_scope():
+    if not has_request_context():
+        return None
+    user = current_auth_user()
+    if user is None:
+        return []
+    if user.get("role") == "admin":
+        return None
+    return _normalize_region_list(user.get("regions", []))
+
+def user_can_access_region(region_name) -> bool:
+    scope = current_user_region_scope()
+    if scope is None:
+        return True
+    region = canon_region_name(region_name)
+    if region is None:
+        return False
+    return str(region) in {str(x) for x in scope}
+
+def filter_regions_for_current_user(regions) -> list[str]:
+    values = _normalize_region_list(regions)
+    scope = current_user_region_scope()
+    if scope is None:
+        return values
+    scope_set = {str(x) for x in scope}
+    return [r for r in values if str(r) in scope_set]
+
+def apply_region_scope_to_df(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None:
+        return pd.DataFrame()
+    out = dff.copy()
+    scope = current_user_region_scope()
+    if "khu_vuc" not in out.columns or scope is None:
+        return out
+    scope_set = {str(x) for x in scope}
+    if not scope_set:
+        return out.iloc[0:0].copy()
+    return out[out["khu_vuc"].astype(str).isin(scope_set)].copy()
+
+def _is_safe_next_path(next_path: str | None) -> bool:
+    if next_path is None:
+        return False
+    value = str(next_path).strip()
+    return bool(value.startswith("/")) and not value.startswith("//")
+
+LOGIN_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_title }}</title>
+  <style>
+    :root{
+      --bg:#f5f7fb;
+      --card:#ffffff;
+      --text:#0f172a;
+      --muted:#64748b;
+      --green:#16a34a;
+      --green-dark:#14532d;
+      --border:#dfe5ef;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      background:linear-gradient(135deg,#0f172a 0%, #14532d 55%, #16a34a 100%);
+      font-family:Arial, Helvetica, sans-serif;
+      color:var(--text);
+    }
+    .shell{
+      width:100%;
+      max-width:460px;
+      background:rgba(255,255,255,0.96);
+      border:1px solid rgba(255,255,255,0.35);
+      border-radius:28px;
+      box-shadow:0 30px 60px rgba(15,23,42,0.26);
+      overflow:hidden;
+    }
+    .hero{
+      padding:22px 24px 12px;
+      background:linear-gradient(180deg,rgba(22,163,74,0.08) 0%, rgba(255,255,255,0.0) 100%);
+      text-align:center;
+    }
+    .logo{
+      width:84px;
+      height:84px;
+      object-fit:contain;
+      margin-bottom:12px;
+    }
+    h1{
+      margin:0;
+      font-size:24px;
+      line-height:1.15;
+      font-weight:900;
+      color:#0f172a;
+    }
+    .sub{
+      margin-top:8px;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.55;
+    }
+    form{
+      padding:20px 24px 24px;
+    }
+    label{
+      display:block;
+      font-size:12px;
+      font-weight:800;
+      color:#334155;
+      margin-bottom:8px;
+      text-transform:uppercase;
+      letter-spacing:.4px;
+    }
+    input{
+      width:100%;
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:13px 14px;
+      font-size:14px;
+      outline:none;
+      margin-bottom:14px;
+      background:#ffffff;
+    }
+    input:focus{
+      border-color:var(--green);
+      box-shadow:0 0 0 4px rgba(22,163,74,0.10);
+    }
+    button{
+      width:100%;
+      border:none;
+      border-radius:16px;
+      padding:13px 14px;
+      font-size:14px;
+      font-weight:900;
+      color:#ffffff;
+      cursor:pointer;
+      background:linear-gradient(135deg,var(--green) 0%, var(--green-dark) 100%);
+      box-shadow:0 16px 30px rgba(22,163,74,0.18);
+    }
+    .error{
+      margin-bottom:12px;
+      padding:12px 14px;
+      border-radius:14px;
+      background:#fef2f2;
+      color:#991b1b;
+      border:1px solid #fecaca;
+      font-size:13px;
+      line-height:1.45;
+    }
+    .hint{
+      margin-top:14px;
+      padding:12px 14px;
+      border-radius:14px;
+      background:#f8fafc;
+      color:#475569;
+      border:1px solid #e2e8f0;
+      font-size:12px;
+      line-height:1.55;
+    }
+    .hint strong{
+      color:#0f172a;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hero">
+      {% if logo_src %}
+      <img src="{{ logo_src }}" alt="Logo công ty" class="logo">
+      {% endif %}
+      <h1>{{ app_title }}</h1>
+      <div class="sub">Đăng nhập để mở dashboard. Tài khoản tổng xem toàn bộ dữ liệu, tài khoản khu vực chỉ xem đúng khu vực được phân quyền.</div>
+    </div>
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="next" value="{{ next_path }}">
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+      <label for="username">Tài khoản</label>
+      <input id="username" name="username" type="text" autocomplete="username" placeholder="Nhập tài khoản" required>
+      <label for="password">Mật khẩu</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" required>
+      <button type="submit">Đăng nhập vào dashboard</button>
+      {% if default_hint %}
+      <div class="hint"><strong>Lưu ý:</strong> Nếu chưa có <code>users.json</code>, hệ thống sẽ tự tạo tài khoản <strong>admin / {{ default_admin_password }}</strong> và các user khu vực với mật khẩu mặc định <strong>{{ default_region_password }}</strong>. Hãy đổi mật khẩu trước khi public.</div>
+      {% endif %}
+    </form>
+  </div>
+</body>
+</html>
+"""
+try:
+    _excel_sheet_names = set(pd.ExcelFile(EXCEL_FILE).sheet_names) if EXCEL_FILE is not None else set()
+except Exception:
+    _excel_sheet_names = set()
+
+def _read_optional_sheet(candidates):
+    if EXCEL_FILE is None:
+        return None
+    try:
+        for sheet_name in candidates:
+            if sheet_name in _excel_sheet_names:
+                return pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
+    except Exception:
+        return None
+    return None
+
+def _prepare_optional_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return _empty_dashboard_df("dt")
+    dff = raw_df.copy()
+    if "thang_nam" not in dff.columns:
+        month_col = find_col(dff, ["thang_nam", "thang", "month", "month_date", "period"])
+        if month_col:
+            dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce")
+    if "thang_nam" not in dff.columns:
+        return _empty_dashboard_df("dt")
+    if "khu_vuc" not in dff.columns:
+        region_col = find_col(dff, ["khu_vuc", "region", "kv", "area"])
+        if region_col:
+            dff["khu_vuc"] = dff[region_col]
+    if "khu_vuc" not in dff.columns:
+        dff["khu_vuc"] = "Tổng hợp"
+    metric_col = find_col(dff, ["tong_doanh_thu", "gia_tri", "chi_phi", "diem", "tong_gia_tri", "value"])
+    count_col = find_col(dff, ["tong_so_cuoc", "so_luong", "so_nhan_vien", "so_tai_xe", "so_xe", "count"])
+    if metric_col and metric_col != "tong_doanh_thu":
+        dff["tong_doanh_thu"] = pd.to_numeric(dff[metric_col], errors="coerce").fillna(0)
+    elif "tong_doanh_thu" not in dff.columns:
+        dff["tong_doanh_thu"] = 0
+    if count_col and count_col != "tong_so_cuoc":
+        dff["tong_so_cuoc"] = pd.to_numeric(dff[count_col], errors="coerce").fillna(0)
+    elif "tong_so_cuoc" not in dff.columns:
+        dff["tong_so_cuoc"] = 0
+    dff["thang_nam"] = pd.to_datetime(dff["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name)
+    cols = ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "tong_doanh_thu", "tong_so_cuoc"]
+    extra_cols = [c for c in dff.columns if c not in cols]
+    return dff[cols + extra_cols].copy()
+
+
+def _parse_vehicle_seat_series(series_like: pd.Series) -> pd.Series:
+    s = series_like.astype(str).str.extract(r"(\d+)")[0]
+    return pd.to_numeric(s, errors="coerce").fillna(0)
+
+
+def _prepare_vehicle_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return _empty_dashboard_df("dt")
+    dff = raw_df.copy()
+
+    month_col = find_col(dff, [
+        "thang_nam", "thang/nam", "thang nam", "thang", "month", "month_date", "period",
+        "updatedat", "updated_at", "ngay_cap_nhat", "ngay cap nhat", "createdat", "created_at", "ngay_tao", "ngay tao"
+    ])
+    if month_col is not None:
+        dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    else:
+        dff["thang_nam"] = pd.Timestamp.today().to_period("M").to_timestamp()
+
+    dff["thang_nam"] = pd.to_datetime(dff["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff = dff[dff["thang_nam"].notna()].copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    region_col = find_col(dff, ["khu_vuc", "khu vuc", "region", "kv", "area"])
+    type_col = find_col(dff, ["loai_xe", "loai xe", "dong_xe", "dong xe", "model"])
+    fuel_col = find_col(dff, ["nhom_nhien_lieu", "nhom nhien lieu", "dien_xang", "dien xang", "fuel", "fuel_type"])
+
+    count_col = find_col(dff, ["so_luong_xe", "so_xe", "tong_so_cuoc", "so_luong", "count"])
+    seat_total_col = find_col(dff, ["tong_so_cho", "tong so cho", "so_cho_tong", "tong_cho"])
+    seat_avg_col = find_col(dff, ["so_cho_binh_quan_xe", "so cho binh quan xe", "avg_seat_per_vehicle"])
+    plate_count_col = find_col(dff, ["so_bien_kiem_soat", "so bien kiem soat", "so_bks", "count_plate"])
+    sotai_count_col = find_col(dff, ["so_so_tai", "so so tai", "so_tai_distinct", "count_so_tai"])
+
+    dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+
+    dff["loai_xe"] = dff[type_col] if type_col else "Chưa rõ loại xe"
+    dff["loai_xe"] = dff["loai_xe"].fillna("Chưa rõ loại xe").astype(str).str.strip()
+    dff.loc[dff["loai_xe"].eq(""), "loai_xe"] = "Chưa rõ loại xe"
+
+    dff["nhom_nhien_lieu"] = dff[fuel_col] if fuel_col else "Chưa rõ nhiên liệu"
+    dff["nhom_nhien_lieu"] = dff["nhom_nhien_lieu"].fillna("Chưa rõ nhiên liệu").astype(str).str.strip()
+    dff.loc[dff["nhom_nhien_lieu"].eq(""), "nhom_nhien_lieu"] = "Chưa rõ nhiên liệu"
+
+    if count_col:
+        dff["so_luong_xe"] = pd.to_numeric(dff[count_col], errors="coerce").fillna(0)
+    else:
+        dff["so_luong_xe"] = 1
+
+    if seat_total_col:
+        dff["tong_so_cho"] = pd.to_numeric(dff[seat_total_col], errors="coerce").fillna(0)
+    elif "so_cho" in dff.columns:
+        dff["tong_so_cho"] = _parse_vehicle_seat_series(dff["so_cho"])
+    else:
+        dff["tong_so_cho"] = 0
+
+    if plate_count_col:
+        dff["so_bien_kiem_soat"] = pd.to_numeric(dff[plate_count_col], errors="coerce").fillna(0)
+    else:
+        dff["so_bien_kiem_soat"] = dff["so_luong_xe"]
+
+    if sotai_count_col:
+        dff["so_so_tai"] = pd.to_numeric(dff[sotai_count_col], errors="coerce").fillna(0)
+    else:
+        dff["so_so_tai"] = dff["so_luong_xe"]
+
+    if seat_avg_col:
+        dff["so_cho_binh_quan_xe"] = pd.to_numeric(dff[seat_avg_col], errors="coerce").fillna(0)
+    else:
+        dff["so_cho_binh_quan_xe"] = np.where(dff["so_luong_xe"] > 0, dff["tong_so_cho"] / dff["so_luong_xe"], 0)
+
+    dff["tong_doanh_thu"] = dff["so_luong_xe"]
+    dff["tong_so_cuoc"] = dff["tong_so_cho"]
+
+    group_cols = ["thang_nam", "khu_vuc", "loai_xe", "nhom_nhien_lieu"]
+    dff = dff.groupby(group_cols, as_index=False).agg(
+        so_luong_xe=("so_luong_xe", "sum"),
+        tong_so_cho=("tong_so_cho", "sum"),
+        so_bien_kiem_soat=("so_bien_kiem_soat", "sum"),
+        so_so_tai=("so_so_tai", "sum"),
+    )
+    dff["so_cho_binh_quan_xe"] = np.where(dff["so_luong_xe"] > 0, dff["tong_so_cho"] / dff["so_luong_xe"], 0)
+    dff["so_cho_loc"] = pd.to_numeric(dff["so_cho_binh_quan_xe"], errors="coerce").fillna(0).round().astype(int)
+    dff.loc[dff["so_cho_loc"] < 0, "so_cho_loc"] = 0
+    dff["nhan_so_cho"] = np.where(dff["so_cho_loc"] > 0, dff["so_cho_loc"].astype(str) + " chỗ", "Chưa rõ số chỗ")
+    dff["tong_doanh_thu"] = dff["so_luong_xe"]
+    dff["tong_so_cuoc"] = dff["tong_so_cho"]
+
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+
+    ordered_cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc",
+        "loai_xe", "nhom_nhien_lieu",
+        "so_luong_xe", "tong_so_cho", "so_cho_binh_quan_xe", "so_cho_loc", "nhan_so_cho",
+        "so_bien_kiem_soat", "so_so_tai",
+        "tong_doanh_thu", "tong_so_cuoc"
+    ]
+    extra_cols = [c for c in dff.columns if c not in ordered_cols]
+    return dff[ordered_cols + extra_cols].copy()
+
+
+def _prepare_marketing_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return _empty_dashboard_df("dt")
+    dff = raw_df.copy()
+
+    month_col = find_col(dff, ["thang_nam", "thang/nam", "thang nam", "thang", "month", "month_date", "period"])
+    if month_col is None:
+        return _empty_dashboard_df("dt")
+    dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff = dff[dff["thang_nam"].notna()].copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    region_col = find_col(dff, ["khu_vuc", "khu vuc", "region", "kv", "area"])
+    dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+
+    amount_col = find_col(dff, ["tong_doanh_thu", "tong_phai_chi", "tong phai chi", "chi_phi", "tong_tien", "tong tien", "gia_tri", "value"])
+    count_col = find_col(dff, ["tong_so_cuoc", "so_diem_tiep_thi", "so diem tiep thi", "so_luong", "so_diem", "count"])
+
+    dff["tong_doanh_thu"] = pd.to_numeric(dff[amount_col], errors="coerce").fillna(0) if amount_col else 0
+    dff["tong_so_cuoc"] = pd.to_numeric(dff[count_col], errors="coerce").fillna(0) if count_col else 0
+    dff["tong_phai_chi"] = pd.to_numeric(dff.get("tong_phai_chi", dff["tong_doanh_thu"]), errors="coerce").fillna(0)
+    dff["so_diem_tiep_thi"] = pd.to_numeric(dff.get("so_diem_tiep_thi", dff["tong_so_cuoc"]), errors="coerce").fillna(0)
+
+    numeric_candidates = [
+        "tong_phai_chi", "so_diem_tiep_thi", "so_ho_so_hoa_hong",
+        "tong_da_chi_du", "tong_chua_chi_du", "tong_khong_chi",
+        "so_ho_so_da_chi_du", "so_ho_so_chua_chi_du", "so_ho_so_khong_chi",
+        "so_diem_moi_ky_hd", "so_loai_hinh_kd", "chi_phi_binh_quan_moi_diem", "chi_phi_binh_quan_moi_ho_so"
+    ]
+    for c in numeric_candidates:
+        if c in dff.columns:
+            dff[c] = pd.to_numeric(dff[c], errors="coerce").fillna(0)
+
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+
+    ordered_cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc",
+        "tong_doanh_thu", "tong_so_cuoc",
+        "tong_phai_chi", "so_diem_tiep_thi", "so_ho_so_hoa_hong",
+        "tong_da_chi_du", "tong_chua_chi_du", "tong_khong_chi",
+        "so_ho_so_da_chi_du", "so_ho_so_chua_chi_du", "so_ho_so_khong_chi",
+        "so_diem_moi_ky_hd", "so_loai_hinh_kd", "chi_phi_binh_quan_moi_diem", "chi_phi_binh_quan_moi_ho_so"
+    ]
+    for c in ordered_cols:
+        if c not in dff.columns:
+            dff[c] = 0 if c not in ["khu_vuc", "thang_label"] else ""
+    extra_cols = [c for c in dff.columns if c not in ordered_cols]
+    return dff[ordered_cols + extra_cols].copy()
+
+
+def _prepare_bienban_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return _empty_dashboard_df("dt")
+    dff = raw_df.copy()
+
+    month_col = find_col(dff, ["thang_nam", "thang", "month", "month_date", "period"])
+    if month_col is None:
+        return _empty_dashboard_df("dt")
+    dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff = dff[dff["thang_nam"].notna()].copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    region_col = find_col(dff, ["khu_vuc", "region", "kv", "area"])
+    dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+
+    amount_col = find_col(dff, ["tong_tien_de_xuat", "tong_tien", "gia_tri", "tong_gia_tri", "value"])
+    collected_col = find_col(dff, ["so_tien_thu_duoc", "tien_thu_duoc", "tong_doanh_thu", "so_tien_thu", "da_thu"])
+    processed_col = find_col(dff, ["so_tien_da_xu_ly", "tien_da_xu_ly", "gia_tri_da_xu_ly"])
+    debt_col = find_col(dff, ["so_tien_con_no", "con_no", "con_lai", "tien_con_no", "outstanding"])
+    count_col = find_col(dff, ["so_bien_ban", "tong_so_cuoc", "so_luong", "count"])
+    processed_count_col = find_col(dff, ["so_bien_ban_da_xu_ly", "count_da_xu_ly"])
+    collected_count_col = find_col(dff, ["so_bien_ban_thu_hoan_tat", "count_thu_hoan_tat"])
+
+    dff["tong_tien_de_xuat"] = pd.to_numeric(dff[amount_col], errors="coerce").fillna(0) if amount_col else 0
+    dff["so_tien_con_no"] = pd.to_numeric(dff[debt_col], errors="coerce").fillna(0) if debt_col else 0
+    if collected_col:
+        dff["so_tien_thu_duoc"] = pd.to_numeric(dff[collected_col], errors="coerce").fillna(0)
+    else:
+        dff["so_tien_thu_duoc"] = (dff["tong_tien_de_xuat"] - dff["so_tien_con_no"]).clip(lower=0)
+    if processed_col:
+        dff["so_tien_da_xu_ly"] = pd.to_numeric(dff[processed_col], errors="coerce").fillna(0)
+    else:
+        dff["so_tien_da_xu_ly"] = dff["tong_tien_de_xu_ly"] if "tong_tien_de_xu_ly" in dff.columns else dff["tong_tien_de_xuat"]
+    dff["so_bien_ban"] = pd.to_numeric(dff[count_col], errors="coerce").fillna(0) if count_col else 0
+    dff["so_bien_ban_da_xu_ly"] = pd.to_numeric(dff[processed_count_col], errors="coerce").fillna(0) if processed_count_col else dff["so_bien_ban"]
+    dff["so_bien_ban_thu_hoan_tat"] = pd.to_numeric(dff[collected_count_col], errors="coerce").fillna(0) if collected_count_col else 0
+
+    dff["tong_doanh_thu"] = dff["so_tien_thu_duoc"]
+    dff["tong_so_cuoc"] = dff["so_bien_ban"]
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+
+    ordered_cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc",
+        "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+        "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+        "tong_doanh_thu", "tong_so_cuoc"
+    ]
+    for c in ordered_cols:
+        if c not in dff.columns:
+            dff[c] = 0 if c not in ["khu_vuc", "thang_label"] else ""
+    return dff[ordered_cols].copy()
+
+
+def _optional_or_proxy_bienban_menu_df() -> pd.DataFrame:
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get("bb", []))
+    prepared = _prepare_bienban_menu_df(raw)
+    if prepared is not None and not prepared.empty:
+        return prepared
+    fallback = _build_proxy_menu_dataset("bb")
+    if fallback is None or fallback.empty:
+        return prepared if prepared is not None else _empty_dashboard_df("dt")
+    fallback = fallback.copy()
+    fallback["tong_tien_de_xuat"] = pd.to_numeric(fallback.get("tong_doanh_thu", 0), errors="coerce").fillna(0)
+    fallback["so_tien_thu_duoc"] = fallback["tong_tien_de_xuat"]
+    fallback["so_tien_da_xu_ly"] = fallback["tong_tien_de_xuat"]
+    fallback["so_tien_con_no"] = 0
+    fallback["so_bien_ban"] = pd.to_numeric(fallback.get("tong_so_cuoc", 0), errors="coerce").fillna(0)
+    fallback["so_bien_ban_da_xu_ly"] = fallback["so_bien_ban"]
+    fallback["so_bien_ban_thu_hoan_tat"] = fallback["so_bien_ban"]
+    cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc",
+        "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+        "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+        "tong_doanh_thu", "tong_so_cuoc"
+    ]
+    for c in cols:
+        if c not in fallback.columns:
+            fallback[c] = 0 if c not in ["khu_vuc", "thang_label"] else ""
+    return fallback[cols].copy()
+
+
+def _prepare_hr_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return _empty_dashboard_df("dt")
+    dff = raw_df.copy()
+    month_col = find_col(dff, ["thang_nam", "thang", "month", "month_date", "period"])
+    if month_col is None:
+        return _empty_dashboard_df("dt")
+    dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff = dff[dff["thang_nam"].notna()].copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    region_col = find_col(dff, ["khu_vuc", "region", "kv", "area"])
+    dept_col = find_col(dff, ["bo_phan", "don_vi_ct", "don_vi", "phong_ban", "phong ban", "department"])
+
+    dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
+    dff["bo_phan"] = dff[dept_col] if dept_col else "Tất cả bộ phận"
+
+    fallback_count = find_col(dff, ["so_luong_nhan_su", "so_nhan_vien", "so_tai_xe", "tong_so_cuoc", "so_luong", "count"])
+    if fallback_count:
+        dff["so_luong_nhan_su"] = pd.to_numeric(dff[fallback_count], errors="coerce").fillna(0)
+    else:
+        dff["so_luong_nhan_su"] = 0
+
+    hr_numeric_cols = [
+        "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec",
+        "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam",
+        "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan",
+        "ty_le_tang", "ty_le_giam", "ty_le_giu_chan", "chi_phi"
+    ]
+    for col in hr_numeric_cols:
+        if col not in dff.columns:
+            dff[col] = 0
+        dff[col] = pd.to_numeric(dff[col], errors="coerce").fillna(0)
+
+    lifecycle_sum = dff[[c for c in ["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"] if c in dff.columns]].sum(axis=1)
+    dff["so_luong_nhan_su"] = np.where(
+        dff["so_luong_nhan_su"] > 0,
+        dff["so_luong_nhan_su"],
+        np.where(lifecycle_sum > 0, lifecycle_sum, dff["so_vao_lam"].clip(lower=0))
+    )
+
+    dff["headcount_dau_ky"] = dff["headcount_dau_ky"].where(dff["headcount_dau_ky"] > 0, (dff["so_luong_nhan_su"] - dff["so_vao_lam"] + dff["so_nghi_viec"]).clip(lower=0))
+    dff["so_giu_on_dinh"] = dff["so_giu_on_dinh"].where(dff["so_giu_on_dinh"] > 0, (dff["so_luong_nhan_su"] - dff["so_vao_lam"]).clip(lower=0))
+    dff["ty_le_tang"] = np.where(dff["headcount_dau_ky"] > 0, dff["so_vao_lam"] / dff["headcount_dau_ky"] * 100.0, np.where(dff["so_vao_lam"] > 0, 100.0, 0.0))
+    dff["ty_le_giam"] = np.where(dff["headcount_dau_ky"] > 0, dff["so_nghi_viec"] / dff["headcount_dau_ky"] * 100.0, 0.0)
+    dff["ty_le_giu_chan"] = np.where(dff["headcount_dau_ky"] > 0, dff["so_giu_on_dinh"] / dff["headcount_dau_ky"] * 100.0, np.where(dff["so_luong_nhan_su"] > 0, 100.0, 0.0))
+    dff["tong_doanh_thu"] = dff["so_luong_nhan_su"]
+    dff["tong_so_cuoc"] = dff["so_vao_lam"]
+
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"]).dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+    dff["bo_phan"] = dff["bo_phan"].fillna("Tất cả bộ phận").astype(str).str.strip()
+    dff.loc[dff["bo_phan"].eq(""), "bo_phan"] = "Tất cả bộ phận"
+
+    ordered_cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "bo_phan",
+        "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec",
+        "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam",
+        "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan",
+        "ty_le_tang", "ty_le_giam", "ty_le_giu_chan",
+        "tong_doanh_thu", "tong_so_cuoc", "chi_phi"
+    ]
+    for c in ordered_cols:
+        if c not in dff.columns:
+            dff[c] = 0 if c not in ["khu_vuc", "bo_phan", "thang_label"] else ""
+    return dff[ordered_cols].copy()
+
+
+def _optional_or_proxy_hr_menu_df(menu_key: str) -> pd.DataFrame:
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []))
+    prepared = _prepare_hr_menu_df(raw)
+    if prepared is not None and not prepared.empty and float(pd.to_numeric(prepared.get("so_luong_nhan_su", 0), errors="coerce").fillna(0).sum()) > 0:
+        return prepared
+    fallback = _build_proxy_menu_dataset(menu_key)
+    if fallback is None or fallback.empty:
+        return prepared if prepared is not None else _empty_dashboard_df("dt")
+    fallback = fallback.copy()
+    fallback["bo_phan"] = "Tất cả bộ phận"
+    fallback["so_luong_nhan_su"] = pd.to_numeric(fallback.get("tong_so_cuoc", 0), errors="coerce").fillna(0)
+    fallback["so_vao_lam"] = 0
+    fallback["so_nghi_viec"] = 0
+    fallback["so_duoi_1_nam"] = 0
+    fallback["so_tu_1_den_3_nam"] = 0
+    fallback["so_tren_3_nam"] = 0
+    fallback["headcount_dau_ky"] = fallback["so_luong_nhan_su"]
+    fallback["so_giu_on_dinh"] = fallback["so_luong_nhan_su"]
+    fallback["bien_dong_thuan"] = 0
+    fallback["ty_le_tang"] = 0
+    fallback["ty_le_giam"] = 0
+    fallback["ty_le_giu_chan"] = 100
+    return fallback
+
+def _proxy_source_df() -> pd.DataFrame:
+    source = pd.DataFrame()
+    if not df_dt.empty:
+        source = df_dt.copy()
+    elif not df_hd.empty:
+        source = df_hd.copy()
+    elif not df_lh.empty:
+        source = df_lh.copy()
+    if source.empty:
+        return _empty_dashboard_df("dt")
+    if "tong_doanh_thu" not in source.columns:
+        source["tong_doanh_thu"] = 0
+    if "tong_so_cuoc" not in source.columns:
+        source["tong_so_cuoc"] = 0
+    base = source.groupby(["thang_nam_vn", "thang_label", "nam", "khu_vuc"], as_index=False).agg({
+        "tong_doanh_thu": "sum",
+        "tong_so_cuoc": "sum"
+    })
+    base["thang_nam"] = base["thang_nam_vn"]
+    return base[["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "tong_doanh_thu", "tong_so_cuoc"]].copy()
+
+_PROXY_BASE = _proxy_source_df()
+
+def _build_proxy_menu_dataset(menu_key: str) -> pd.DataFrame:
+    if _PROXY_BASE.empty:
+        return _empty_dashboard_df("dt")
+    g = _PROXY_BASE.copy()
+    month_no = pd.to_datetime(g["thang_nam_vn"]).dt.month.astype(float)
+    region_values = sorted(g["khu_vuc"].astype(str).dropna().unique().tolist())
+    region_order = {r: i + 1 for i, r in enumerate(region_values)}
+    region_idx = g["khu_vuc"].astype(str).map(region_order).fillna(1).astype(float)
+    rev = pd.to_numeric(g["tong_doanh_thu"], errors="coerce").fillna(0.0)
+    trips = pd.to_numeric(g["tong_so_cuoc"], errors="coerce").fillna(0.0)
+    if float(trips.max()) <= 0:
+        trips = np.maximum(rev / 500000.0, 1)
+    phase_map = {
+        "emp": 0.25,
+        "drv": 0.75,
+        "mkt": 1.10,
+        "bb": 1.45,
+        "xdt": 1.80,
+        "xpq": 2.20,
+    }
+    season = 1.0 + 0.08 * np.sin((month_no - 1.0) / 12.0 * 2.0 * np.pi + phase_map.get(menu_key, 0.0))
+    region_adj = 1.0 + region_idx * 0.012
+
+    out = g.copy()
+    if menu_key == "emp":
+        out["tong_doanh_thu"] = np.round(np.maximum(rev * 0.082 * season * region_adj, 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(18, (trips / 185.0) * season * (1.0 + region_idx * 0.010)))
+    elif menu_key == "drv":
+        out["tong_doanh_thu"] = np.round(np.maximum(rev * 0.116 * season * region_adj, 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(24, (trips / 120.0) * season * (1.0 + region_idx * 0.012)))
+    elif menu_key == "mkt":
+        out["tong_doanh_thu"] = np.round(np.maximum((trips / 12.0) * season * (28.0 + region_idx * 1.8), 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(3, (trips / 760.0) * season))
+    elif menu_key == "bb":
+        out["tong_doanh_thu"] = np.round(np.maximum((trips / 640.0) * (3200000.0 + region_idx * 150000.0) * season, 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(2, (trips / 680.0) * season))
+    elif menu_key == "xdt":
+        out["tong_doanh_thu"] = np.round(np.maximum(rev * 0.128 * season * region_adj, 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(9, (trips / 235.0) * season))
+    elif menu_key == "xpq":
+        out["tong_doanh_thu"] = np.round(np.maximum(rev * 0.096 * season * region_adj, 0))
+        out["tong_so_cuoc"] = np.round(np.maximum(7, (trips / 265.0) * season))
+    else:
+        return _empty_dashboard_df("dt")
+
+    cols = ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "tong_doanh_thu", "tong_so_cuoc"]
+    return out[cols].copy()
+
+OPTIONAL_MENU_SHEET_CANDIDATES = {
+    "emp": ["NhanSu_NhanVien_KV_Thang", "QuanLyNhanVien_KV_Thang", "NhanVien_KV_Thang"],
+    "drv": ["NhanSu_TaiXe_KV_Thang", "QuanLyTaiXe_KV_Thang", "TaiXe_KV_Thang"],
+    "mkt": ["KinhDoanh_DiemTiepThi_KV_Thang", "DiemTiepThi_KV_Thang", "TiepThi_KV_Thang"],
+    "bb": ["KinhDoanh_BienBan_KV_Thang", "BienBan_KV_Thang"],
+    "xdt": ["PhuongTien_XeTrucThuoc_KV_Thang", "XeTrucThuoc_KV_Thang"],
+    "xpq": ["PhuongTien_XePhanQuyen_KV_Thang", "XePhanQuyen_KV_Thang"],
+}
+
+def _optional_or_proxy_menu_df(menu_key: str) -> pd.DataFrame:
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []))
+    prepared = _prepare_optional_menu_df(raw)
+    if prepared is None or prepared.empty:
+        return _build_proxy_menu_dataset(menu_key)
+    return prepared
+
+
+def _optional_or_proxy_marketing_menu_df() -> pd.DataFrame:
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get("mkt", []))
+    prepared = _prepare_marketing_menu_df(raw)
+    if prepared is None or prepared.empty:
+        return _build_proxy_menu_dataset("mkt")
+    return prepared
+
+
+def _optional_or_proxy_vehicle_menu_df(menu_key: str) -> pd.DataFrame:
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []))
+    prepared = _prepare_vehicle_menu_df(raw)
+    if prepared is None or prepared.empty:
+        return _build_proxy_menu_dataset(menu_key)
+    return prepared
+
+
+df_emp = _optional_or_proxy_hr_menu_df("emp")
+df_drv = _optional_or_proxy_hr_menu_df("drv")
+try:
+    print(f"[HR LOAD] emp_rows={len(df_emp)} drv_rows={len(df_drv)} emp_headcount={pd.to_numeric(df_emp.get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f} drv_headcount={pd.to_numeric(df_drv.get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f}")
+except Exception:
+    pass
+df_mkt = _optional_or_proxy_marketing_menu_df()
+df_bb = _optional_or_proxy_bienban_menu_df()
+df_xdt = _optional_or_proxy_vehicle_menu_df("xdt")
+df_xpq = _optional_or_proxy_vehicle_menu_df("xpq")
+
+def _build_vehicle_type_options(dff: pd.DataFrame):
+    if dff is None or dff.empty or "loai_xe" not in dff.columns:
+        return []
+    metric_col = "so_luong_xe" if "so_luong_xe" in dff.columns else ("tong_so_cuoc" if "tong_so_cuoc" in dff.columns else None)
+    if metric_col:
+        order = dff.groupby("loai_xe", as_index=False)[metric_col].sum().sort_values(metric_col, ascending=False)["loai_xe"].astype(str).tolist()
+    else:
+        order = sorted(dff["loai_xe"].astype(str).dropna().unique().tolist())
+    return [{"label": x, "value": x} for x in order if str(x).strip()]
+
+VEHICLE_TYPE_OPTIONS = {
+    "xdt": _build_vehicle_type_options(df_xdt),
+    "xpq": _build_vehicle_type_options(df_xpq),
+}
+
+
+def _build_vehicle_seat_options(dff: pd.DataFrame):
+    if dff is None or dff.empty:
+        return []
+    if "so_cho_loc" in dff.columns:
+        seat_series = pd.to_numeric(dff["so_cho_loc"], errors="coerce").fillna(0).round().astype(int)
+    elif "so_cho_binh_quan_xe" in dff.columns:
+        seat_series = pd.to_numeric(dff["so_cho_binh_quan_xe"], errors="coerce").fillna(0).round().astype(int)
+    else:
+        return []
+    temp = dff.copy()
+    temp["so_cho_loc"] = seat_series
+    temp = temp[temp["so_cho_loc"] > 0].copy()
+    if temp.empty:
+        return []
+    metric_col = "so_luong_xe" if "so_luong_xe" in temp.columns else ("tong_doanh_thu" if "tong_doanh_thu" in temp.columns else None)
+    if metric_col:
+        order = temp.groupby("so_cho_loc", as_index=False)[metric_col].sum().sort_values(["so_cho_loc"], ascending=[True])["so_cho_loc"].astype(int).tolist()
+    else:
+        order = sorted(temp["so_cho_loc"].dropna().astype(int).unique().tolist())
+    return [{"label": f"{int(x)} chỗ", "value": int(x)} for x in order if int(x) > 0]
+
+
+VEHICLE_SEAT_OPTIONS = {
+    "xdt": _build_vehicle_seat_options(df_xdt),
+    "xpq": _build_vehicle_seat_options(df_xpq),
+}
+
+DASH_PREFIXES = ["dt", "lh", "hd", "emp", "drv", "mkt", "bb", "xdt", "xpq"]
+DASH_DATASETS = [df_dt, df_lh, df_hd, df_emp, df_drv, df_mkt, df_bb, df_xdt, df_xpq]
+
+_all_months = pd.concat([dff["thang_nam_vn"] for dff in DASH_DATASETS], ignore_index=True)
+MONTH_OPTIONS_ALL = (
+    _all_months.dropna()
+              .drop_duplicates()
+              .sort_values()
+              .dt.strftime("%m/%Y")
+              .tolist()
+)
+
+_all_years = pd.concat([dff["nam"] for dff in DASH_DATASETS], ignore_index=True)
+YEAR_OPTIONS_ALL = sorted(_all_years.dropna().astype(int).drop_duplicates().tolist())
+DEFAULT_YEAR = YEAR_OPTIONS_ALL[-1] if YEAR_OPTIONS_ALL else None
+
+_all_month_df = pd.DataFrame({"thang_nam_vn": _all_months.dropna()})
+_all_month_df["nam"] = _all_month_df["thang_nam_vn"].dt.year
+_all_month_df["thang_label"] = _all_month_df["thang_nam_vn"].dt.strftime("%m/%Y")
+MONTH_OPTIONS_BY_YEAR = {
+    int(y): _all_month_df[_all_month_df["nam"] == y]["thang_nam_vn"]
+                .drop_duplicates()
+                .sort_values()
+                .dt.strftime("%m/%Y")
+                .tolist()
+    for y in YEAR_OPTIONS_ALL
+}
+
+LH_COL_RAW = find_col(df_lh, [
+    "loaihinh_hoptac",
+    "loai_hinh", "loại_hình", "loaihinh", "loai hinh", "type", "loai"
+])
+
+HD_COL_RAW = find_col(df_hd, [
+    "loai_hopdong",
+    "loai_hop_dong", "loại_hợp_đồng", "loai hop dong",
+    "loaihd", "loai_hd", "phan_loai", "nhom_hop_dong"
+])
+
+if LH_COL_RAW and LH_COL_RAW in df_lh.columns:
+    df_lh["loai_hinh_std"] = map_to_canon(df_lh[LH_COL_RAW], LH_MAP)
+else:
+    df_lh["loai_hinh_std"] = "Khác"
+
+if HD_COL_RAW and HD_COL_RAW in df_hd.columns:
+    df_hd["loai_hop_dong_std"] = map_to_canon(df_hd[HD_COL_RAW], HD_MAP)
+else:
+    df_hd["loai_hop_dong_std"] = "Khác"
+
+LH_COL = "loai_hinh_std"
+HD_COL = "loai_hop_dong_std"
+
+LH_OPTIONS = [{"label": x, "value": x} for x in (LH_CANON + ["Khác"])]
+HD_OPTIONS = [{"label": x, "value": x} for x in (HD_CANON + ["Khác"])]
+
+DARK_BG = "#1e1e2f"
+LIGHT_BG = "#ffffff"
+
+REGION_PALETTE = (
+    px.colors.qualitative.Bold
+    + px.colors.qualitative.D3
+    + px.colors.qualitative.Dark24
+    + px.colors.qualitative.Alphabet
+)
+
+ALL_REGIONS = sorted(
+    set().union(*[
+        set(dff.get("khu_vuc", pd.Series(dtype=str)).astype(str).dropna().unique().tolist())
+        for dff in DASH_DATASETS
+    ])
+)
+
+REGION_COLOR_MAP = {r: REGION_PALETTE[i % len(REGION_PALETTE)] for i, r in enumerate(ALL_REGIONS)}
+REGION_COLOR_MAP["Khác"] = "#9aa0a6"
+
+def get_scoped_all_regions() -> list[str]:
+    scope = current_user_region_scope()
+    if scope is None:
+        return ALL_REGIONS.copy()
+    scope_set = {str(x) for x in scope}
+    return [r for r in ALL_REGIONS if str(r) in scope_set]
+
+def get_scoped_regions_from_df(dff: pd.DataFrame) -> list[str]:
+    scoped = apply_region_scope_to_df(dff)
+    if scoped is None or scoped.empty or "khu_vuc" not in scoped.columns:
+        return []
+    return sorted(scoped["khu_vuc"].astype(str).dropna().unique().tolist())
+
+def get_scoped_menu_df(prefix: str) -> pd.DataFrame:
+    cfg = get_menu_config(prefix)
+    return apply_region_scope_to_df(cfg["df"])
+
+def get_scoped_vehicle_type_options(prefix: str):
+    return _build_vehicle_type_options(get_scoped_menu_df(prefix))
+
+def get_scoped_vehicle_seat_options(prefix: str):
+    return _build_vehicle_seat_options(get_scoped_menu_df(prefix))
+
+def get_scoped_hr_dept_options(prefix: str):
+    dff = get_scoped_menu_df(prefix)
+    if dff is None or dff.empty or "bo_phan" not in dff.columns:
+        return []
+    vals = sorted(dff["bo_phan"].astype(str).dropna().unique().tolist())
+    return [{"label": x, "value": x} for x in vals if str(x).strip()]
+
+HR_MENU_PREFIXES = ["emp", "drv"]
+FLEET_MENU_PREFIXES = ["xdt", "xpq"]
+HR_DEPT_OPTIONS = {
+    "emp": [{"label": x, "value": x} for x in sorted(df_emp.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()],
+    "drv": [{"label": x, "value": x} for x in sorted(df_drv.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()],
+}
+
+
+def _swatch(color: str):
+    return html.Span(
+        style={
+            "display": "inline-block",
+            "width": "10px",
+            "height": "10px",
+            "borderRadius": "3px",
+            "backgroundColor": color,
+            "marginRight": "6px",
+            "verticalAlign": "middle",
+        }
+    )
+
+def _ellipsis_div(children):
+    return html.Div(
+        children,
+        style={
+            "fontSize": "12px",
+            "opacity": 0.92,
+            "whiteSpace": "nowrap",
+            "overflow": "hidden",
+            "textOverflow": "ellipsis",
+            "lineHeight": "1.25",
+        },
+    )
+
+def region_payload_value(dff: pd.DataFrame, metric_col: str, selected_regions=None, max_items=None):
+    if dff is None or dff.empty or "khu_vuc" not in dff.columns or metric_col not in dff.columns:
+        return []
+    tmp = dff.copy()
+    if selected_regions:
+        sel = [str(x) for x in (selected_regions if isinstance(selected_regions, list) else [selected_regions])]
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(sel)]
+    if tmp.empty:
+        return []
+    g = tmp.groupby("khu_vuc", as_index=False)[metric_col].sum().sort_values(metric_col, ascending=False)
+    if max_items is not None and int(max_items) > 0:
+        g = g.head(int(max_items))
+    total = float(g[metric_col].sum()) if not g.empty else 0.0
+    rows = []
+    for _, r in g.iterrows():
+        name = str(r["khu_vuc"])
+        val = float(r[metric_col]) if r[metric_col] is not None else 0.0
+        pct = (val / total * 100.0) if total > 0 else 0.0
+        rows.append({
+            "khu_vuc": name,
+            "value": val,
+            "value_fmt": fmt_vn(val),
+            "pct": pct,
+            "color": REGION_COLOR_MAP.get(name, "#888")
+        })
+    return rows
+
+def region_payload_avg_revenue_per_trip(dff: pd.DataFrame, revenue_col: str, selected_regions=None, max_items=None):
+    if dff is None or dff.empty or "khu_vuc" not in dff.columns:
+        return []
+    if revenue_col not in dff.columns or "tong_so_cuoc" not in dff.columns:
+        return []
+    tmp = dff.copy()
+    if selected_regions:
+        sel = [str(x) for x in (selected_regions if isinstance(selected_regions, list) else [selected_regions])]
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(sel)]
+    if tmp.empty:
+        return []
+    g = tmp.groupby("khu_vuc", as_index=False).agg({revenue_col: "sum", "tong_so_cuoc": "sum"})
+    g["avg"] = g[revenue_col] / g["tong_so_cuoc"].replace(0, 1)
+    g = g.sort_values("avg", ascending=False)
+    if max_items is not None and int(max_items) > 0:
+        g = g.head(int(max_items))
+    rows = []
+    for _, r in g.iterrows():
+        name = str(r["khu_vuc"])
+        avg = float(r["avg"]) if r["avg"] is not None else 0.0
+        rows.append({
+            "khu_vuc": name,
+            "avg": avg,
+            "avg_fmt": fmt_vn(avg),
+            "color": REGION_COLOR_MAP.get(name, "#888")
+        })
+    return rows
+
+def region_payload_avg_trips_per_month(dff: pd.DataFrame, selected_regions=None, max_items=None):
+    if dff is None or dff.empty or "khu_vuc" not in dff.columns:
+        return []
+    if "tong_so_cuoc" not in dff.columns:
+        return []
+    tmp = dff.copy()
+    if selected_regions:
+        sel = [str(x) for x in (selected_regions if isinstance(selected_regions, list) else [selected_regions])]
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(sel)]
+    if tmp.empty:
+        return []
+    months_n = int(tmp["thang_label"].nunique()) if "thang_label" in tmp.columns else 1
+    months_n = max(months_n, 1)
+    g = tmp.groupby("khu_vuc", as_index=False)["tong_so_cuoc"].sum()
+    g["avg"] = g["tong_so_cuoc"] / months_n
+    g = g.sort_values("avg", ascending=False)
+    if max_items is not None and int(max_items) > 0:
+        g = g.head(int(max_items))
+    rows = []
+    for _, r in g.iterrows():
+        name = str(r["khu_vuc"])
+        avg = float(r["avg"]) if r["avg"] is not None else 0.0
+        rows.append({
+            "khu_vuc": name,
+            "avg": avg,
+            "avg_fmt": fmt_vn(avg),
+            "color": REGION_COLOR_MAP.get(name, "#888")
+        })
+    return rows
+
+def region_payload_avg_metric_per_month(dff: pd.DataFrame, metric_col: str, selected_regions=None, max_items=None):
+    if dff is None or dff.empty or "khu_vuc" not in dff.columns or metric_col not in dff.columns:
+        return []
+    tmp = dff.copy()
+    if selected_regions:
+        sel = [str(x) for x in (selected_regions if isinstance(selected_regions, list) else [selected_regions])]
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(sel)]
+    if tmp.empty:
+        return []
+    months_n = int(tmp["thang_label"].nunique()) if "thang_label" in tmp.columns else 1
+    months_n = max(months_n, 1)
+    g = tmp.groupby("khu_vuc", as_index=False)[metric_col].sum()
+    g["avg"] = g[metric_col] / months_n
+    g = g.sort_values("avg", ascending=False)
+    if max_items is not None and int(max_items) > 0:
+        g = g.head(int(max_items))
+    rows = []
+    for _, r in g.iterrows():
+        name = str(r["khu_vuc"])
+        avg = float(r["avg"]) if r["avg"] is not None else 0.0
+        rows.append({
+            "khu_vuc": name,
+            "avg": avg,
+            "avg_fmt": fmt_vn(avg),
+            "color": REGION_COLOR_MAP.get(name, "#888")
+        })
+    return rows
+
+def region_payload_avg_ratio(dff: pd.DataFrame, numerator_col: str, denominator_col: str, selected_regions=None, max_items=None):
+    if dff is None or dff.empty or "khu_vuc" not in dff.columns:
+        return []
+    if numerator_col not in dff.columns or denominator_col not in dff.columns:
+        return []
+    tmp = dff.copy()
+    if selected_regions:
+        sel = [str(x) for x in (selected_regions if isinstance(selected_regions, list) else [selected_regions])]
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(sel)]
+    if tmp.empty:
+        return []
+    g = tmp.groupby("khu_vuc", as_index=False).agg({numerator_col: "sum", denominator_col: "sum"})
+    g["avg"] = g[numerator_col] / g[denominator_col].replace(0, 1)
+    g = g.sort_values("avg", ascending=False)
+    if max_items is not None and int(max_items) > 0:
+        g = g.head(int(max_items))
+    rows = []
+    for _, r in g.iterrows():
+        name = str(r["khu_vuc"])
+        avg = float(r["avg"]) if r["avg"] is not None else 0.0
+        rows.append({
+            "khu_vuc": name,
+            "avg": avg,
+            "avg_fmt": fmt_vn(avg),
+            "color": REGION_COLOR_MAP.get(name, "#888")
+        })
+    return rows
+
+def region_value_lines_from_payload(payload, max_lines=6, value_key="value_fmt", pct_key="pct"):
+    if not payload:
+        return []
+    lines = []
+    for r in payload[:max_lines]:
+        name = r.get("khu_vuc", "")
+        color = r.get("color", "#888")
+        val = r.get(value_key, "0")
+        pct = r.get(pct_key, None)
+        lines.append(
+            _ellipsis_div([
+                _swatch(color),
+                f"{name}: {val}",
+                html.Span(f" ({pct:.1f}%)", style={"opacity": 0.75}) if pct is not None else None
+            ])
+        )
+    return lines
+
+def kpi_content(main_text: str, subtitle_text: str = "", extra_lines=None):
+    extra_lines = extra_lines or []
+    return html.Div([
+        html.Div(main_text, style={"fontSize": "28px", "fontWeight": "800", "lineHeight": "1.1", "color": TEXT_LIGHT_UI}),
+        html.Div(subtitle_text, style={"fontSize": "12px", "opacity": 0.85, "marginTop": "4px", "fontWeight": "600", "color": MUTED_LIGHT_UI}) if subtitle_text else None,
+        html.Div(extra_lines, style={"marginTop": "8px"}) if extra_lines else None
+    ])
+
+
+DROPDOWN_FIX_CSS = """
+.Select-menu-outer .Select-option,
+.Select-menu-outer .VirtualizedSelectOption,
+.VirtualizedSelectOption {
+  color: #000000 !important;
+  opacity: 1 !important;
+}
+.Select-option.is-focused,
+.VirtualizedSelectFocusedOption { color: #000000 !important; }
+.Select-option.is-selected,
+.VirtualizedSelectSelectedOption { color: #000000 !important; }
+.Select-menu-outer .Select-input > input { color: #000000 !important; opacity: 1 !important; }
+"""
+
+PAGINATION_PRO_CSS = """
+.page-nav-btn{
+  position:fixed !important;
+  top:50% !important;
+  transform:translateY(-50%) !important;
+  z-index:9999 !important;
+  width:48px;
+  height:48px;
+  padding:0 !important;
+  border-radius:999px;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  background:rgba(20,20,35,0.16) !important;
+  border:1px solid rgba(170,170,220,0.20) !important;
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+  box-shadow:
+    0 10px 26px rgba(0,0,0,0.26),
+    0 0 0 rgba(90,80,255,0);
+  color:rgba(255,255,255,0.55) !important;
+  font-weight:300 !important;
+  font-size:28px !important;
+  line-height:1 !important;
+  opacity:0.44;
+  cursor:pointer;
+  transition:
+    opacity 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 220ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+  user-select:none;
+}
+.page-nav-btn:hover{
+  opacity:0.96;
+  background:rgba(20,20,35,0.46) !important;
+  border-color:rgba(150,140,255,0.55) !important;
+  color:rgba(255,255,255,0.96) !important;
+  box-shadow:
+    0 14px 34px rgba(0,0,0,0.40),
+    0 0 32px rgba(90,80,255,0.20);
+  transform:translateY(-50%) scale(1.04) !important;
+}
+.page-nav-btn:active{
+  transform:translateY(-50%) scale(0.98) !important;
+  opacity:0.92;
+}
+.page-nav-btn:focus{
+  outline:none !important;
+  box-shadow:
+    0 14px 34px rgba(0,0,0,0.40),
+    0 0 0 3px rgba(120,120,255,0.18),
+    0 0 34px rgba(90,80,255,0.20);
+}
+.page-nav-left{ left:16px !important; }
+.page-nav-right{ right:16px !important; }
+@media (max-width: 576px){
+  .page-nav-btn{
+    width:44px;
+    height:44px;
+    font-size:26px !important;
+  }
+  .page-nav-left{ left:10px !important; }
+  .page-nav-right{ right:10px !important; }
+}
+"""
+
+AI_CHAT_CSS = """
+.ai-panel-intro{
+  background: linear-gradient(135deg, #0f172a 0%, #14532d 55%, #16a34a 100%);
+  border-radius: 24px;
+  padding: 18px 18px 16px;
+  color: #ffffff;
+  box-shadow: 0 22px 45px rgba(15,23,42,0.18);
+  position: relative;
+  overflow: hidden;
+}
+.ai-panel-intro::after{
+  content:"";
+  position:absolute;
+  right:-32px;
+  top:-32px;
+  width:140px;
+  height:140px;
+  border-radius:50%;
+  background: rgba(255,255,255,0.08);
+}
+.ai-panel-kicker{
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  opacity: 0.92;
+}
+.ai-panel-title{
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 900;
+  margin-top: 6px;
+}
+.ai-panel-subtitle{
+  font-size: 13px;
+  line-height: 1.55;
+  opacity: 0.92;
+  margin-top: 8px;
+  max-width: 96%;
+}
+.ai-scope-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top: 12px;
+}
+.ai-scope-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  border:1px solid rgba(255,255,255,0.20);
+  background: rgba(255,255,255,0.12);
+  color:#ffffff;
+}
+.ai-compose-shell{
+  margin-top: 14px;
+  background: linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  border: 1px solid #e3ebf3;
+  border-radius: 24px;
+  padding: 14px 14px 16px;
+  box-shadow: 0 18px 36px rgba(15,23,42,0.08);
+}
+.ai-compose-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+.ai-compose-title{
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: .6px;
+  color: #0f172a;
+  text-transform: uppercase;
+}
+.ai-compose-caption{
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 3px;
+  line-height: 1.45;
+}
+.ai-compose-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid #d1fae5;
+  background:#ecfdf5;
+  color:#166534;
+  font-size:11px;
+  font-weight:900;
+  white-space:nowrap;
+}
+#ai-input{
+  min-height: 118px !important;
+  resize: vertical;
+  background: linear-gradient(180deg,#ffffff 0%, #fbfdff 100%) !important;
+  color: #0f172a !important;
+  border: 1.5px solid #dce7f3 !important;
+  border-radius: 20px !important;
+  box-shadow: inset 0 1px 2px rgba(15,23,42,0.03), 0 8px 18px rgba(15,23,42,0.04) !important;
+  padding: 14px 16px !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+}
+#ai-input:focus{
+  border-color: #22c55e !important;
+  box-shadow: 0 0 0 4px rgba(34,197,94,0.10), 0 14px 28px rgba(15,23,42,0.08) !important;
+  outline: none !important;
+}
+.ai-action-btn{
+  border-radius: 16px !important;
+  padding: 11px 14px !important;
+  font-weight: 900 !important;
+  box-shadow: 0 12px 26px rgba(15,23,42,0.08);
+}
+.ai-send-btn{
+  background: linear-gradient(135deg,#16a34a 0%, #15803d 100%) !important;
+  border: 1px solid #15803d !important;
+}
+.ai-send-btn:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px rgba(22,163,74,0.18);
+}
+.ai-clear-btn{
+  background: #ffffff !important;
+  color: #334155 !important;
+  border: 1px solid #d9e3ef !important;
+}
+.ai-clear-btn:hover{
+  border-color: #cbd5e1 !important;
+  background: #f8fafc !important;
+}
+.ai-suggestion-shell{
+  margin-top: 14px;
+  background:#ffffff;
+  border:1px solid #e7eef6;
+  border-radius:24px;
+  padding:14px 14px 12px;
+  box-shadow:0 14px 30px rgba(15,23,42,0.06);
+}
+.ai-suggestion-title{
+  font-size:12px;
+  font-weight:900;
+  color:#0f172a;
+  letter-spacing:.6px;
+  text-transform:uppercase;
+  margin-bottom:8px;
+}
+.ai-wrap{
+  margin-top: 4px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.ai-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:800;
+  cursor:pointer;
+  border:1px solid #d9e7da;
+  background:linear-gradient(180deg,#ffffff 0%, #f5fbf7 100%);
+  color:#166534;
+  transition: all .18s ease;
+  box-shadow:0 8px 16px rgba(15,23,42,0.04);
+}
+.ai-chip:hover{
+  transform: translateY(-1px);
+  border-color:#22c55e;
+  box-shadow:0 12px 22px rgba(34,197,94,0.10);
+}
+.ai-thread-note{
+  margin-top: 14px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #64748b;
+}
+.ai-output-shell{
+  margin-top: 10px;
+  background: linear-gradient(180deg,#f8fbff 0%, #ffffff 100%);
+  border: 1px solid #e4edf5;
+  border-radius: 26px;
+  padding: 14px;
+  min-height: 340px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 18px 35px rgba(15,23,42,0.07);
+}
+.ai-thread{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.ai-row{
+  display:flex;
+  gap:10px;
+  align-items:flex-end;
+}
+.ai-row.user{
+  flex-direction:row-reverse;
+}
+.ai-avatar{
+  width:38px;
+  height:38px;
+  border-radius:14px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 38px;
+  box-shadow:0 12px 22px rgba(15,23,42,0.14);
+}
+.ai-row.user .ai-avatar{
+  background: linear-gradient(135deg,#0f172a 0%, #334155 100%);
+}
+.ai-row.bot .ai-avatar{
+  background: linear-gradient(135deg,#16a34a 0%, #0f766e 100%);
+}
+.ai-bubble{
+  max-width: calc(100% - 52px);
+  padding: 14px 16px;
+  border-radius: 20px;
+  box-shadow: 0 18px 32px rgba(15,23,42,0.08);
+}
+.ai-row.user .ai-bubble{
+  background: linear-gradient(135deg,#0f172a 0%, #1e293b 100%);
+  color:#ffffff;
+  border:1px solid rgba(15,23,42,0.06);
+  border-bottom-right-radius:8px;
+}
+.ai-row.bot .ai-bubble{
+  background:#ffffff;
+  color:#0f172a;
+  border:1px solid #e4edf5;
+  border-bottom-left-radius:8px;
+}
+.ai-bubble-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+.ai-role{
+  font-size:12px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.7px;
+}
+.ai-row.user .ai-role{ color: rgba(255,255,255,0.9); }
+.ai-row.bot .ai-role{ color: #166534; }
+.ai-time{
+  font-size:11px;
+  font-weight:800;
+  opacity:0.72;
+  white-space:nowrap;
+}
+.ai-bubble-body{
+  font-size:13px;
+  line-height:1.62;
+}
+.ai-bubble-body p{ margin-bottom: .55rem; }
+.ai-bubble-body p:last-child{ margin-bottom: 0; }
+.ai-bubble-body ul,
+.ai-bubble-body ol{
+  padding-left: 1.15rem;
+  margin-bottom: .6rem;
+}
+.ai-bubble-body li{ margin-bottom: .2rem; }
+.ai-bubble-body code{
+  background:#f1f5f9;
+  color:#0f172a;
+  border-radius:8px;
+  padding:2px 6px;
+  font-size:12px;
+}
+.ai-bubble-body strong{ font-weight: 900; }
+.ai-row.user .ai-bubble-body code{
+  background: rgba(255,255,255,0.14);
+  color:#ffffff;
+}
+.ai-meta-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:10px;
+}
+.ai-mini-badge{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+}
+.ai-mini-badge.accent{
+  background:#dcfce7;
+  color:#166534;
+  border:1px solid #bbf7d0;
+}
+.ai-mini-badge.soft{
+  background:#f8fafc;
+  color:#475569;
+  border:1px solid #e2e8f0;
+}
+.ai-empty-state{
+  min-height: 300px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  padding: 18px;
+}
+.ai-empty-icon{
+  width:58px;
+  height:58px;
+  border-radius:20px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:linear-gradient(135deg,#16a34a 0%, #0f766e 100%);
+  color:#ffffff;
+  box-shadow:0 16px 28px rgba(22,163,74,0.18);
+  margin-bottom:12px;
+}
+.ai-empty-title{
+  font-size:16px;
+  font-weight:900;
+  color:#0f172a;
+}
+.ai-empty-text{
+  font-size:13px;
+  color:#64748b;
+  line-height:1.6;
+  max-width:280px;
+  margin-top:6px;
+}
+@media (max-width: 576px){
+  .ai-bubble{ max-width: calc(100% - 46px); }
+  .ai-output-shell{ min-height: 280px; }
+}
+"""
+
+GREEN_UI_CSS = """
+.dash-graph{
+  background: #ffffff;
+  border: 1.5px solid #22c55e !important;
+  border-radius: 18px;
+  padding: 6px;
+  box-shadow: 0 8px 20px rgba(34,197,94,0.12);
+}
+.dash-graph .js-plotly-plot,
+.dash-graph .plot-container,
+.dash-graph .svg-container{
+  border-radius: 12px !important;
+  overflow: visible !important;
+}
+.dash-graph .main-svg{
+  border-radius: 12px !important;
+}
+#zoom-graph{
+  border: 1.5px solid #22c55e !important;
+  border-radius: 16px;
+  box-shadow: 0 8px 20px rgba(34,197,94,0.12);
+  background: #fff;
+}
+.Select-control,
+.Select-menu-outer{
+  border-color: #22c55e !important;
+}
+.Select-control{
+  box-shadow: none !important;
+}
+.Select.is-focused > .Select-control,
+.is-focused:not(.is-open) > .Select-control{
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 2px rgba(34,197,94,0.15) !important;
+}
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table{
+  border: 1px solid #dfe5ef;
+}
+"""
+
+EXECUTIVE_UI_CSS = """
+.exec-header-card{
+  background: linear-gradient(135deg, #0f172a 0%, #14532d 55%, #16a34a 100%);
+  color:#ffffff;
+  border-radius:28px;
+  padding:24px 28px;
+  box-shadow:0 28px 60px rgba(15,23,42,0.18);
+  position:relative;
+  overflow:hidden;
+  margin-bottom:16px;
+}
+.exec-header-card::after{
+  content:"";
+  position:absolute;
+  top:-40px;
+  right:-40px;
+  width:180px;
+  height:180px;
+  border-radius:50%;
+  background:rgba(255,255,255,0.08);
+}
+.exec-title{
+  font-size:32px;
+  font-weight:900;
+  line-height:1.08;
+  letter-spacing:0.2px;
+}
+.exec-subtitle{
+  margin-top:8px;
+  opacity:0.9;
+  font-size:14px;
+  max-width:760px;
+}
+.exec-chip-row{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.exec-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 14px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:800;
+  background:rgba(255,255,255,0.12);
+  border:1px solid rgba(255,255,255,0.18);
+  color:#ffffff;
+  white-space:nowrap;
+}
+.quick-nav-btn{
+  border-radius:18px !important;
+  padding:14px 16px !important;
+  font-weight:800 !important;
+  border:1px solid #e2e8f0 !important;
+  background:#ffffff !important;
+  color:#0f172a !important;
+  box-shadow:0 10px 24px rgba(15,23,42,0.06);
+}
+.quick-nav-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 14px 30px rgba(15,23,42,0.10);
+  border-color:#22c55e !important;
+}
+.executive-kpi-card,
+.executive-table-card{
+  border:1px solid #e5edf5 !important;
+  border-radius:22px !important;
+  box-shadow:0 16px 38px rgba(15,23,42,0.07) !important;
+  overflow:hidden;
+  background:#ffffff !important;
+}
+.executive-graph-card{
+  border:1px solid #e5edf5 !important;
+  border-radius:22px !important;
+  box-shadow:0 16px 38px rgba(15,23,42,0.07) !important;
+  overflow:visible !important;
+  background:#ffffff !important;
+}
+.executive-graph-card .card-body,
+.executive-graph-card .dash-graph{
+  overflow: visible !important;
+}
+.kpi-top-accent{
+  height:5px;
+  background:linear-gradient(90deg,#16a34a 0%, #22c55e 60%, #86efac 100%);
+}
+.section-eyebrow{
+  display:inline-block;
+  padding:6px 12px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:.6px;
+  color:#166534;
+  background:#dcfce7;
+  border:1px solid #bbf7d0;
+  margin-bottom:10px;
+  text-transform:uppercase;
+}
+.kpi-card-title{
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:.6px;
+  color:#64748b;
+  text-transform:uppercase;
+}
+.kpi-delta-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+}
+.kpi-delta-pill.positive{
+  color:#166534;
+  background:#dcfce7;
+}
+.kpi-delta-pill.negative{
+  color:#b91c1c;
+  background:#fee2e2;
+}
+.kpi-delta-pill.neutral{
+  color:#475569;
+  background:#f1f5f9;
+}
+.summary-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  background:#ffffff;
+  border:1px solid #e2e8f0;
+  font-size:12px;
+  font-weight:800;
+  color:#334155;
+  box-shadow:0 10px 18px rgba(15,23,42,0.05);
+}
+.home-mini-note{
+  font-size:12px;
+  color:#64748b;
+  font-weight:700;
+}
+@media (max-width: 768px){
+  .exec-title{ font-size:26px; }
+  .exec-chip-row{ justify-content:flex-start; margin-top:14px; }
+}
+"""
+
+def dropdown_style(theme: str):
+    if theme == "light":
+        return {
+            "backgroundColor": "transparent",
+            "color": "#0f172a",
+            "border": "none",
+            "fontSize": "15px",
+            "fontWeight": "700",
+        }
+    return {
+        "backgroundColor": "transparent",
+        "color": "white",
+        "border": "none",
+        "fontSize": "15px",
+        "fontWeight": "700",
+    }
+
+def dropdown_container_style(theme: str):
+    if theme == "light":
+        return {
+            "background": "linear-gradient(180deg,#ffffff 0%, #f8fbff 100%)",
+            "padding": "14px 14px 12px",
+            "borderRadius": "24px",
+            "border": "1px solid #e3ebf3",
+            "boxShadow": "0 20px 42px rgba(15,23,42,0.08)",
+            "minHeight": "110px",
+        }
+    return {
+        "backgroundColor": "#0f1020",
+        "padding": "14px 14px 12px",
+        "borderRadius": "24px",
+        "border": "1px solid #2b2b47",
+        "boxShadow": "0 14px 28px rgba(90,80,255,0.12)",
+        "minHeight": "110px",
+    }
+
+def filter_label_style(theme: str):
+    return {
+        "fontWeight": "900",
+        "letterSpacing": "0.8px",
+        "opacity": 0.96,
+        "marginBottom": "8px",
+        "fontSize": "11px",
+        "textTransform": "uppercase",
+        "color": GREEN_PRIMARY if theme == "light" else "white"
+    }
+
+def _hex_to_rgba(hex_color: str, alpha: float = 1.0) -> str:
+    try:
+        c = str(hex_color).strip().lstrip("#")
+        if len(c) == 3:
+            c = "".join([ch * 2 for ch in c])
+        if len(c) != 6:
+            raise ValueError("invalid hex")
+        r = int(c[0:2], 16)
+        g = int(c[2:4], 16)
+        b = int(c[4:6], 16)
+        a = max(0.0, min(1.0, float(alpha)))
+        return f"rgba({r},{g},{b},{a})"
+    except Exception:
+        a = max(0.0, min(1.0, float(alpha))) if alpha is not None else 1.0
+        return f"rgba(22,163,74,{a})"
+
+def _chart_title_margin(title: str, base_top: int = 120, min_top: int = 170, extra_per_line: int = 30) -> int:
+    lines = (str(title).count("<br>") + 1) if title else 1
+    return max(min_top, int(base_top) + max(0, lines - 1) * int(extra_per_line))
+
+
+def apply_time_axis(fig):
+    fig.update_xaxes(
+        tickformat="%m/%Y",
+        dtick="M1",
+        ticklabelmode="period",
+        tickangle=0,
+        showgrid=True,
+        automargin=True
+    )
+    for tr in fig.data:
+        t = getattr(tr, "type", "")
+        if t in (None, "scatter"):
+            try:
+                tr.update(xperiod="M1", xperiodalignment="middle")
+            except Exception:
+                pass
+        if t == "bar":
+            tr.update(xperiod="M1", xperiodalignment="middle")
+    return fig
+
+def apply_theme(fig, theme, use_time_axis: bool = True):
+    if use_time_axis:
+        fig = apply_time_axis(fig)
+    base_font_color = "white" if theme == "dark" else "black"
+
+    fig.update_layout(
+        legend_itemclick="toggleothers",
+        legend_itemdoubleclick="toggle",
+        font=dict(
+            family=FONT_UI_FAMILY,
+            size=14,
+            color=base_font_color
+        )
+    )
+
+    if theme == "dark":
+        fig.update_layout(
+            plot_bgcolor=DARK_BG,
+            paper_bgcolor=DARK_BG,
+            xaxis=dict(gridcolor="#333"),
+            yaxis=dict(gridcolor="#333"),
+            legend_title_text="",
+            hovermode="x unified"
+        )
+    else:
+        fig.update_layout(
+            plot_bgcolor=LIGHT_BG,
+            paper_bgcolor=LIGHT_BG,
+            xaxis=dict(
+                gridcolor="#e5e7eb",
+                showline=True,
+                linecolor=GREEN_BORDER,
+                linewidth=1,
+                mirror=False
+            ),
+            yaxis=dict(
+                gridcolor="#e5e7eb",
+                showline=True,
+                linecolor=GREEN_BORDER,
+                linewidth=1,
+                mirror=False
+            ),
+            legend_title_text="",
+            hovermode="x unified"
+        )
+    return fig
+
+def apply_exec_layout(fig, theme="light", title=None, top=120, x_title=None, y_title=None):
+    bg = LIGHT_BG if theme == "light" else DARK_BG
+    fg = "black" if theme == "light" else "white"
+    grid = "#e5e7eb" if theme == "light" else "#333"
+    axis_line = GREEN_BORDER if theme == "light" else "#64748b"
+    title_text = title or ""
+    top2 = _chart_title_margin(title_text, base_top=top, min_top=170, extra_per_line=32)
+
+    fig.update_layout(
+        plot_bgcolor=bg,
+        paper_bgcolor=bg,
+        font=dict(
+            family=FONT_UI_FAMILY,
+            size=14,
+            color=fg
+        ),
+        hovermode="closest",
+        legend_title_text="",
+        margin=dict(l=18, r=18, t=top2, b=22),
+        title=dict(
+            text=title_text,
+            x=0.5,
+            xanchor="center",
+            y=0.962,
+            yanchor="top",
+            pad=dict(t=18, b=18),
+            font=dict(
+                family=FONT_UI_FAMILY,
+                size=16,
+                color=fg
+            )
+        ),
+        title_automargin=True
+    )
+
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=grid,
+        showline=True,
+        linecolor=axis_line,
+        linewidth=1,
+        automargin=True
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=grid,
+        showline=True,
+        linecolor=axis_line,
+        linewidth=1,
+        automargin=True
+    )
+
+    if x_title:
+        try:
+            fig.update_xaxes(title_text=x_title)
+        except Exception:
+            pass
+
+    if y_title:
+        try:
+            fig.update_yaxes(title_text=y_title)
+        except Exception:
+            pass
+
+    return fig
+
+def apply_chart_title(fig, title: str, top: int = 120, y_title: str = None):
+    top2 = _chart_title_margin(title, base_top=top, min_top=180, extra_per_line=32)
+    fig.update_layout(
+        title=dict(
+            text=title,
+            x=0.5,
+            xanchor="center",
+            y=0.962,
+            yanchor="top",
+            pad=dict(t=18, b=18),
+            font=dict(
+                family=FONT_UI_FAMILY,
+                size=16
+            )
+        ),
+        margin=dict(l=16, r=16, t=top2, b=18),
+        title_automargin=True
+    )
+    try:
+        fig.update_xaxes(title_text="Tháng", automargin=True)
+    except Exception:
+        pass
+    if y_title:
+        try:
+            fig.update_yaxes(title_text=y_title, automargin=True)
+        except Exception:
+            pass
+    return fig
+
+def _add_line_point_labels(fig, show_all_if_points_le=10):
+    try:
+        for tr in fig.data:
+            t = getattr(tr, "type", "")
+            if t not in (None, "scatter"):
+                continue
+            ys = getattr(tr, "y", None)
+            if ys is None:
+                continue
+            n = len(ys) if hasattr(ys, "__len__") else 0
+            if n <= 0:
+                continue
+            text_vals = [""] * n
+            if n <= show_all_if_points_le:
+                for i, y in enumerate(ys):
+                    text_vals[i] = fmt_vn(y)
+            else:
+                try:
+                    text_vals[-1] = fmt_vn(ys[-1])
+                except Exception:
+                    pass
+            tr.update(
+                mode="lines+markers+text",
+                text=text_vals,
+                textposition="top center",
+                textfont=dict(size=10),
+                cliponaxis=False,
+            )
+        m = fig.layout.margin if getattr(fig.layout, "margin", None) else None
+        if m:
+            fig.update_layout(
+                margin=dict(
+                    l=m.l or 16,
+                    r=m.r or 16,
+                    t=max(m.t or 190, 220),
+                    b=m.b or 16
+                )
+            )
+    except Exception:
+        pass
+    return fig
+
+def enhance_p1_chart2_total_line(fig, g: pd.DataFrame, x_col: str, y_col: str, metric_label: str, theme: str = "light"):
+    try:
+        if fig is None or g is None or g.empty:
+            return fig
+        if x_col not in g.columns or y_col not in g.columns:
+            return fig
+        gg = g[[x_col, y_col]].copy().sort_values(x_col).reset_index(drop=True)
+        gg["val_fmt_local"] = gg[y_col].apply(fmt_vn)
+        gg["mom_abs"] = gg[y_col].diff()
+        gg["mom_pct"] = gg[y_col].pct_change() * 100
+
+        def _fmt_diff(v):
+            if pd.isna(v):
+                return "N/A"
+            sign = "+" if float(v) > 0 else ""
+            return f"{sign}{fmt_vn(v)}"
+
+        def _fmt_pct(v):
+            if pd.isna(v):
+                return "N/A"
+            sign = "+" if float(v) > 0 else ""
+            return f"{sign}{float(v):.1f}%"
+
+        gg["mom_abs_fmt"] = gg["mom_abs"].apply(_fmt_diff)
+        gg["mom_pct_fmt"] = gg["mom_pct"].apply(_fmt_pct)
+
+        if len(fig.data) > 0:
+            tr = fig.data[0]
+            tr.update(
+                fill="tozeroy",
+                fillcolor=_hex_to_rgba(GREEN_PRIMARY, 0.08),
+                line=dict(width=3.5, shape="spline"),
+                marker=dict(size=8, line=dict(width=1.5, color="#ffffff")),
+                customdata=gg[["val_fmt_local", "mom_abs_fmt", "mom_pct_fmt"]].to_numpy(),
+                hovertemplate=(
+                    "Tháng: %{x|%m/%Y}<br>"
+                    + f"{metric_label}: "
+                    + "%{customdata[0]}<br>"
+                    + "MoM: %{customdata[1]}<br>"
+                    + "MoM (%): %{customdata[2]}"
+                    + "<extra></extra>"
+                )
+            )
+
+        avg_val = float(gg[y_col].mean()) if len(gg) else 0.0
+        q25 = float(gg[y_col].quantile(0.25)) if len(gg) else 0.0
+        q75 = float(gg[y_col].quantile(0.75)) if len(gg) else 0.0
+
+        try:
+            if len(gg) >= 4 and q75 >= q25:
+                fig.add_hrect(
+                    y0=q25, y1=q75,
+                    fillcolor=_hex_to_rgba(GREEN_PRIMARY, 0.05),
+                    line_width=0,
+                    annotation_text="Vùng 25%-75%",
+                    annotation_position="top left",
+                    annotation_font_size=10
+                )
+        except Exception:
+            pass
+
+        try:
+            fig.add_hline(
+                y=avg_val,
+                line_dash="dash",
+                line_width=1.5,
+                line_color="#94a3b8",
+                annotation_text=f"TB: {fmt_vn(avg_val)}",
+                annotation_position="top right",
+                annotation_font_size=11
+            )
+        except Exception:
+            pass
+
+        if len(gg) >= 3:
+            gg["ma3"] = gg[y_col].rolling(3, min_periods=1).mean()
+            fig.add_scatter(
+                x=gg[x_col],
+                y=gg["ma3"],
+                mode="lines",
+                name="MA(3)",
+                line=dict(width=2, dash="dot", color="#64748b"),
+                hovertemplate="Tháng: %{x|%m/%Y}<br>MA(3): %{y:,.0f}<extra></extra>"
+            )
+
+        if len(gg) >= 2:
+            i_max = int(gg[y_col].idxmax())
+            i_min = int(gg[y_col].idxmin())
+            rmax = gg.loc[i_max]
+            rmin = gg.loc[i_min]
+            ann_bg = _hex_to_rgba("#ffffff", 0.95) if theme == "light" else _hex_to_rgba("#111827", 0.92)
+
+            fig.add_annotation(
+                x=rmax[x_col], y=rmax[y_col],
+                text=f"Đỉnh: {fmt_vn(rmax[y_col])}",
+                showarrow=True, arrowhead=2, ax=0, ay=-34,
+                bgcolor=ann_bg,
+                bordercolor=GREEN_BORDER, borderwidth=1
+            )
+            fig.add_annotation(
+                x=rmin[x_col], y=rmin[y_col],
+                text=f"Đáy: {fmt_vn(rmin[y_col])}",
+                showarrow=True, arrowhead=2, ax=0, ay=34,
+                bgcolor=ann_bg,
+                bordercolor="#cbd5e1", borderwidth=1
+            )
+
+        fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1)
+        fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1)
+        fig.update_layout(
+            hovermode="x unified",
+            hoverlabel=dict(font_size=12),
+            legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0)
+        )
+    except Exception:
+        return fig
+    return fig
+
+def enhance_p1_chart3_monthly_bar(fig, g: pd.DataFrame, x_col: str, y_col: str, metric_label: str, theme: str = "light"):
+    try:
+        if fig is None or g is None or g.empty:
+            return fig
+        if x_col not in g.columns or y_col not in g.columns:
+            return fig
+
+        gg = g[[x_col, y_col]].copy().sort_values(x_col).reset_index(drop=True)
+        gg["val_fmt_local"] = gg[y_col].apply(fmt_vn)
+        total_val = float(gg[y_col].sum()) if len(gg) else 0.0
+        avg_val = float(gg[y_col].mean()) if len(gg) else 0.0
+        gg["share_pct"] = (gg[y_col] / total_val * 100.0) if total_val > 0 else 0.0
+        gg["delta_vs_avg"] = gg[y_col] - avg_val
+        gg["rank_desc"] = gg[y_col].rank(method="min", ascending=False).astype(int)
+
+        def _fmt_signed(v):
+            if pd.isna(v):
+                return "0"
+            sign = "+" if float(v) > 0 else ""
+            return f"{sign}{fmt_vn(v)}"
+
+        gg["share_pct_fmt"] = gg["share_pct"].apply(lambda x: f"{float(x):.1f}%")
+        gg["delta_vs_avg_fmt"] = gg["delta_vs_avg"].apply(_fmt_signed)
+        gg["rank_fmt"] = gg["rank_desc"].apply(lambda x: f"#{int(x)}")
+
+        i_max = int(gg[y_col].idxmax()) if len(gg) else -1
+        i_min = int(gg[y_col].idxmin()) if len(gg) else -1
+
+        colors = []
+        line_colors = []
+        for i, row in gg.iterrows():
+            v = float(row[y_col])
+            if i == i_max:
+                colors.append("#15803d")
+                line_colors.append("#14532d")
+            elif i == i_min:
+                colors.append("#86efac")
+                line_colors.append("#4ade80")
+            elif v >= avg_val:
+                colors.append("#22c55e")
+                line_colors.append("#16a34a")
+            else:
+                colors.append("#bbf7d0")
+                line_colors.append("#86efac")
+
+        text_vals = [""] * len(gg)
+        if len(gg) <= 8:
+            text_vals = gg["val_fmt_local"].tolist()
+        elif len(gg) > 0:
+            text_vals[i_max] = gg.loc[i_max, "val_fmt_local"]
+            text_vals[i_min] = gg.loc[i_min, "val_fmt_local"]
+            text_vals[len(gg) - 1] = gg.loc[len(gg) - 1, "val_fmt_local"]
+            if len(gg) >= 2:
+                text_vals[0] = gg.loc[0, "val_fmt_local"]
+
+        if len(fig.data) > 0:
+            tr = fig.data[0]
+            tr.update(
+                marker=dict(
+                    color=colors,
+                    line=dict(color=line_colors, width=1.2)
+                ),
+                customdata=gg[["val_fmt_local", "share_pct_fmt", "delta_vs_avg_fmt", "rank_fmt"]].to_numpy(),
+                hovertemplate=(
+                    "Tháng: %{x|%m/%Y}<br>"
+                    + f"{metric_label}: "
+                    + "%{customdata[0]}<br>"
+                    + "Tỷ trọng: %{customdata[1]}<br>"
+                    + "So với TB: %{customdata[2]}<br>"
+                    + "Xếp hạng tháng: %{customdata[3]}"
+                    + "<extra></extra>"
+                ),
+                text=text_vals,
+                textposition="outside",
+                cliponaxis=False,
+                textfont=dict(size=10, color="#111827" if theme == "light" else "white")
+            )
+
+        try:
+            fig.add_hline(
+                y=avg_val,
+                line_dash="dash",
+                line_width=1.5,
+                line_color="#64748b",
+                annotation_text=f"TB: {fmt_vn(avg_val)}",
+                annotation_position="top right",
+                annotation_font_size=11
+            )
+        except Exception:
+            pass
+
+        trend_color = "#0f172a" if theme == "light" else "#e2e8f0"
+        fig.add_scatter(
+            x=gg[x_col],
+            y=gg[y_col],
+            mode="lines+markers",
+            name="Xu hướng",
+            line=dict(width=2.2, color=trend_color),
+            marker=dict(size=6, color=trend_color),
+            opacity=0.68,
+            hovertemplate="Tháng: %{x|%m/%Y}<br>Xu hướng: %{y:,.0f}<extra></extra>"
+        )
+
+        ann_bg = _hex_to_rgba("#ffffff", 0.95) if theme == "light" else _hex_to_rgba("#111827", 0.92)
+
+        if len(gg) >= 2:
+            fig.add_annotation(
+                x=gg.loc[i_max, x_col], y=gg.loc[i_max, y_col],
+                text="Đỉnh",
+                showarrow=True, arrowhead=2, ax=0, ay=-28,
+                bgcolor=ann_bg,
+                bordercolor=GREEN_BORDER, borderwidth=1
+            )
+            fig.add_annotation(
+                x=gg.loc[i_min, x_col], y=gg.loc[i_min, y_col],
+                text="Đáy",
+                showarrow=True, arrowhead=2, ax=0, ay=28,
+                bgcolor=ann_bg,
+                bordercolor="#cbd5e1", borderwidth=1
+            )
+
+        top3 = gg.sort_values(y_col, ascending=False).head(3).reset_index(drop=True)
+        for j, (_, rr) in enumerate(top3.iterrows(), start=1):
+            try:
+                badge = f"TOP {j}"
+                fig.add_annotation(
+                    x=rr[x_col],
+                    y=rr[y_col],
+                    text=badge,
+                    showarrow=False,
+                    yshift=30 + (j - 1) * 14,
+                    font=dict(size=10, color="#ffffff"),
+                    bgcolor="#166534" if j == 1 else ("#16a34a" if j == 2 else "#22c55e"),
+                    bordercolor="#14532d",
+                    borderwidth=1,
+                    borderpad=3
+                )
+            except Exception:
+                pass
+
+        fig.update_layout(
+            bargap=0.22,
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0)
+        )
+
+        fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1)
+        fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot", spikethickness=1, zeroline=True, zerolinewidth=1)
+
+        m = fig.layout.margin if getattr(fig.layout, "margin", None) else None
+        if m:
+            fig.update_layout(margin=dict(l=(m.l or 16), r=(m.r or 16), t=max((m.t or 210), 260), b=(m.b or 16)))
+
+    except Exception:
+        return fig
+    return fig
+
+def top_n_keep_other(df: pd.DataFrame, cat_col: str, val_col: str, n: int = 8, other_label: str = "Khác", keep_cats=None):
+    if cat_col not in df.columns or val_col not in df.columns or df.empty:
+        return df.copy(), cat_col
+    tmp = df.copy()
+    tmp[cat_col] = tmp[cat_col].astype(str)
+    new_col = f"{cat_col}__show"
+    if n is None or (isinstance(n, (int, float)) and int(n) <= 0):
+        tmp[new_col] = tmp[cat_col]
+        return tmp, new_col
+    keep_cats = keep_cats or []
+    keep_cats = [str(x) for x in keep_cats if x is not None]
+    top_cats = (
+        tmp.groupby(cat_col, as_index=False)[val_col].sum()
+           .sort_values(val_col, ascending=False)
+           .head(n)[cat_col]
+           .tolist()
+    )
+    for k in keep_cats:
+        if k in tmp[cat_col].unique().tolist() and k not in top_cats:
+            top_cats.append(k)
+    tmp[new_col] = tmp[cat_col].where(tmp[cat_col].isin(top_cats), other_label)
+    return tmp, new_col
+
+def make_vn_donut(df: pd.DataFrame, names: str, values: str, title: str, max_slices: int | None = 8, color_map=None, theme: str = "light"):
+    dff = df.copy()
+    if dff.empty:
+        fig = px.pie(dff, names=names, values=values, hole=0.45)
+        fig = apply_exec_layout(fig, theme=theme, title=title, top=130)
+        return fig
+    dff[names] = dff[names].astype(str)
+    g = dff.groupby(names, as_index=False)[values].sum().sort_values(values, ascending=False)
+    if max_slices is not None and int(max_slices) > 0 and len(g) > int(max_slices):
+        top = g.head(int(max_slices)).copy()
+        other = pd.DataFrame({names: ["Khác"], values: [g.iloc[int(max_slices):][values].sum()]})
+        g = pd.concat([top, other], ignore_index=True)
+    g["val_fmt"] = g[values].apply(fmt_vn)
+    kwargs = dict(names=names, values=values, hole=0.52, hover_data={"val_fmt": True, values: False})
+    if color_map is not None:
+        kwargs["color_discrete_map"] = color_map
+    fig = px.pie(g, **kwargs)
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig = apply_exec_layout(fig, theme=theme, title=title, top=135)
+    return fig
+
+def empty_figure(message: str = "Không có dữ liệu", theme: str = "light"):
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        x=0.5, y=0.5, xref="paper", yref="paper",
+        showarrow=False,
+        font=dict(size=15, color="#64748b" if theme == "light" else "white")
+    )
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False)
+    fig.update_layout(
+        plot_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
+        paper_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
+        margin=dict(l=10, r=10, t=40, b=10)
+    )
+    return fig
+
+def card_top_accent():
+    return html.Div(className="kpi-top-accent")
+
+def executive_header(title: str, subtitle: str = "", right_children=None):
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.Div(title, className="exec-title"),
+                            html.Div(subtitle, className="exec-subtitle") if subtitle else None,
+                        ],
+                        md=8
+                    ),
+                    dbc.Col(
+                        html.Div(right_children, className="exec-chip-row") if right_children is not None else html.Div(),
+                        md=4
+                    )
+                ],
+                className="align-items-center g-3"
+            )
+        ],
+        className="exec-header-card"
+    )
+
+def summary_pill(text, icon=None):
+    return html.Span(
+        [icon, html.Span(text, className="ms-1") if icon is not None else html.Span(text)],
+        className="summary-pill"
+    )
+
+def make_kpi_card(title, body_id, target, icon=None, min_height="220px"):
+    title_row = html.Div(
+        [
+            html.Div(
+                [
+                    icon if icon is not None else fa_icon("fa-chart-column", 16, GREEN_PRIMARY),
+                    html.Span(title, className="ms-2")
+                ],
+                className="d-flex align-items-center"
+            )
+        ],
+        className="kpi-card-title mb-2"
+    )
+    return html.Div(
+        dbc.Card(
+            [
+                card_top_accent(),
+                dbc.CardBody(
+                    [
+                        title_row,
+                        html.Div(id=body_id)
+                    ],
+                    style={"padding": "18px 20px"}
+                )
+            ],
+            className="executive-kpi-card",
+            style={"minHeight": min_height}
+        ),
+        id=_zoomable_wrap("kpi", target),
+        n_clicks=0,
+        style={"cursor": "pointer"}
+    )
+
+def make_graph_card(graph_id, target, height="390px"):
+    return html.Div(
+        dbc.Card(
+            [
+                card_top_accent(),
+                dbc.CardBody(
+                    [
+                        dcc.Graph(
+                            id=graph_id,
+                            config={"displayModeBar": False, "responsive": True},
+                            style={"height": height}
+                        )
+                    ],
+                    style={"padding": "16px 16px 20px", "overflow": "visible"}
+                )
+            ],
+            className="executive-graph-card"
+        ),
+        id=_zoomable_wrap("fig", target),
+        n_clicks=0,
+        style={"cursor": "zoom-in"}
+    )
+
+def make_table_card(title, subtitle, table_component):
+    return dbc.Card(
+        [
+            card_top_accent(),
+            dbc.CardBody(
+                [
+                    html.Div("Bảng dữ liệu", className="section-eyebrow"),
+                    html.Div(title, style={"fontSize": "24px", "fontWeight": "800", "color": TEXT_LIGHT_UI}),
+                    html.Div(subtitle, className="home-mini-note mb-3"),
+                    table_component
+                ],
+                style={"padding": "18px 20px"}
+            )
+        ],
+        className="executive-table-card"
+    )
+
+def home_kpi_markup(main_text, subtitle_text="", delta_text=None, delta_class="neutral", extra_lines=None):
+    extra_lines = extra_lines or []
+    return html.Div(
+        [
+            html.Div(main_text, style={"fontSize": "30px", "fontWeight": "800", "lineHeight": "1.08", "color": TEXT_LIGHT_UI}),
+            html.Div(subtitle_text, style={"fontSize": "12px", "fontWeight": "600", "color": MUTED_LIGHT_UI, "marginTop": "6px"}) if subtitle_text else None,
+            html.Span(delta_text, className=f"kpi-delta-pill {delta_class}", style={"marginTop": "10px", "display": "inline-flex"}) if delta_text else None,
+            html.Div(extra_lines, style={"marginTop": "10px"}) if extra_lines else None
+        ]
+    )
+
+def safe_number(x, default=0.0):
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+def signed_pct_text(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "0.0%"
+    sign = "+" if float(v) > 0 else ""
+    return f"{sign}{float(v):.1f}%"
+
+def signed_diff_text(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "0"
+    sign = "+" if float(v) > 0 else ""
+    return f"{sign}{fmt_vn(v)}"
+
+def json_safe(obj):
+    if isinstance(obj, pd.DataFrame):
+        return json_safe(obj.to_dict("records"))
+    if isinstance(obj, pd.Series):
+        return json_safe(obj.to_dict())
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        if math.isnan(float(obj)):
+            return None
+        return float(obj)
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(x) for x in obj]
+    try:
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+    return obj
+
+def enhance_zoom_figure(fig_dict):
+    f = copy.deepcopy(fig_dict) if fig_dict is not None else None
+    if not f:
+        return f
+    layout = f.get("layout", {}) if isinstance(f, dict) else {}
+    if isinstance(layout, dict):
+        layout["height"] = 860
+        layout.setdefault("margin", {})
+        layout["margin"].update({"l": 40, "r": 20, "t": max(layout.get("margin", {}).get("t", 190), 240), "b": 55})
+
+        layout.setdefault("font", {})
+        layout["font"]["size"] = max(int(layout["font"].get("size", 14)), 15)
+
+        layout.setdefault("hoverlabel", {})
+        layout["hoverlabel"].setdefault("font", {})
+        layout["hoverlabel"]["font"]["size"] = max(int(layout["hoverlabel"]["font"].get("size", 14)), 15)
+
+        if "title" in layout and isinstance(layout["title"], dict):
+            layout["title"].setdefault("font", {})
+            layout["title"]["font"]["size"] = max(int(layout["title"].get("font", {}).get("size", 18)), 24)
+            layout["title"]["x"] = 0.5
+
+        layout.setdefault("legend", {})
+        if isinstance(layout["legend"], dict):
+            layout["legend"].setdefault("font", {})
+            layout["legend"]["font"]["size"] = max(int(layout["legend"].get("font", {}).get("size", 12)), 14)
+
+        for ax in ["xaxis", "yaxis", "yaxis2"]:
+            if ax in layout and isinstance(layout[ax], dict):
+                layout[ax].setdefault("tickfont", {})
+                layout[ax]["tickfont"]["size"] = max(int(layout[ax]["tickfont"].get("size", 12)), 13)
+                layout[ax].setdefault("title", {})
+                if isinstance(layout[ax]["title"], dict):
+                    layout[ax]["title"].setdefault("font", {})
+                    layout[ax]["title"]["font"]["size"] = max(int(layout[ax]["title"].get("font", {}).get("size", 12)), 15)
+
+        f["layout"] = layout
+
+    data = f.get("data", []) if isinstance(f, dict) else []
+    if isinstance(data, list):
+        for tr in data:
+            if not isinstance(tr, dict):
+                continue
+            t = tr.get("type", None)
+            if t in (None, "scatter"):
+                tr.setdefault("line", {})
+                if isinstance(tr["line"], dict):
+                    tr["line"]["width"] = max(int(tr["line"].get("width", 3)), 4)
+                tr.setdefault("marker", {})
+                if isinstance(tr["marker"], dict):
+                    tr["marker"]["size"] = max(int(tr["marker"].get("size", 7)), 9)
+            if t == "bar":
+                tr.setdefault("textfont", {})
+                if isinstance(tr["textfont"], dict):
+                    tr["textfont"]["size"] = max(int(tr["textfont"].get("size", 12)), 14)
+            if t == "pie":
+                tr.setdefault("textfont", {})
+                if isinstance(tr["textfont"], dict):
+                    tr["textfont"]["size"] = max(int(tr["textfont"].get("size", 12)), 14)
+    return f
+
+def pack_fig_store(fig, rows=None, meta=None):
+    try:
+        fig_dict = fig.to_dict()
+    except Exception:
+        fig_dict = fig
+    return {"kind": "fig", "figure": fig_dict, "rows": json_safe(rows or []), "meta": json_safe(meta or {})}
+
+def pack_kpi_store(title, main, subtitle, rows=None, kind="kpi"):
+    return {"kind": kind, "title": title, "main": main, "subtitle": subtitle, "rows": json_safe(rows or [])}
+
+def safe_month_label(x):
+    try:
+        return pd.to_datetime(x).strftime("%m/%Y")
+    except Exception:
+        return str(x)
+
+def _get_store_for_target(target: str, all_store_data: list):
+    for k, v in ctx.states.items():
+        if k.endswith(".data") and f'"target":"{target}"' in k:
+            return v
+    return None
+
+
+def _zoom_table_styles(theme: str, dense: bool = False):
+    if theme == "light":
+        style_header = {
+            "backgroundColor": "#f2f4f7",
+            "color": "#111827",
+            "fontWeight": "900",
+            "textAlign": "center",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "padding": "10px 8px",
+            "border": "1px solid #d9e3ef",
+        }
+        style_cell = {
+            "backgroundColor": "#ffffff",
+            "color": "#111827",
+            "textAlign": "center",
+            "padding": "8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "border": "1px solid #e5edf5",
+            "minWidth": "86px" if dense else "96px",
+            "width": "86px" if dense else "96px",
+            "maxWidth": "150px" if dense else "170px",
+        }
+    else:
+        style_header = {
+            "backgroundColor": "#222",
+            "color": "white",
+            "fontWeight": "900",
+            "textAlign": "center",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "padding": "10px 8px",
+            "border": "1px solid #3b3b57",
+        }
+        style_cell = {
+            "backgroundColor": DARK_BG,
+            "color": "white",
+            "textAlign": "center",
+            "padding": "8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "border": "1px solid #3b3b57",
+            "minWidth": "86px" if dense else "96px",
+            "width": "86px" if dense else "96px",
+            "maxWidth": "150px" if dense else "170px",
+        }
+
+    style_table = {
+        "width": "100%",
+        "minWidth": "100%",
+        "maxWidth": "100%",
+        "overflowX": "auto",
+        "overflowY": "hidden",
+        "borderRadius": "14px",
+    }
+    wrapper_style = {
+        "width": "100%",
+        "maxWidth": "100%",
+        "overflowX": "auto",
+        "overflowY": "hidden",
+        "paddingBottom": "4px",
+    }
+    return style_header, style_cell, style_table, wrapper_style
+
+
+def apply_common_filters(dff: pd.DataFrame, year_val=None, months=None, dims=None):
+    out = apply_region_scope_to_df(dff)
+    if year_val is not None and "nam" in out.columns:
+        out = out[out["nam"] == int(year_val)]
+    if months and "thang_label" in out.columns:
+        out = out[out["thang_label"].isin(months)]
+    if dims and "khu_vuc" in out.columns:
+        requested_dims = dims if isinstance(dims, list) else [dims]
+        requested_dims = filter_regions_for_current_user(requested_dims)
+        if requested_dims:
+            out = out[out["khu_vuc"].astype(str).isin([str(x) for x in requested_dims])]
+        else:
+            out = out.iloc[0:0].copy()
+    return out.copy()
+
+def _make_summary_for_export(dff: pd.DataFrame, menu: str) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame()
+    time_col = "thang_nam_vn" if "thang_nam_vn" in dff.columns else None
+    group_cols = []
+    if time_col:
+        group_cols.append(time_col)
+    elif "thang_label" in dff.columns:
+        group_cols.append("thang_label")
+    if "khu_vuc" in dff.columns:
+        group_cols.append("khu_vuc")
+    agg = {}
+    if menu in ["dt", "lh", "home"]:
+        if "tong_doanh_thu" in dff.columns:
+            agg["tong_doanh_thu"] = "sum"
+        if "tong_so_cuoc" in dff.columns:
+            agg["tong_so_cuoc"] = "sum"
+    else:
+        if "tong_so_cuoc" in dff.columns:
+            agg["tong_so_cuoc"] = "sum"
+        if "tong_doanh_thu" in dff.columns:
+            agg["tong_doanh_thu"] = "sum"
+    if not group_cols or not agg:
+        return pd.DataFrame()
+    g = dff.groupby(group_cols, as_index=False).agg(agg)
+    if time_col and time_col in g.columns:
+        g = g.sort_values(time_col)
+        g["thang_label"] = pd.to_datetime(g[time_col], errors="coerce").dt.strftime("%m/%Y")
+    return g
+
+def _apply_export_filters(menu: str, page: int, filt: dict) -> pd.DataFrame:
+    if menu not in DATAFRAME_BY_PREFIX:
+        return pd.DataFrame()
+    base = DATAFRAME_BY_PREFIX[menu].copy()
+    key = menu
+
+    year_val = (filt or {}).get("year", None)
+    months = (filt or {}).get("months", []) or []
+    dims = (filt or {}).get("dims", []) or []
+    type_filter = (filt or {}).get("type_filter", []) or []
+    seat_filter = (filt or {}).get("seat_filter", []) or []
+
+    dff = apply_common_filters(base, year_val=year_val, months=months, dims=dims if page == 2 else None)
+    if key == "lh" and type_filter and LH_COL in dff.columns:
+        dff = dff[dff[LH_COL].astype(str).isin(type_filter)]
+    if key == "hd" and type_filter and HD_COL in dff.columns:
+        dff = dff[dff[HD_COL].astype(str).isin(type_filter)]
+    if key in ["xdt", "xpq"] and type_filter and "loai_xe" in dff.columns:
+        dff = dff[dff["loai_xe"].astype(str).isin(type_filter)]
+    if key in ["xdt", "xpq"] and seat_filter:
+        try:
+            seat_vals = sorted({int(float(x)) for x in seat_filter if str(x) not in ["", "None"]})
+        except Exception:
+            seat_vals = []
+        if seat_vals:
+            if "so_cho_loc" in dff.columns:
+                seat_series = pd.to_numeric(dff["so_cho_loc"], errors="coerce").fillna(0).round().astype(int)
+            elif "so_cho_binh_quan_xe" in dff.columns:
+                seat_series = pd.to_numeric(dff["so_cho_binh_quan_xe"], errors="coerce").fillna(0).round().astype(int)
+            else:
+                seat_series = pd.Series([0] * len(dff), index=dff.index)
+            dff = dff[seat_series.isin(seat_vals)]
+    return dff.copy()
+
+
+FA_CDN = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+
+server = Flask(__name__)
+server.secret_key = os.getenv("SECRET_KEY", "change-this-secret-key-before-production")
+server.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+if _env_flag("SESSION_COOKIE_SECURE", False):
+    server.config["SESSION_COOKIE_SECURE"] = True
+
+@server.get("/healthz")
+def healthz():
+    return ("ok", 200)
+
+@server.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = str(request.form.get("username", "")).strip().lower()
+        password = request.form.get("password", "")
+        users = load_auth_user_store()
+        user_record = users.get(username)
+        if user_record and _verify_password(user_record, password):
+            session["dash_auth_user"] = {
+                "username": user_record["username"],
+                "display_name": user_record.get("display_name") or user_record["username"],
+                "role": user_record.get("role", "region"),
+                "regions": user_record.get("regions", []),
+            }
+            next_path = request.form.get("next") or request.args.get("next") or "/"
+            if not _is_safe_next_path(next_path):
+                next_path = "/"
+            return redirect(next_path)
+        error_msg = "Sai tài khoản hoặc mật khẩu."
+    else:
+        error_msg = None
+        current = current_auth_user()
+        if current:
+            next_path = request.args.get("next") or "/"
+            if _is_safe_next_path(next_path):
+                return redirect(next_path)
+            return redirect("/")
+
+    next_path = request.args.get("next") or request.form.get("next") or "/"
+    if not _is_safe_next_path(next_path):
+        next_path = "/"
+    return render_template_string(
+        LOGIN_PAGE_TEMPLATE,
+        app_title="Nam Thang Group Dashboard",
+        logo_src=COMPANY_LOGO_SRC,
+        error=error_msg,
+        next_path=next_path,
+        default_hint=_auth_store_source() == "default",
+        default_admin_password=os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
+        default_region_password=os.getenv("DEFAULT_REGION_PASSWORD", "123456"),
+    )
+
+@server.get("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+@server.before_request
+def protect_dash_routes():
+    path = request.path or "/"
+    if path in {"/login", "/logout", "/healthz"}:
+        return None
+    if path.startswith("/assets/") or path == "/favicon.ico":
+        return None
+    if request.endpoint == "static":
+        return None
+    if current_auth_user():
+        return None
+    next_path = request.full_path if request.query_string else request.path
+    if next_path.endswith("?"):
+        next_path = next_path[:-1]
+    return redirect(url_for("login", next=next_path))
+
+app = Dash(__name__, server=server, external_stylesheets=[dbc.themes.FLATLY, FA_CDN], suppress_callback_exceptions=True)
+
+def fa_icon(name: str, size: int = 18, color: str = "currentColor", extra_class: str = ""):
+    return html.I(
+        className=f"fa-solid {name} {extra_class}",
+        style={"fontSize": f"{size}px", "color": color, "lineHeight": "1", "display": "inline-block"}
+    )
+
+ICON_MENU   = fa_icon("fa-bars", 18)
+ICON_THEME  = fa_icon("fa-circle-half-stroke", 18)
+ICON_BOT    = fa_icon("fa-robot", 18)
+ICON_DL     = fa_icon("fa-download", 18)
+ICON_SEND   = fa_icon("fa-paper-plane", 18)
+ICON_TRASH  = fa_icon("fa-trash", 18)
+ICON_CHEV_L = fa_icon("fa-chevron-left", 22)
+ICON_CHEV_R = fa_icon("fa-chevron-right", 22)
+ICON_CHART  = fa_icon("fa-chart-line", 16)
+ICON_HOME   = fa_icon("fa-house", 16)
+ICON_MONEY  = fa_icon("fa-sack-dollar", 16, GREEN_PRIMARY)
+ICON_ROUTE  = fa_icon("fa-route", 16, GREEN_PRIMARY)
+ICON_AVG    = fa_icon("fa-chart-pie", 16, GREEN_PRIMARY)
+ICON_REGION = fa_icon("fa-map-location-dot", 16, GREEN_PRIMARY)
+ICON_EMP    = fa_icon("fa-users", 16, GREEN_PRIMARY)
+ICON_DRV    = fa_icon("fa-id-badge", 16, GREEN_PRIMARY)
+ICON_MKT    = fa_icon("fa-bullseye", 16, GREEN_PRIMARY)
+ICON_BB     = fa_icon("fa-file-lines", 16, GREEN_PRIMARY)
+ICON_XDT    = fa_icon("fa-bus-simple", 16, GREEN_PRIMARY)
+ICON_XPQ    = fa_icon("fa-car-side", 16, GREEN_PRIMARY)
+
+MENU_TREE_CSS = """
+.menu-group-card{
+  background:#ffffff;
+  border:1px solid #dfe5ef;
+  border-radius:20px;
+  padding:14px 14px 10px 14px;
+  box-shadow:0 14px 28px rgba(15,23,42,0.06);
+}
+.menu-group-head{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-bottom:10px;
+}
+.menu-group-icon{
+  width:36px;
+  height:36px;
+  border-radius:12px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:#ffffff;
+  font-size:14px;
+  box-shadow:0 10px 18px rgba(15,23,42,0.12);
+}
+.menu-group-title{
+  font-size:14px;
+  font-weight:900;
+  color:#0f172a;
+  line-height:1.15;
+}
+.menu-group-subtitle{
+  font-size:11px;
+  color:#64748b;
+  font-weight:700;
+  margin-top:2px;
+}
+.menu-tree-btn{
+  border-radius:16px !important;
+  border:1px solid #e2e8f0 !important;
+  background:#f8fafc !important;
+  color:#0f172a !important;
+  text-align:left !important;
+  padding:10px 12px !important;
+  font-weight:800 !important;
+  box-shadow:none !important;
+}
+.menu-tree-btn:hover{
+  background:#f0fdf4 !important;
+  border-color:#22c55e !important;
+  transform:translateY(-1px);
+}
+.menu-tree-btn .small-caption{
+  display:block;
+  font-size:11px;
+  opacity:0.72;
+  font-weight:700;
+  margin-top:2px;
+}
+.home-nav-grid .quick-nav-btn{
+  min-height:74px;
+}
+.home-nav-grid .quick-nav-btn .nav-title{
+  font-weight:900;
+  color:#0f172a;
+  display:block;
+}
+.home-nav-grid .quick-nav-btn .nav-subtitle{
+  display:block;
+  font-size:11px;
+  color:#64748b;
+  font-weight:700;
+}
+"""
+
+PREMIUM_FILTER_NAV_CSS = """
+.executive-filter-panel{
+  position:relative;
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  border:1px solid #e3ebf3 !important;
+  border-radius:26px !important;
+  box-shadow:0 22px 48px rgba(15,23,42,0.08) !important;
+  overflow:hidden;
+}
+.executive-filter-panel::before{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  top:0;
+  height:4px;
+  background:linear-gradient(90deg,#16a34a 0%, #14b8a6 32%, #f59e0b 68%, #6366f1 100%);
+}
+.filter-panel-title{
+  font-size:15px;
+  font-weight:900;
+  color:#0f172a;
+  letter-spacing:.2px;
+}
+.filter-panel-subtitle{
+  font-size:12px;
+  color:#64748b;
+  font-weight:700;
+  margin-top:4px;
+  line-height:1.45;
+}
+.filter-panel-chip-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  justify-content:flex-end;
+}
+.filter-panel-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:9px 12px;
+  border-radius:999px;
+  background:#ffffff;
+  border:1px solid #e2e8f0;
+  box-shadow:0 10px 20px rgba(15,23,42,0.05);
+  font-size:12px;
+  font-weight:800;
+  color:#334155;
+  white-space:nowrap;
+}
+.exec-filter-shell{
+  position:relative;
+  min-height:110px;
+}
+.exec-filter-shell::after{
+  content:"";
+  position:absolute;
+  top:14px;
+  right:14px;
+  width:62px;
+  height:62px;
+  border-radius:18px;
+  background:radial-gradient(circle at center, rgba(34,197,94,0.10), rgba(34,197,94,0.03) 58%, transparent 70%);
+  pointer-events:none;
+}
+.exec-filter-header{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  margin-bottom:12px;
+}
+.exec-filter-badge{
+  width:36px;
+  height:36px;
+  border-radius:14px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:linear-gradient(135deg,#16a34a,#22c55e);
+  box-shadow:0 12px 22px rgba(34,197,94,0.22);
+  flex:0 0 auto;
+}
+.exec-filter-title{
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:.7px;
+  color:#0f172a;
+  text-transform:uppercase;
+  line-height:1.1;
+}
+.exec-filter-helper{
+  font-size:12px;
+  color:#64748b;
+  font-weight:700;
+  margin-top:4px;
+  line-height:1.3;
+}
+.exec-filter-dropdown-wrap{
+  position:relative;
+  z-index:2;
+}
+.executive-dropdown .Select-control,
+.exec-filter-shell .Select-control{
+  min-height:54px !important;
+  border-radius:18px !important;
+  border:1px solid #dce7ef !important;
+  background:linear-gradient(180deg,#ffffff 0%, #f8fafc 100%) !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.88), 0 8px 16px rgba(15,23,42,0.04) !important;
+}
+.executive-dropdown .Select-placeholder,
+.exec-filter-shell .Select-placeholder{
+  color:#94a3b8 !important;
+  font-weight:700 !important;
+}
+.executive-dropdown .Select--single > .Select-control .Select-value,
+.exec-filter-shell .Select--single > .Select-control .Select-value{
+  line-height:52px !important;
+}
+.executive-dropdown .Select-value-label,
+.exec-filter-shell .Select-value-label,
+.executive-dropdown .Select-input > input,
+.exec-filter-shell .Select-input > input{
+  color:#0f172a !important;
+  font-weight:800 !important;
+}
+.executive-dropdown .Select-arrow,
+.exec-filter-shell .Select-arrow{
+  border-top-color:#64748b !important;
+}
+.executive-dropdown .Select-clear,
+.exec-filter-shell .Select-clear{
+  color:#94a3b8 !important;
+}
+.executive-dropdown .Select.is-focused > .Select-control,
+.executive-dropdown .is-focused:not(.is-open) > .Select-control,
+.exec-filter-shell .Select.is-focused > .Select-control,
+.exec-filter-shell .is-focused:not(.is-open) > .Select-control{
+  border-color:#22c55e !important;
+  background:#ffffff !important;
+  box-shadow:0 0 0 4px rgba(34,197,94,0.12), 0 10px 20px rgba(15,23,42,0.06) !important;
+}
+.executive-dropdown .Select-menu-outer,
+.exec-filter-shell .Select-menu-outer{
+  border:1px solid #dce7ef !important;
+  border-radius:16px !important;
+  box-shadow:0 18px 32px rgba(15,23,42,0.10) !important;
+}
+.executive-dropdown .Select--multi .Select-value,
+.exec-filter-shell .Select--multi .Select-value{
+  background:#ecfdf3 !important;
+  border:1px solid #bbf7d0 !important;
+  color:#166534 !important;
+  border-radius:999px !important;
+  font-weight:800 !important;
+}
+.home-nav-card-btn{
+  padding:0 !important;
+  border:none !important;
+  background:transparent !important;
+  box-shadow:none !important;
+}
+.home-nav-card-inner{
+  position:relative;
+  min-height:146px;
+  padding:18px 18px 16px 18px;
+  border-radius:24px;
+  border:1px solid #e3ebf3;
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  box-shadow:0 20px 42px rgba(15,23,42,0.08);
+  overflow:hidden;
+  transition:transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  text-align:left;
+}
+.home-nav-card-inner::before{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  top:0;
+  height:4px;
+  background:var(--nav-accent, #22c55e);
+}
+.home-nav-card-inner::after{
+  content:"";
+  position:absolute;
+  right:-20px;
+  top:-20px;
+  width:110px;
+  height:110px;
+  border-radius:28px;
+  background:radial-gradient(circle at center, var(--nav-accent-soft-strong, rgba(34,197,94,0.18)) 0%, transparent 68%);
+}
+.home-nav-card-btn:hover .home-nav-card-inner{
+  transform:translateY(-3px);
+  border-color:var(--nav-accent, #22c55e);
+  box-shadow:0 24px 52px rgba(15,23,42,0.12);
+}
+.home-nav-card-btn:focus .home-nav-card-inner,
+.home-nav-card-btn:active .home-nav-card-inner{
+  transform:translateY(-2px);
+  box-shadow:0 0 0 4px var(--nav-accent-soft, rgba(34,197,94,0.14)), 0 24px 52px rgba(15,23,42,0.12);
+}
+.home-nav-badges{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:14px;
+  padding-right:62px;
+}
+.home-nav-code,
+.home-nav-group{
+  display:inline-flex;
+  align-items:center;
+  padding:7px 11px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  line-height:1;
+}
+.home-nav-code{
+  background:var(--nav-accent-soft, rgba(34,197,94,0.14));
+  color:var(--nav-accent-dark, #166534);
+  border:1px solid transparent;
+}
+.home-nav-group{
+  background:#ffffff;
+  border:1px solid #e2e8f0;
+  color:#475569;
+}
+.home-nav-icon{
+  position:absolute;
+  top:18px;
+  right:18px;
+  width:44px;
+  height:44px;
+  border-radius:16px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:var(--nav-accent-soft, rgba(34,197,94,0.14));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.82);
+}
+.home-nav-icon i{
+  color:var(--nav-accent, #22c55e) !important;
+  font-size:18px !important;
+}
+.home-nav-title{
+  font-size:19px;
+  font-weight:900;
+  color:#0f172a;
+  line-height:1.14;
+  padding-right:62px;
+}
+.home-nav-subtitle{
+  display:block;
+  margin-top:8px;
+  font-size:12px;
+  color:#64748b;
+  font-weight:700;
+  line-height:1.4;
+  min-height:34px;
+}
+.home-nav-footer{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:14px;
+}
+.home-nav-meta-pill{
+  display:inline-flex;
+  align-items:center;
+  padding:7px 10px;
+  border-radius:999px;
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+  color:#475569;
+  font-size:11px;
+  font-weight:800;
+}
+@media (max-width: 991px){
+  .filter-panel-chip-row{ justify-content:flex-start; }
+}
+@media (max-width: 768px){
+  .home-nav-card-inner{ min-height:132px; }
+  .home-nav-title{ font-size:17px; }
+  .exec-filter-shell{ min-height:auto; }
+}
+"""
+
+NEXT_LEVEL_HOME_UI_CSS = """
+.executive-home-nav-panel,
+.executive-control-dock{
+  overflow:hidden;
+}
+.executive-home-nav-panel .card-body,
+.executive-control-dock .card-body{
+  padding:22px 22px 22px 22px;
+}
+.executive-home-nav-panel{
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%) !important;
+}
+.executive-home-nav-panel::after,
+.executive-control-dock::after{
+  content:"";
+  position:absolute;
+  right:18px;
+  top:14px;
+  width:150px;
+  height:150px;
+  border-radius:50%;
+  background:radial-gradient(circle at center, rgba(15,118,110,0.06) 0%, rgba(34,197,94,0.03) 42%, transparent 72%);
+  pointer-events:none;
+}
+.executive-home-nav-panel .filter-panel-title,
+.executive-control-dock .filter-panel-title{
+  font-size:16px;
+  letter-spacing:.15px;
+}
+.executive-home-nav-panel .filter-panel-subtitle,
+.executive-control-dock .filter-panel-subtitle{
+  font-size:12px;
+  line-height:1.5;
+}
+.home-nav-super-grid{
+  position:relative;
+  z-index:2;
+}
+.home-nav-group-shell{
+  position:relative;
+  height:100%;
+  padding:18px;
+  border-radius:28px;
+  border:1px solid #e4ebf3;
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  box-shadow:0 20px 46px rgba(15,23,42,0.08);
+  overflow:hidden;
+}
+.home-nav-group-shell::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:4px;
+  border-radius:28px 0 0 28px;
+  background:var(--group-accent, #22c55e);
+}
+.home-nav-group-shell::after{
+  content:"";
+  position:absolute;
+  top:-36px;
+  right:-24px;
+  width:170px;
+  height:170px;
+  border-radius:50%;
+  background:radial-gradient(circle at center, var(--group-accent-soft-strong, rgba(34,197,94,0.22)) 0%, transparent 70%);
+  pointer-events:none;
+}
+.home-nav-group-head{
+  position:relative;
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  margin-bottom:16px;
+  padding-right:104px;
+}
+.home-nav-group-icon-shell{
+  width:44px;
+  height:44px;
+  border-radius:16px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:#ffffff;
+  box-shadow:0 14px 28px rgba(15,23,42,0.14);
+  flex:0 0 auto;
+}
+.home-nav-group-title{
+  font-size:16px;
+  font-weight:900;
+  color:#0f172a;
+  line-height:1.15;
+  letter-spacing:.1px;
+}
+.home-nav-group-subtitle{
+  font-size:12px;
+  color:#64748b;
+  font-weight:700;
+  line-height:1.4;
+  margin-top:4px;
+}
+.home-nav-group-badge-stack{
+  position:absolute;
+  top:0;
+  right:0;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:7px;
+}
+.home-nav-group-badge,
+.home-nav-group-meta{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  line-height:1;
+  white-space:nowrap;
+}
+.home-nav-group-badge{
+  background:var(--group-accent-soft, rgba(34,197,94,0.14));
+  color:var(--group-accent-dark, #166534);
+  border:1px solid rgba(255,255,255,0.6);
+}
+.home-nav-group-meta{
+  background:#ffffff;
+  color:#475569;
+  border:1px solid #e2e8f0;
+  box-shadow:0 8px 18px rgba(15,23,42,0.05);
+}
+.home-nav-card-inner{
+  min-height:172px;
+  padding:18px 18px 16px 18px;
+  border-radius:24px;
+  border:1px solid #e7eef5;
+  background:linear-gradient(180deg,#ffffff 0%, #fbfdff 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.92), 0 14px 30px rgba(15,23,42,0.05);
+  overflow:hidden;
+}
+.home-nav-card-inner::before{
+  height:3px;
+}
+.home-nav-card-inner::after{
+  top:-28px;
+  right:-20px;
+  width:126px;
+  height:126px;
+  border-radius:42px;
+  background:radial-gradient(circle at center, var(--nav-accent-soft-strong, rgba(34,197,94,0.22)) 0%, transparent 70%);
+}
+.home-nav-card-btn:hover .home-nav-card-inner{
+  transform:translateY(-4px);
+  box-shadow:0 22px 42px rgba(15,23,42,0.10);
+}
+.home-nav-badges{
+  margin-bottom:12px;
+  padding-right:56px;
+}
+.home-nav-code,
+.home-nav-group{
+  padding:6px 10px;
+  font-size:10px;
+  letter-spacing:.35px;
+}
+.home-nav-group{
+  background:rgba(255,255,255,0.94);
+  backdrop-filter:blur(8px);
+}
+.home-nav-icon{
+  top:18px;
+  right:18px;
+  width:46px;
+  height:46px;
+  border-radius:16px;
+  background:linear-gradient(135deg, rgba(255,255,255,0.98) 0%, var(--nav-accent-soft, rgba(34,197,94,0.14)) 100%);
+  border:1px solid rgba(255,255,255,0.92);
+  box-shadow:0 12px 22px rgba(15,23,42,0.08);
+}
+.home-nav-icon i{
+  font-size:18px !important;
+}
+.home-nav-title{
+  font-size:18px;
+  padding-right:58px;
+}
+.home-nav-subtitle{
+  min-height:38px;
+  margin-top:8px;
+  font-size:12px;
+  line-height:1.45;
+}
+.home-nav-footer{
+  gap:6px;
+  margin-top:13px;
+}
+.home-nav-meta-pill{
+  background:#f8fafc;
+  border:1px solid #e2e8f0;
+  color:#475569;
+  font-size:10px;
+}
+.home-nav-cta{
+  margin-top:14px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(226,232,240,0.92);
+  background:linear-gradient(90deg, var(--nav-accent-soft, rgba(34,197,94,0.14)) 0%, rgba(255,255,255,0.98) 86%);
+  font-size:12px;
+  font-weight:900;
+  color:var(--nav-accent-dark, #166534);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.75);
+  transition:transform 180ms ease, box-shadow 180ms ease;
+}
+.home-nav-card-btn:hover .home-nav-cta{
+  transform:translateX(2px);
+  box-shadow:0 10px 20px rgba(15,23,42,0.06);
+}
+.home-nav-cta i{
+  color:var(--nav-accent, #22c55e) !important;
+}
+.executive-control-dock{
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%) !important;
+}
+.exec-filter-shell{
+  position:relative;
+  min-height:128px !important;
+  padding:16px 16px 14px !important;
+  border-radius:26px !important;
+  border:1px solid #dfe8f0 !important;
+  background:linear-gradient(180deg,#ffffff 0%, #fbfdff 100%) !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.95), 0 22px 42px rgba(15,23,42,0.07) !important;
+  overflow:hidden;
+}
+.exec-filter-shell::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:4px;
+  background:linear-gradient(180deg,#16a34a 0%, #22c55e 100%);
+  border-radius:26px 0 0 26px;
+}
+.exec-filter-shell::after{
+  top:16px;
+  right:16px;
+  width:76px;
+  height:76px;
+  border-radius:24px;
+  background:radial-gradient(circle at center, rgba(34,197,94,0.10), rgba(20,184,166,0.04) 58%, transparent 72%);
+}
+.exec-filter-header{
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:14px;
+}
+.exec-filter-header-main{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  min-width:0;
+  flex:1 1 auto;
+}
+.exec-filter-live-tag{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  padding:7px 10px;
+  border-radius:999px;
+  background:#f0fdf4;
+  border:1px solid #bbf7d0;
+  color:#166534;
+  font-size:10px;
+  font-weight:900;
+  line-height:1;
+  white-space:nowrap;
+  box-shadow:0 8px 18px rgba(34,197,94,0.10);
+  flex:0 0 auto;
+}
+.exec-filter-live-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#22c55e;
+  box-shadow:0 0 0 4px rgba(34,197,94,0.12);
+}
+.exec-filter-title{
+  font-size:11px;
+  letter-spacing:.9px;
+}
+.exec-filter-helper{
+  font-size:12px;
+  line-height:1.35;
+  margin-top:5px;
+}
+.exec-filter-dropdown-wrap{
+  position:relative;
+  z-index:2;
+}
+.executive-dropdown .Select-control,
+.exec-filter-shell .Select-control{
+  min-height:58px !important;
+  border-radius:18px !important;
+  border:1px solid #dce7ef !important;
+  background:linear-gradient(180deg,#ffffff 0%, #f8fafc 100%) !important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.90), 0 10px 18px rgba(15,23,42,0.04) !important;
+}
+.executive-dropdown .Select--single > .Select-control .Select-value,
+.exec-filter-shell .Select--single > .Select-control .Select-value{
+  line-height:56px !important;
+}
+.executive-dropdown .Select-menu-outer,
+.exec-filter-shell .Select-menu-outer{
+  margin-top:8px !important;
+  border:1px solid #dce7ef !important;
+  border-radius:18px !important;
+  box-shadow:0 18px 32px rgba(15,23,42,0.12) !important;
+  overflow:hidden !important;
+}
+.executive-dropdown .Select--multi .Select-value,
+.exec-filter-shell .Select--multi .Select-value{
+  padding:2px 8px !important;
+  background:#ecfdf3 !important;
+  border:1px solid #bbf7d0 !important;
+  color:#166534 !important;
+  border-radius:999px !important;
+  font-weight:800 !important;
+}
+.executive-dropdown .Select-arrow,
+.exec-filter-shell .Select-arrow{
+  border-top-color:#64748b !important;
+  border-width:6px 6px 2.5px !important;
+}
+.executive-dropdown .Select-placeholder,
+.exec-filter-shell .Select-placeholder{
+  color:#94a3b8 !important;
+  font-weight:700 !important;
+}
+.executive-dropdown .Select.is-focused > .Select-control,
+.executive-dropdown .is-focused:not(.is-open) > .Select-control,
+.exec-filter-shell .Select.is-focused > .Select-control,
+.exec-filter-shell .is-focused:not(.is-open) > .Select-control{
+  border-color:#22c55e !important;
+  background:#ffffff !important;
+  box-shadow:0 0 0 4px rgba(34,197,94,0.12), 0 12px 22px rgba(15,23,42,0.06) !important;
+}
+@media (max-width: 1199px){
+  .home-nav-group-head{ padding-right:0; }
+  .home-nav-group-badge-stack{ position:static; align-items:flex-start; flex-direction:row; flex-wrap:wrap; margin-top:10px; }
+}
+@media (max-width: 991px){
+  .executive-home-nav-panel .card-body,
+  .executive-control-dock .card-body{ padding:18px 18px 18px 18px; }
+}
+@media (max-width: 768px){
+  .home-nav-group-shell{ padding:16px; }
+  .home-nav-card-inner{ min-height:160px; }
+  .home-nav-title{ font-size:17px; }
+  .exec-filter-live-tag{ padding:6px 9px; }
+}
+"""
+
+MENU_GROUPS = [
+    {
+        "key": "rev",
+        "code": "1",
+        "label": "Doanh thu tập đoàn",
+        "subtitle": "Khối doanh thu lõi của tập đoàn",
+        "icon": "fa-sack-dollar",
+        "color": "linear-gradient(135deg,#16a34a,#22c55e)",
+        "menus": ["dt", "lh", "hd"],
+    },
+    {
+        "key": "hr",
+        "code": "2",
+        "label": "Nhân sự",
+        "subtitle": "Quản trị lực lượng vận hành",
+        "icon": "fa-users",
+        "color": "linear-gradient(135deg,#0f766e,#14b8a6)",
+        "menus": ["emp", "drv"],
+    },
+    {
+        "key": "biz",
+        "code": "3",
+        "label": "Kinh doanh",
+        "subtitle": "Theo dõi hoạt động khai thác thị trường",
+        "icon": "fa-bullseye",
+        "color": "linear-gradient(135deg,#d97706,#f59e0b)",
+        "menus": ["mkt", "bb"],
+    },
+    {
+        "key": "fleet",
+        "code": "4",
+        "label": "Phương tiện",
+        "subtitle": "Theo dõi tài sản và năng lực xe",
+        "icon": "fa-bus-simple",
+        "color": "linear-gradient(135deg,#4338ca,#6366f1)",
+        "menus": ["xdt", "xpq"],
+    },
+]
+
+GROUP_VISUALS = {
+    "rev": {"accent": "#16a34a", "soft": "rgba(34,197,94,0.14)", "soft2": "rgba(34,197,94,0.24)", "dark": "#166534"},
+    "hr": {"accent": "#0f766e", "soft": "rgba(20,184,166,0.14)", "soft2": "rgba(20,184,166,0.24)", "dark": "#115e59"},
+    "biz": {"accent": "#d97706", "soft": "rgba(245,158,11,0.14)", "soft2": "rgba(245,158,11,0.24)", "dark": "#b45309"},
+    "fleet": {"accent": "#4f46e5", "soft": "rgba(99,102,241,0.14)", "soft2": "rgba(99,102,241,0.24)", "dark": "#3730a3"},
+}
+
+def get_group_config(group_key: str) -> dict:
+    for g in MENU_GROUPS:
+        if g.get("key") == group_key:
+            return g
+    return MENU_GROUPS[0]
+
+MENU_CONFIG = {
+    "dt": {
+        "code": "1.1",
+        "group": "rev",
+        "menu_label": "Doanh thu",
+        "menu_caption": "Revenue dashboard",
+        "page1_title": "DOANH THU – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH DOANH THU THEO KHU VỰC",
+        "df": df_dt,
+        "value_col": "tong_doanh_thu",
+        "metric_label": "Doanh thu",
+        "secondary_col": "tong_so_cuoc",
+        "secondary_label": "Số cuốc",
+        "avg_label": "Doanh thu / cuốc",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "cuốc",
+        "icon": ICON_MONEY,
+        "type_filter_kind": None,
+        "dataset_keywords": ["doanh thu", "revenue"],
+    },
+    "lh": {
+        "code": "1.2",
+        "group": "rev",
+        "menu_label": "Loại hình",
+        "menu_caption": "Model mix dashboard",
+        "page1_title": "DOANH THU LOẠI HÌNH – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH LOẠI HÌNH THEO KHU VỰC",
+        "df": df_lh,
+        "value_col": "tong_doanh_thu",
+        "metric_label": "Doanh thu",
+        "secondary_col": "tong_so_cuoc",
+        "secondary_label": "Số cuốc",
+        "avg_label": "Doanh thu / cuốc",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "cuốc",
+        "icon": fa_icon("fa-bus", 16, GREEN_PRIMARY),
+        "type_filter_kind": "lh",
+        "dataset_keywords": ["loai hinh", "loại hình"],
+    },
+    "hd": {
+        "code": "1.3",
+        "group": "rev",
+        "menu_label": "Hợp đồng",
+        "menu_caption": "Contract dashboard",
+        "page1_title": "HỢP ĐỒNG – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH HỢP ĐỒNG THEO KHU VỰC",
+        "df": df_hd,
+        "value_col": "tong_so_cuoc",
+        "metric_label": "Số cuốc",
+        "secondary_col": "tong_doanh_thu",
+        "secondary_label": "Doanh thu HĐ",
+        "avg_label": "Cuốc / tháng",
+        "avg_mode": "per_month",
+        "avg_divisor_label": "tháng",
+        "icon": fa_icon("fa-file-signature", 16, GREEN_PRIMARY),
+        "type_filter_kind": "hd",
+        "dataset_keywords": ["hop dong", "hợp đồng", "so cuoc", "số cuốc"],
+    },
+    "emp": {
+        "code": "2.1",
+        "group": "hr",
+        "menu_label": "Quản lý nhân viên",
+        "menu_caption": "Employee management",
+        "page1_title": "QUẢN LÝ NHÂN VIÊN – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH NHÂN VIÊN THEO KHU VỰC",
+        "df": df_emp,
+        "value_col": "so_luong_nhan_su",
+        "metric_label": "Số lượng nhân sự",
+        "secondary_col": "so_vao_lam",
+        "secondary_label": "Nhân sự vào làm trong tháng",
+        "avg_label": "Nhân sự nghỉ việc trong tháng",
+        "avg_mode": "per_month",
+        "avg_divisor_label": "tháng",
+        "icon": ICON_EMP,
+        "type_filter_kind": None,
+        "dataset_keywords": ["nhan vien", "nhân viên", "quan ly nhan vien", "so luong nhan vien", "số lượng nhân viên", "bo phan", "vong doi"],
+    },
+    "drv": {
+        "code": "2.2",
+        "group": "hr",
+        "menu_label": "Quản lý tài xế",
+        "menu_caption": "Driver management",
+        "page1_title": "QUẢN LÝ TÀI XẾ – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH TÀI XẾ THEO KHU VỰC",
+        "df": df_drv,
+        "value_col": "so_luong_nhan_su",
+        "metric_label": "Số lượng tài xế",
+        "secondary_col": "so_vao_lam",
+        "secondary_label": "Tài xế vào làm trong tháng",
+        "avg_label": "Tài xế nghỉ việc trong tháng",
+        "avg_mode": "per_month",
+        "avg_divisor_label": "tháng",
+        "icon": ICON_DRV,
+        "type_filter_kind": None,
+        "dataset_keywords": ["tai xe", "tài xế", "quan ly tai xe", "so luong tai xe", "số lượng tài xế", "giu chan", "vong doi"],
+    },
+    "mkt": {
+        "code": "3.1",
+        "group": "biz",
+        "menu_label": "Điểm tiếp thị",
+        "menu_caption": "Marketing points",
+        "page1_title": "ĐIỂM TIẾP THỊ – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH ĐIỂM TIẾP THỊ THEO KHU VỰC",
+        "df": df_mkt,
+        "value_col": "tong_doanh_thu",
+        "metric_label": "Số tiền phải chi",
+        "secondary_col": "tong_so_cuoc",
+        "secondary_label": "Số điểm tiếp thị",
+        "avg_label": "Chi phí / điểm tiếp thị",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "điểm",
+        "icon": ICON_MKT,
+        "type_filter_kind": None,
+        "dataset_keywords": ["diem tiep thi", "điểm tiếp thị", "tiep thi", "so tien phai chi", "số tiền phải chi", "so diem tiep thi", "số điểm tiếp thị"],
+    },
+    "bb": {
+        "code": "3.2",
+        "group": "biz",
+        "menu_label": "Biên bản",
+        "menu_caption": "Minutes & documents",
+        "page1_title": "BIÊN BẢN – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH BIÊN BẢN THEO KHU VỰC",
+        "df": df_bb,
+        "value_col": "so_tien_thu_duoc",
+        "metric_label": "Số tiền thu được",
+        "secondary_col": "so_tien_da_xu_ly",
+        "secondary_label": "Số tiền đã hoàn tất xử lý",
+        "avg_label": "Số tiền còn nợ",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "biên bản",
+        "icon": ICON_BB,
+        "type_filter_kind": None,
+        "dataset_keywords": ["bien ban", "biên bản", "thu duoc", "thu được", "con no", "còn nợ", "da xu ly", "đã xử lý", "thu hoi"],
+    },
+    "xdt": {
+        "code": "4.1",
+        "group": "fleet",
+        "menu_label": "Xe trực thuộc",
+        "menu_caption": "Owned fleet",
+        "page1_title": "XE TRỰC THUỘC – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH XE TRỰC THUỘC THEO KHU VỰC",
+        "df": df_xdt,
+        "value_col": "so_luong_xe",
+        "metric_label": "Số lượng xe",
+        "secondary_col": "so_bien_kiem_soat",
+        "secondary_label": "Khu vực có xe",
+        "avg_label": "Loại xe hoạt động",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "xe",
+        "avg_numerator_col": "so_luong_xe",
+        "avg_denominator_col": "so_luong_xe",
+        "icon": ICON_XDT,
+        "type_filter_kind": "fleet",
+        "dataset_keywords": ["xe truc thuoc", "xe trực thuộc", "xe dien", "xe điện", "loai xe"],
+    },
+    "xpq": {
+        "code": "4.2",
+        "group": "fleet",
+        "menu_label": "Xe phân quyền",
+        "menu_caption": "Delegated fleet",
+        "page1_title": "XE PHÂN QUYỀN – TỔNG TẬP ĐOÀN",
+        "page2_title": "PHÂN TÍCH XE PHÂN QUYỀN THEO KHU VỰC",
+        "df": df_xpq,
+        "value_col": "so_luong_xe",
+        "metric_label": "Số lượng xe",
+        "secondary_col": "so_bien_kiem_soat",
+        "secondary_label": "Khu vực có xe",
+        "avg_label": "Loại xe hoạt động",
+        "avg_mode": "per_secondary",
+        "avg_divisor_label": "xe",
+        "avg_numerator_col": "so_luong_xe",
+        "avg_denominator_col": "so_luong_xe",
+        "icon": ICON_XPQ,
+        "type_filter_kind": "fleet",
+        "dataset_keywords": ["xe phan quyen", "xe phân quyền", "xe xang", "xe xăng", "loai xe"],
+    },
+}
+
+HOME_NAV_ORDER = ["dt", "lh", "hd", "emp", "drv", "mkt", "bb", "xdt", "xpq"]
+DATAFRAME_BY_PREFIX = {k: MENU_CONFIG[k]["df"] for k in DASH_PREFIXES}
+
+def get_menu_config(prefix: str) -> dict:
+    return MENU_CONFIG.get(prefix, MENU_CONFIG["dt"])
+
+def make_menu_nav_button(prefix: str, source: str = "sidebar"):
+    cfg = get_menu_config(prefix)
+    if source == "home":
+        visual = GROUP_VISUALS.get(cfg.get("group"), GROUP_VISUALS["rev"])
+        quick_desc_map = {
+            "dt": "Theo dõi doanh thu toàn tập đoàn",
+            "lh": "Theo dõi cơ cấu loại hình khai thác",
+            "hd": "Theo dõi nhóm hợp đồng vận hành",
+            "emp": "Quản trị lực lượng nhân viên",
+            "drv": "Quản trị đội ngũ tài xế",
+            "mkt": "Theo dõi chi phí phải chi và độ phủ điểm tiếp thị theo khu vực",
+            "bb": "Theo dõi biên bản và chứng từ hiện trường",
+            "xdt": "Theo dõi xe trực thuộc và năng lực vận hành",
+            "xpq": "Theo dõi xe phân quyền và hiệu suất khai thác",
+        }
+        desc = quick_desc_map.get(prefix, cfg.get("menu_caption", ""))
+        return dbc.Button(
+            html.Div([
+                html.Div([
+                    html.Span(cfg["code"], className="home-nav-code"),
+                    html.Span("2 tầng phân tích", className="home-nav-group"),
+                ], className="home-nav-badges"),
+                html.Div(cfg["icon"], className="home-nav-icon"),
+                html.Div(cfg["menu_label"], className="home-nav-title"),
+                html.Div(desc, className="home-nav-subtitle"),
+                html.Div([
+                    html.Span("P1 • Tập đoàn", className="home-nav-meta-pill"),
+                    html.Span("P2 • Khu vực", className="home-nav-meta-pill"),
+                ], className="home-nav-footer"),
+                html.Div([
+                    html.Span("Mở dashboard"),
+                    fa_icon("fa-arrow-right", 10, "currentColor")
+                ], className="home-nav-cta"),
+            ], className="home-nav-card-inner"),
+            id={"type": "menu-nav", "menu": prefix, "source": source},
+            n_clicks=0,
+            className="home-nav-card-btn w-100",
+            color="light",
+            style={
+                "--nav-accent": visual["accent"],
+                "--nav-accent-soft": visual["soft"],
+                "--nav-accent-soft-strong": visual["soft2"],
+                "--nav-accent-dark": visual["dark"],
+            },
+        )
+
+    body = [
+        html.Div(cfg["icon"], className="me-2"),
+        html.Div([
+            html.Span(f'{cfg["code"]} {cfg["menu_label"]}'),
+            html.Span(cfg.get("menu_caption", ""), className="small-caption")
+        ], className="flex-grow-1 text-start"),
+    ]
+    return dbc.Button(
+        body,
+        id={"type": "menu-nav", "menu": prefix, "source": source},
+        n_clicks=0,
+        className="menu-tree-btn w-100 mb-2",
+        color="light"
+    )
+
+
+def build_sidebar_menu_section(group_cfg: dict):
+    return html.Div([
+        html.Div([
+            html.Div(fa_icon(group_cfg["icon"], 14, "#ffffff"), className="menu-group-icon", style={"background": group_cfg["color"]}),
+            html.Div([
+                html.Div(f'{group_cfg["code"]}. {group_cfg["label"]}'.upper(), className="menu-group-title"),
+                html.Div(group_cfg["subtitle"], className="menu-group-subtitle"),
+            ], className="flex-grow-1"),
+        ], className="menu-group-head"),
+        html.Div([make_menu_nav_button(prefix, source="sidebar") for prefix in group_cfg["menus"]])
+    ], className="menu-group-card mb-3")
+
+
+def build_home_nav_group(group_cfg: dict):
+    visual = GROUP_VISUALS.get(group_cfg.get("key"), GROUP_VISUALS["rev"])
+    menu_count = len(group_cfg.get("menus", []))
+    width_lg = 4 if menu_count >= 3 else 6
+    width_md = 6
+    buttons = [
+        dbc.Col(
+            make_menu_nav_button(prefix, source="home"),
+            lg=width_lg,
+            md=width_md,
+            sm=12,
+        )
+        for prefix in group_cfg.get("menus", [])
+    ]
+    return html.Div([
+        html.Div([
+            html.Div(fa_icon(group_cfg["icon"], 16, "#ffffff"), className="home-nav-group-icon-shell", style={"background": group_cfg["color"]}),
+            html.Div([
+                html.Div(f'{group_cfg["code"]}. {group_cfg["label"]}', className="home-nav-group-title"),
+                html.Div(group_cfg["subtitle"], className="home-nav-group-subtitle"),
+            ], className="flex-grow-1"),
+            html.Div([
+                html.Span(f"{menu_count} dashboard", className="home-nav-group-badge"),
+                html.Span("Page 1 + Page 2", className="home-nav-group-meta"),
+            ], className="home-nav-group-badge-stack"),
+        ], className="home-nav-group-head"),
+        dbc.Row(buttons, className="g-3")
+    ], className="home-nav-group-shell", style={
+        "--group-accent": visual["accent"],
+        "--group-accent-soft": visual["soft"],
+        "--group-accent-soft-strong": visual["soft2"],
+        "--group-accent-dark": visual["dark"],
+    })
+
+
+def build_home_quick_nav():
+    return dbc.Row([
+        dbc.Col(build_home_nav_group(group_cfg), xl=6, lg=12, md=12)
+        for group_cfg in MENU_GROUPS
+    ], className="g-3 home-nav-super-grid")
+
+
+def filter_panel_chip(text: str, icon=None):
+    return html.Div([
+        icon if icon is not None else None,
+        html.Span(text),
+    ], className="filter-panel-chip")
+
+
+def executive_section_panel(title: str, subtitle: str, body, right_children=None, class_name: str = "mb-3"):
+    right_children = right_children or []
+    if not isinstance(right_children, list):
+        right_children = [right_children]
+    header_cols = [
+        dbc.Col([
+            html.Div(title, className="filter-panel-title"),
+            html.Div(subtitle, className="filter-panel-subtitle"),
+        ], lg=7, md=12)
+    ]
+    if right_children:
+        header_cols.append(
+            dbc.Col(html.Div(right_children, className="filter-panel-chip-row"), lg=5, md=12)
+        )
+    return dbc.Card(
+        dbc.CardBody([
+            dbc.Row(header_cols, className="align-items-center g-3 mb-3"),
+            body,
+        ]),
+        className=f"executive-filter-panel {class_name}"
+    )
+
+
+def exec_dropdown(**kwargs):
+    existing_class = str(kwargs.pop("className", "") or "").strip()
+    kwargs["className"] = f"{existing_class} executive-dropdown".strip()
+    kwargs.setdefault("style", dropdown_style("light"))
+    return dcc.Dropdown(**kwargs)
+
+
+def make_filter_col(label: str, dropdown_component, wrap_id: str, md: int, icon_name: str, helper_text: str):
+    return dbc.Col(
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.Div(fa_icon(icon_name, 13, "#ffffff"), className="exec-filter-badge"),
+                    html.Div([
+                        html.Div(label, className="exec-filter-title"),
+                        html.Div(helper_text, className="exec-filter-helper"),
+                    ], className="flex-grow-1"),
+                ], className="exec-filter-header-main"),
+                html.Div([
+                    html.Span(className="exec-filter-live-dot"),
+                    html.Span("Smart filter"),
+                ], className="exec-filter-live-tag"),
+            ], className="exec-filter-header"),
+            html.Div(dropdown_component, className="exec-filter-dropdown-wrap"),
+        ], id={"type":"filter-wrap","id":wrap_id}, className="exec-filter-shell", style=dropdown_container_style("light")),
+        md=md
+    )
+
+
+def _build_type_filter(prefix: str, page_key: str):
+    cfg = get_menu_config(prefix)
+    kind = cfg.get("type_filter_kind")
+    if prefix in HR_MENU_PREFIXES:
+        dept_options = get_scoped_hr_dept_options(prefix)
+        if page_key == "p1":
+            return make_filter_col(
+                "Bộ phận",
+                exec_dropdown(
+                    id=f"{prefix}-dept",
+                    options=dept_options,
+                    multi=True,
+                    placeholder="Chọn bộ phận nhân sự",
+                    clearable=True,
+                ),
+                f"{prefix}-dept-wrap",
+                3,
+                "fa-building-user",
+                "Lọc theo đơn vị / bộ phận",
+            )
+        return make_filter_col(
+            "Bộ phận",
+            exec_dropdown(
+                id=f"{prefix}-dept-p2",
+                options=dept_options,
+                multi=True,
+                placeholder="Chọn bộ phận nhân sự",
+                clearable=True,
+            ),
+            f"{prefix}-dept-p2-wrap",
+            2,
+            "fa-building-user",
+            "Khoanh vùng theo bộ phận",
+        )
+    if page_key == "p1":
+        if kind == "lh":
+            return make_filter_col(
+                "Loại hình",
+                exec_dropdown(
+                    id="lh-type-p1",
+                    options=LH_OPTIONS,
+                    multi=True,
+                    placeholder="Chọn mô hình vận hành",
+                    clearable=True,
+                ),
+                "lh-type-p1-wrap",
+                4,
+                "fa-layer-group",
+                "Phân nhóm theo mô hình khai thác",
+            )
+        if kind == "hd":
+            return make_filter_col(
+                "Loại hợp đồng",
+                exec_dropdown(
+                    id="hd-type-p1",
+                    options=HD_OPTIONS,
+                    multi=True,
+                    placeholder="Chọn loại hợp đồng",
+                    clearable=True,
+                ),
+                "hd-type-p1-wrap",
+                4,
+                "fa-file-signature",
+                "Phân nhóm hợp đồng vận hành",
+            )
+        if kind == "fleet":
+            return make_filter_col(
+                "Loại xe",
+                exec_dropdown(
+                    id=f"{prefix}-type-p1",
+                    options=get_scoped_vehicle_type_options(prefix),
+                    multi=True,
+                    placeholder="Chọn dòng xe",
+                    clearable=True,
+                ),
+                f"{prefix}-type-p1-wrap",
+                6,
+                "fa-car-side",
+                "Phân nhóm đội xe theo dòng xe",
+            )
+        return dbc.Col(html.Div(), md=4)
+
+    if kind == "lh":
+        return make_filter_col(
+            "Loại hình",
+            exec_dropdown(
+                id="lh-type-p2",
+                options=LH_OPTIONS,
+                multi=True,
+                placeholder="Chọn mô hình vận hành",
+                clearable=True,
+            ),
+            "lh-type-p2-wrap",
+            4,
+            "fa-layer-group",
+            "Khoanh vùng mô hình tại khu vực",
+        )
+    if kind == "hd":
+        return make_filter_col(
+            "Loại hợp đồng",
+            exec_dropdown(
+                id="hd-type-p2",
+                options=HD_OPTIONS,
+                multi=True,
+                placeholder="Chọn loại hợp đồng",
+                clearable=True,
+            ),
+            "hd-type-p2-wrap",
+            2,
+            "fa-file-signature",
+            "Khoanh vùng nhóm hợp đồng",
+        )
+    if kind == "fleet":
+        return make_filter_col(
+            "Loại xe",
+            exec_dropdown(
+                id=f"{prefix}-type-p2",
+                options=VEHICLE_TYPE_OPTIONS.get(prefix, []),
+                multi=True,
+                placeholder="Chọn dòng xe",
+                clearable=True,
+            ),
+            f"{prefix}-type-p2-wrap",
+            6,
+            "fa-car-side",
+            "Khoanh vùng nhóm xe theo dòng xe",
+        )
+    return dbc.Col(html.Div(), md=2)
+
+
+def _build_fleet_seat_filter(prefix: str, page_key: str):
+    dropdown_id = f"{prefix}-seat-p1" if page_key == "p1" else f"{prefix}-seat-p2"
+    wrap_id = f"{prefix}-seat-p1-wrap" if page_key == "p1" else f"{prefix}-seat-p2-wrap"
+    helper_text = "Lọc snapshot theo số chỗ mỗi xe" if page_key == "p1" else "Khoanh vùng đội xe theo số chỗ"
+    return make_filter_col(
+        "Số chỗ",
+        exec_dropdown(
+            id=dropdown_id,
+            options=get_scoped_vehicle_seat_options(prefix),
+            multi=True,
+            placeholder="Chọn số chỗ",
+            clearable=True,
+        ),
+        wrap_id,
+        6 if page_key == "p1" else 4,
+        "fa-chair",
+        helper_text,
+    )
+
+
+def home_page():
+    hero = executive_header(
+        "NAM THANG GROUP • EXECUTIVE OVERVIEW",
+        "Trang tổng quan dashboard. Menu phân cấp theo cụm nghiệp vụ: Doanh thu, Nhân sự, Kinh doanh và Phương tiện.",
+        right_children=html.Div(id="home-summary", className="exec-chip-row")
+    )
+
+    quick_nav = executive_section_panel(
+        "Bản đồ điều hành theo cụm nghiệp vụ",
+        "Dashboard 4 khối điều hành. Mỗi module bên dưới đều giữ chuẩn 2 page để theo dõi tổng tập đoàn và drill-down khu vực.",
+        build_home_quick_nav(),
+        right_children=[
+            filter_panel_chip("4 khối nghiệp vụ", fa_icon("fa-sitemap", 12, GREEN_PRIMARY)),
+            filter_panel_chip("9 dashboard chuyên trách", fa_icon("fa-table-cells-large", 12, GREEN_PRIMARY)),
+            filter_panel_chip("2 page / module", fa_icon("fa-layer-group", 12, GREEN_PRIMARY)),
+        ],
+        class_name="mb-3 executive-home-nav-panel"
+    )
+
+    filter_row = dbc.Row(
+        [
+            make_filter_col(
+                "Năm",
+                exec_dropdown(
+                    id="home-year",
+                    options=[{"label": str(y), "value": int(y)} for y in YEAR_OPTIONS_ALL],
+                    value=DEFAULT_YEAR,
+                    multi=False,
+                    placeholder="Chọn niên độ báo cáo",
+                    clearable=True,
+                ),
+                "home-year-wrap",
+                3,
+                "fa-calendar-days",
+                "Niên độ điều hành",
+            ),
+            make_filter_col(
+                "Tháng",
+                exec_dropdown(
+                    id="home-month",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS_BY_YEAR.get(DEFAULT_YEAR, MONTH_OPTIONS_ALL)],
+                    value=[],
+                    multi=True,
+                    placeholder="Chọn một hoặc nhiều tháng",
+                    clearable=True,
+                ),
+                "home-month-wrap",
+                5,
+                "fa-calendar",
+                "Lọc theo chu kỳ báo cáo",
+            ),
+            make_filter_col(
+                "Khu vực",
+                exec_dropdown(
+                    id="home-region",
+                    options=[{"label": x, "value": x} for x in get_scoped_all_regions()],
+                    value=[],
+                    multi=True,
+                    placeholder="Tất cả khu vực",
+                    clearable=True,
+                ),
+                "home-region-wrap",
+                4,
+                "fa-map-location-dot",
+                "Khoanh vùng điều hành",
+            ),
+        ],
+        className="g-3"
+    )
+    filters = executive_section_panel(
+        "Control dock điều hành",
+        "Bộ lọc control dock: đồng bộ cho toàn bộ KPI, biểu đồ và bảng snapshot.",
+        filter_row,
+        right_children=[
+            filter_panel_chip("Scope control", fa_icon("fa-crosshairs", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Đồng bộ toàn trang", fa_icon("fa-arrows-rotate", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Multi-select linh hoạt", fa_icon("fa-sliders", 12, GREEN_PRIMARY)),
+        ],
+        class_name="mb-3 executive-control-dock"
+    )
+
+    kpis = dbc.Row(
+        [
+            dbc.Col(make_kpi_card("Tổng doanh thu", "home-kpi1", "home-kpi1", ICON_MONEY, min_height="230px"), md=3),
+            dbc.Col(make_kpi_card("Tổng số cuốc", "home-kpi2", "home-kpi2", ICON_ROUTE, min_height="230px"), md=3),
+            dbc.Col(make_kpi_card("Doanh thu TB / cuốc", "home-kpi3", "home-kpi3", ICON_AVG, min_height="230px"), md=3),
+            dbc.Col(make_kpi_card("Khu vực hoạt động", "home-kpi4", "home-kpi4", ICON_REGION, min_height="230px"), md=3),
+        ],
+        className="g-3 mb-3"
+    )
+
+    charts1 = dbc.Row(
+        [
+            dbc.Col(make_graph_card("home-main", "home-main", height="420px"), md=8),
+            dbc.Col(make_graph_card("home-region-donut", "home-region-donut", height="420px"), md=4),
+        ],
+        className="g-3 mb-3"
+    )
+
+    charts2 = dbc.Row(
+        [
+            dbc.Col(make_graph_card("home-region-bar", "home-region-bar", height="380px"), md=4),
+            dbc.Col(make_graph_card("home-lh-donut", "home-lh-donut", height="380px"), md=4),
+            dbc.Col(make_graph_card("home-hd-bar", "home-hd-bar", height="380px"), md=4),
+        ],
+        className="g-3 mb-3"
+    )
+
+    table = dbc.Row([
+        dbc.Col(
+            make_table_card(
+                "Monthly Snapshot",
+                "Tổng hợp nhanh theo tháng để leadership theo dõi doanh thu, số cuốc, hiệu suất và khu vực dẫn đầu.",
+                dash_table.DataTable(
+                    id="home-table",
+                    columns=[
+                        {"name": "Tháng", "id": "thang_label"},
+                        {"name": "Doanh thu", "id": "tong_doanh_thu_fmt"},
+                        {"name": "Số cuốc", "id": "tong_so_cuoc_fmt"},
+                        {"name": "TB/cuốc", "id": "avg_per_trip_fmt"},
+                        {"name": "Khu vực dẫn đầu", "id": "top_region"},
+                    ],
+                    page_size=12,
+                    style_header={"backgroundColor": "#f2f4f7", "color": "#111827", "fontWeight": "700"},
+                    style_cell={"backgroundColor": "#ffffff", "color": "#111827", "textAlign": "center"},
+                )
+            ),
+            md=12
+        )
+    ])
+
+    return dbc.Container(fluid=True, children=[hero, quick_nav, filters, kpis, charts1, charts2, table])
+
+
+def _detail_table_columns(prefix: str):
+    cfg = get_menu_config(prefix)
+    df_src = cfg.get("df", pd.DataFrame()) if isinstance(cfg, dict) else pd.DataFrame()
+    available = set(df_src.columns) if isinstance(df_src, pd.DataFrame) else set()
+
+    if prefix == "mkt":
+        preferred = [
+            ("thang_label", "Tháng"),
+            ("khu_vuc", "Khu vực"),
+            ("tong_phai_chi", "Tiền phải chi"),
+            ("so_diem_tiep_thi", "Số điểm tiếp thị"),
+            ("chi_phi_binh_quan_moi_diem", "Chi phí / điểm"),
+            ("so_ho_so_hoa_hong", "Số hồ sơ hoa hồng"),
+            ("tong_da_chi_du", "Tổng đã chi đủ"),
+            ("tong_chua_chi_du", "Tổng chưa chi đủ"),
+            ("tong_khong_chi", "Tổng không chi"),
+            ("so_ho_so_da_chi_du", "HS đã chi đủ"),
+            ("so_ho_so_chua_chi_du", "HS chưa chi đủ"),
+            ("so_ho_so_khong_chi", "HS không chi"),
+            ("chi_phi_binh_quan_moi_ho_so", "Chi phí / hồ sơ"),
+            ("so_diem_moi_ky_hd", "Điểm mới / kỳ HĐ"),
+            ("so_loai_hinh_kd", "Số loại hình KD"),
+        ]
+        cols = [{"name": label, "id": col} for col, label in preferred if col in available]
+        if cols:
+            return cols
+
+    if prefix in {"xdt", "xpq"}:
+        preferred = [
+            ("khu_vuc", "Khu vực"),
+            ("loai_xe", "Loại xe"),
+            ("so_luong_xe", "Số lượng xe"),
+            ("nhom_nhien_lieu", "Nhiên liệu"),
+            ("so_bien_kiem_soat", "Số BKS"),
+            ("so_so_tai", "Số số tài"),
+        ]
+        cols = [{"name": label, "id": col} for col, label in preferred if col in available]
+        if cols:
+            return cols
+
+    fallback = []
+    for col in (list(df_src.columns)[:12] if isinstance(df_src, pd.DataFrame) else []):
+        fallback.append({"name": str(col).replace("_", " ").title(), "id": col})
+    return fallback
+
+
+def _detail_table_props(prefix: str):
+    base = {
+        "sort_action": "native",
+        "style_table": {"overflowX": "auto", "maxWidth": "100%"},
+    }
+    if prefix == "mkt":
+        cols = _detail_table_columns(prefix)
+        tooltip_header = {c["id"]: c["name"] for c in cols}
+        base.update({
+            "columns": cols,
+            "tooltip_header": tooltip_header,
+            "tooltip_delay": 0,
+            "tooltip_duration": None,
+            "fixed_rows": {"headers": True},
+            "style_table": {"overflowX": "auto", "maxWidth": "100%", "minWidth": "100%"},
+            "style_cell_conditional": [
+                {
+                    "if": {"column_id": "khu_vuc"},
+                    "minWidth": "180px", "width": "180px", "maxWidth": "240px",
+                    "textAlign": "left",
+                },
+                {
+                    "if": {"column_id": "tong_phai_chi"},
+                    "minWidth": "130px", "width": "130px", "maxWidth": "150px",
+                },
+                {
+                    "if": {"column_id": "so_diem_tiep_thi"},
+                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
+                },
+                {
+                    "if": {"column_id": "chi_phi_binh_quan_moi_diem"},
+                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
+                },
+                {
+                    "if": {"column_id": "so_ho_so_hoa_hong"},
+                    "minWidth": "120px", "width": "120px", "maxWidth": "130px",
+                },
+                {
+                    "if": {"column_id": "tong_da_chi_du"},
+                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
+                },
+                {
+                    "if": {"column_id": "tong_chua_chi_du"},
+                    "minWidth": "130px", "width": "130px", "maxWidth": "145px",
+                },
+                {
+                    "if": {"column_id": "tong_khong_chi"},
+                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
+                },
+                {
+                    "if": {"column_id": "so_ho_so_da_chi_du"},
+                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
+                },
+                {
+                    "if": {"column_id": "so_ho_so_chua_chi_du"},
+                    "minWidth": "115px", "width": "115px", "maxWidth": "125px",
+                },
+                {
+                    "if": {"column_id": "so_ho_so_khong_chi"},
+                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
+                },
+                {
+                    "if": {"column_id": "chi_phi_binh_quan_moi_ho_so"},
+                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
+                },
+                {
+                    "if": {"column_id": "so_diem_moi_ky_hd"},
+                    "minWidth": "115px", "width": "115px", "maxWidth": "125px",
+                },
+                {
+                    "if": {"column_id": "so_loai_hinh_kd"},
+                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
+                },
+            ],
+            "style_data_conditional": [
+                {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"},
+            ],
+        })
+    if prefix in {"xdt", "xpq"}:
+        cols = _detail_table_columns(prefix)
+        tooltip_header = {c["id"]: c["name"] for c in cols}
+        base.update({
+            "columns": cols,
+            "tooltip_header": tooltip_header,
+            "tooltip_delay": 0,
+            "tooltip_duration": None,
+            "fixed_rows": {"headers": True},
+            "style_table": {"overflowX": "auto", "maxWidth": "100%", "minWidth": "100%"},
+            "style_cell_conditional": [
+                {
+                    "if": {"column_id": "khu_vuc"},
+                    "minWidth": "160px", "width": "160px", "maxWidth": "220px",
+                    "textAlign": "left",
+                },
+                {
+                    "if": {"column_id": "loai_xe"},
+                    "minWidth": "160px", "width": "160px", "maxWidth": "220px",
+                    "textAlign": "left",
+                },
+                {
+                    "if": {"column_id": "nhom_nhien_lieu"},
+                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
+                },
+                {
+                    "if": {"column_id": "so_luong_xe"},
+                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
+                },
+
+            ],
+            "style_data_conditional": [
+                {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"},
+            ],
+        })
+    return base
+
+
+def _detail_table_theme_styles(theme: str, prefix: str):
+    if theme == "light":
+        style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}
+        style_header = {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"}
+    else:
+        style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}
+        style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
+
+    if prefix == "mkt":
+        style_cell.update({
+            "padding": "10px 8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.35",
+            "fontSize": "13px",
+            "minWidth": "100px",
+            "width": "110px",
+            "maxWidth": "150px",
+            "border": "1px solid #e5e7eb" if theme == "light" else "1px solid #334155",
+        })
+        style_header.update({
+            "padding": "10px 8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "textAlign": "center",
+            "fontSize": "12px",
+            "border": "1px solid #d1d5db" if theme == "light" else "1px solid #475569",
+            "position": "sticky",
+            "top": 0,
+            "zIndex": 2,
+        })
+    if prefix in {"xdt", "xpq"}:
+        style_cell.update({
+            "padding": "10px 8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.35",
+            "fontSize": "13px",
+            "minWidth": "96px",
+            "width": "110px",
+            "maxWidth": "180px",
+            "border": "1px solid #e5e7eb" if theme == "light" else "1px solid #334155",
+        })
+        style_header.update({
+            "padding": "10px 8px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "textAlign": "center",
+            "fontSize": "12px",
+            "border": "1px solid #d1d5db" if theme == "light" else "1px solid #475569",
+            "position": "sticky",
+            "top": 0,
+            "zIndex": 2,
+        })
+    return style_cell, style_header
+
+
+def _fleet_filter_text(dims=None, type_filter=None, seat_filter=None):
+    dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+    type_filter = type_filter if isinstance(type_filter, list) else ([type_filter] if type_filter else [])
+    seat_filter = seat_filter if isinstance(seat_filter, list) else ([seat_filter] if seat_filter else [])
+    dims_show = ", ".join([str(x) for x in dims[:3]]) if dims else ("Phạm vi tài khoản" if current_user_region_scope() is not None else "Toàn bộ khu vực")
+    if dims and len(dims) > 3:
+        dims_show = f"{len(dims)} khu vực đã chọn"
+    tf_txt = f" • Lọc loại xe: {', '.join(type_filter)}" if type_filter else ""
+    if seat_filter:
+        seat_labels = [f"{int(float(x))} chỗ" for x in seat_filter if str(x) not in ["", "None"]]
+        if seat_labels:
+            tf_txt += f" • Số chỗ: {', '.join(seat_labels)}"
+    return dims_show, tf_txt
+
+
+def _fleet_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
+    cols = ["khu_vuc", "loai_xe", "nhom_nhien_lieu", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai"]
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=cols)
+    out = dff.groupby([c for c in ["khu_vuc", "loai_xe", "nhom_nhien_lieu"] if c in dff.columns], as_index=False).agg(
+        so_luong_xe=("so_luong_xe", "sum"),
+        so_bien_kiem_soat=("so_bien_kiem_soat", "sum"),
+        so_so_tai=("so_so_tai", "sum"),
+    )
+    out = out.sort_values([c for c in ["khu_vuc", "so_luong_xe", "so_bien_kiem_soat"] if c in out.columns], ascending=[True, False, False][:len([c for c in ["khu_vuc", "so_luong_xe", "so_bien_kiem_soat"] if c in out.columns])]).reset_index(drop=True)
+    return out[[c for c in cols if c in out.columns]].copy()
+
+
+def _fleet_region_snapshot(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["khu_vuc", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai", "so_loai_xe", "ty_trong_xe", "xe_fmt", "bks_fmt", "so_tai_fmt", "ty_trong_fmt"])
+    g = dff.groupby("khu_vuc", as_index=False).agg(
+        so_luong_xe=("so_luong_xe", "sum"),
+        so_bien_kiem_soat=("so_bien_kiem_soat", "sum"),
+        so_so_tai=("so_so_tai", "sum"),
+        so_loai_xe=("loai_xe", "nunique"),
+    ).sort_values(["so_luong_xe", "so_loai_xe"], ascending=[False, False]).reset_index(drop=True)
+    total = float(pd.to_numeric(g["so_luong_xe"], errors="coerce").fillna(0).sum())
+    g["ty_trong_xe"] = np.where(total > 0, g["so_luong_xe"] / total * 100.0, 0.0)
+    g["xe_fmt"] = g["so_luong_xe"].apply(fmt_vn)
+    g["bks_fmt"] = g["so_bien_kiem_soat"].apply(fmt_vn)
+    g["so_tai_fmt"] = g["so_so_tai"].apply(fmt_vn)
+    g["ty_trong_fmt"] = g["ty_trong_xe"].apply(lambda x: fmt_pct(x, 1))
+    return g
+
+
+def _fleet_type_snapshot(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["loai_xe", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai", "so_khu_vuc", "ty_trong_xe", "xe_fmt", "bks_fmt", "so_tai_fmt", "ty_trong_fmt"])
+    g = dff.groupby("loai_xe", as_index=False).agg(
+        so_luong_xe=("so_luong_xe", "sum"),
+        so_bien_kiem_soat=("so_bien_kiem_soat", "sum"),
+        so_so_tai=("so_so_tai", "sum"),
+        so_khu_vuc=("khu_vuc", "nunique"),
+    ).sort_values(["so_luong_xe", "so_khu_vuc"], ascending=[False, False]).reset_index(drop=True)
+    total = float(pd.to_numeric(g["so_luong_xe"], errors="coerce").fillna(0).sum())
+    g["ty_trong_xe"] = np.where(total > 0, g["so_luong_xe"] / total * 100.0, 0.0)
+    g["xe_fmt"] = g["so_luong_xe"].apply(fmt_vn)
+    g["bks_fmt"] = g["so_bien_kiem_soat"].apply(fmt_vn)
+    g["so_tai_fmt"] = g["so_so_tai"].apply(fmt_vn)
+    g["ty_trong_fmt"] = g["ty_trong_xe"].apply(lambda x: fmt_pct(x, 1))
+    return g
+
+
+def _fleet_region_type_snapshot(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["khu_vuc", "loai_xe", "so_luong_xe", "xe_fmt"])
+    g = dff.groupby([c for c in ["khu_vuc", "loai_xe"] if c in dff.columns], as_index=False).agg(
+        so_luong_xe=("so_luong_xe", "sum"),
+        so_bien_kiem_soat=("so_bien_kiem_soat", "sum"),
+        so_so_tai=("so_so_tai", "sum"),
+    ).sort_values("so_luong_xe", ascending=False).reset_index(drop=True)
+    g["xe_fmt"] = g["so_luong_xe"].apply(fmt_vn)
+    return g
+
+
+def _fleet_kpi_lines_region(region_df: pd.DataFrame, max_lines: int = 4):
+    if region_df is None or region_df.empty:
+        return []
+    lines = []
+    for _, r in region_df.head(max_lines).iterrows():
+        color = REGION_COLOR_MAP.get(str(r.get("khu_vuc", "Khác")), "#888")
+        lines.append(_ellipsis_div([
+            _swatch(color),
+            f"{r.get('khu_vuc', '')}: {r.get('xe_fmt', '0')} xe",
+            html.Span(f" • {r.get('ty_trong_fmt', '0%')}", style={"opacity": 0.75}),
+        ]))
+    return lines
+
+
+def _fleet_kpi_lines_type(type_df: pd.DataFrame, max_lines: int = 4):
+    if type_df is None or type_df.empty:
+        return []
+    lines = []
+    palette = px.colors.qualitative.Set2 + px.colors.qualitative.Bold
+    for i, (_, r) in enumerate(type_df.head(max_lines).iterrows()):
+        color = palette[i % len(palette)]
+        lines.append(_ellipsis_div([
+            _swatch(color),
+            f"{r.get('loai_xe', '')}: {r.get('xe_fmt', '0')} xe",
+            html.Span(f" • {r.get('ty_trong_fmt', '0%')}", style={"opacity": 0.75}),
+        ]))
+    return lines
+
+
+def page_1(prefix, title=None):
+    cfg = get_menu_config(prefix)
+    title = title or cfg["page1_title"]
+    if prefix in FLEET_MENU_PREFIXES:
+        filter_row = dbc.Row([
+            _build_type_filter(prefix, "p1"),
+            _build_fleet_seat_filter(prefix, "p1"),
+        ], className="g-3")
+    elif prefix in HR_MENU_PREFIXES:
+        filter_row = dbc.Row([
+            make_filter_col(
+                "Năm",
+                exec_dropdown(
+                    id=f"{prefix}-year",
+                    options=[{"label": str(y), "value": int(y)} for y in YEAR_OPTIONS_ALL],
+                    value=None,
+                    multi=False,
+                    placeholder="Chọn niên độ báo cáo",
+                    clearable=True,
+                ),
+                f"{prefix}-year-wrap",
+                3,
+                "fa-calendar-days",
+                "Niên độ tổng hợp toàn tập đoàn",
+            ),
+            make_filter_col(
+                "Tháng",
+                exec_dropdown(
+                    id=f"{prefix}-month",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS_ALL],
+                    multi=True,
+                    placeholder="Chọn một hoặc nhiều tháng",
+                    clearable=True,
+                ),
+                f"{prefix}-month-wrap",
+                3,
+                "fa-calendar",
+                "Khoảng thời gian cần theo dõi",
+            ),
+            make_filter_col(
+                "Khu vực",
+                exec_dropdown(
+                    id=f"{prefix}-region",
+                    options=[{"label": x, "value": x} for x in get_scoped_regions_from_df(cfg["df"])],
+                    multi=True,
+                    placeholder="Chọn khu vực cần phân tích",
+                    clearable=True,
+                ),
+                f"{prefix}-region-wrap",
+                3,
+                "fa-map-location-dot",
+                "Lọc riêng theo khu vực",
+            ),
+            _build_type_filter(prefix, "p1"),
+        ], className="g-3")
+    else:
+        filter_row = dbc.Row([
+            make_filter_col(
+                "Năm",
+                exec_dropdown(
+                    id=f"{prefix}-year",
+                    options=[{"label": str(y), "value": int(y)} for y in YEAR_OPTIONS_ALL],
+                    value=None,
+                    multi=False,
+                    placeholder="Chọn niên độ báo cáo",
+                    clearable=True,
+                ),
+                f"{prefix}-year-wrap",
+                3,
+                "fa-calendar-days",
+                "Niên độ tổng hợp toàn tập đoàn",
+            ),
+            make_filter_col(
+                "Tháng",
+                exec_dropdown(
+                    id=f"{prefix}-month",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS_ALL],
+                    multi=True,
+                    placeholder="Chọn một hoặc nhiều tháng",
+                    clearable=True,
+                ),
+                f"{prefix}-month-wrap",
+                5,
+                "fa-calendar",
+                "Khoảng thời gian cần theo dõi",
+            ),
+            _build_type_filter(prefix, "p1"),
+        ], className="g-3")
+
+    filters_panel = executive_section_panel(
+        "Điều kiện lọc trang 1",
+        f"Chế độ tổng hợp toàn tập đoàn cho menu {cfg['menu_label']}. Bộ lọc được thiết kế theo phong cách executive, đồng bộ tức thời với KPI và biểu đồ.",
+        filter_row,
+        right_children=[
+            filter_panel_chip("Page 1 • Executive summary", fa_icon("fa-gauge-high", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Zoom / export sẵn sàng", fa_icon("fa-magnifying-glass-chart", 12, GREEN_PRIMARY)),
+        ],
+        class_name="mb-3 executive-control-dock"
+    )
+
+    return dbc.Container(fluid=True, children=[
+        page_title_block(title, f"Trang tổng hợp toàn tập đoàn cho menu {cfg['menu_label']} với KPI, xu hướng, cơ cấu và khả năng zoom chi tiết từng biểu đồ."),
+        filters_panel,
+        dbc.Row([
+            dbc.Col(make_kpi_card(f"Tổng {cfg['metric_label']}", f"{prefix}-p1-kpi1", f"{prefix}-p1-kpi1", cfg["icon"]), md=4),
+            dbc.Col(make_kpi_card(cfg["secondary_label"], f"{prefix}-p1-kpi2", f"{prefix}-p1-kpi2", ICON_ROUTE), md=4),
+            dbc.Col(make_kpi_card(cfg["avg_label"], f"{prefix}-p1-kpi3", f"{prefix}-p1-kpi3", ICON_AVG), md=4),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p1-line-kv", f"{prefix}-p1-line-kv", height="430px"), md=12),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p1-line", f"{prefix}-p1-line", height="390px"), md=6),
+            dbc.Col(make_graph_card(f"{prefix}-p1-bar", f"{prefix}-p1-bar", height="390px"), md=6),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p1-pie", f"{prefix}-p1-pie", height="390px"), md=6),
+        ], className="mb-3 g-3"),
+    ])
+
+
+def page_2(prefix, title=None, df=None, dim="khu_vuc"):
+    cfg = get_menu_config(prefix)
+    df = apply_region_scope_to_df(df if df is not None else cfg["df"])
+    title = title or cfg["page2_title"]
+    dim_values = sorted(df[dim].astype(str).dropna().unique().tolist()) if dim in df.columns else []
+
+    if prefix in FLEET_MENU_PREFIXES:
+        filter_row = dbc.Row([
+            make_filter_col(
+                "Khu vực",
+                exec_dropdown(
+                    id=f"{prefix}-dim",
+                    options=[{"label": x, "value": x} for x in dim_values],
+                    value=dim_values[:1],
+                    multi=True,
+                    placeholder="Chọn khu vực theo dõi",
+                    clearable=True,
+                ),
+                f"{prefix}-dim-wrap",
+                4,
+                "fa-map-location-dot",
+                "Khoanh vùng phân tích địa bàn",
+            ),
+            _build_type_filter(prefix, "p2"),
+            _build_fleet_seat_filter(prefix, "p2"),
+        ], className="g-3")
+    elif prefix in HR_MENU_PREFIXES:
+        filter_row = dbc.Row([
+            make_filter_col(
+                "Năm",
+                exec_dropdown(
+                    id=f"{prefix}-year-p2",
+                    options=[{"label": str(y), "value": int(y)} for y in YEAR_OPTIONS_ALL],
+                    value=None,
+                    multi=False,
+                    placeholder="Chọn niên độ báo cáo",
+                    clearable=True,
+                ),
+                f"{prefix}-year-p2-wrap",
+                3,
+                "fa-calendar-days",
+                "Niên độ của khu vực đang xem",
+            ),
+            make_filter_col(
+                "Tháng",
+                exec_dropdown(
+                    id=f"{prefix}-month-p2",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS_ALL],
+                    multi=True,
+                    placeholder="Chọn một hoặc nhiều tháng",
+                    clearable=True,
+                ),
+                f"{prefix}-month-p2-wrap",
+                3,
+                "fa-calendar",
+                "Chu kỳ cần so sánh chi tiết",
+            ),
+            make_filter_col(
+                "Khu vực",
+                exec_dropdown(
+                    id=f"{prefix}-dim",
+                    options=[{"label": x, "value": x} for x in dim_values],
+                    value=None,
+                    multi=True,
+                    placeholder="Chọn khu vực theo dõi",
+                    clearable=True,
+                ),
+                f"{prefix}-dim-wrap",
+                4,
+                "fa-map-location-dot",
+                "Khoanh vùng phân tích địa bàn",
+            ),
+            _build_type_filter(prefix, "p2"),
+        ], className="g-3")
+    else:
+        filter_row = dbc.Row([
+            make_filter_col(
+                "Khu vực",
+                exec_dropdown(
+                    id=f"{prefix}-dim",
+                    options=[{"label": x, "value": x} for x in dim_values],
+                    value=dim_values[:1],
+                    multi=True,
+                    placeholder="Chọn khu vực theo dõi",
+                    clearable=True,
+                ),
+                f"{prefix}-dim-wrap",
+                3,
+                "fa-map-location-dot",
+                "Khoanh vùng phân tích địa bàn",
+            ),
+            make_filter_col(
+                "Năm",
+                exec_dropdown(
+                    id=f"{prefix}-year-p2",
+                    options=[{"label": str(y), "value": int(y)} for y in YEAR_OPTIONS_ALL],
+                    value=None,
+                    multi=False,
+                    placeholder="Chọn niên độ báo cáo",
+                    clearable=True,
+                ),
+                f"{prefix}-year-p2-wrap",
+                3,
+                "fa-calendar-days",
+                "Niên độ của khu vực đang xem",
+            ),
+            make_filter_col(
+                "Tháng",
+                exec_dropdown(
+                    id=f"{prefix}-month-p2",
+                    options=[{"label": m, "value": m} for m in MONTH_OPTIONS_ALL],
+                    multi=True,
+                    placeholder="Chọn một hoặc nhiều tháng",
+                    clearable=True,
+                ),
+                f"{prefix}-month-p2-wrap",
+                4,
+                "fa-calendar",
+                "Chu kỳ cần so sánh chi tiết",
+            ),
+            _build_type_filter(prefix, "p2"),
+        ], className="g-3")
+
+    filters_panel = executive_section_panel(
+        "Điều kiện lọc trang 2",
+        f"Phân tích theo khu vực cho menu {cfg['menu_label']}. Dùng bộ lọc để so sánh địa bàn, kỳ báo cáo và nhóm nghiệp vụ trên cùng một layout executive.",
+        filter_row,
+        right_children=[
+            filter_panel_chip("Page 2 • Regional lens", fa_icon("fa-map", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Compare by area", fa_icon("fa-code-compare", 12, GREEN_PRIMARY)),
+        ],
+        class_name="mb-3 executive-control-dock"
+    )
+
+    return dbc.Container(fluid=True, children=[
+        page_title_block(title, f"Phân tích theo khu vực cho menu {cfg['menu_label']} với khả năng so sánh, lọc chi tiết và xem bảng dữ liệu ngay trong dashboard."),
+        html.Div(id=f"{prefix}-insight", className="text-center mb-3", style={"fontSize":"18px","fontWeight":"bold", "color": TEXT_LIGHT_UI}),
+        filters_panel,
+        dbc.Row([
+            dbc.Col(make_kpi_card(f"Tổng {cfg['metric_label']}", f"{prefix}-kpi1", f"{prefix}-kpi1", cfg["icon"]), md=4),
+            dbc.Col(make_kpi_card(cfg["secondary_label"], f"{prefix}-kpi2", f"{prefix}-kpi2", ICON_ROUTE), md=4),
+            dbc.Col(make_kpi_card(cfg["avg_label"], f"{prefix}-kpi3", f"{prefix}-kpi3", ICON_AVG), md=4),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p2-line", f"{prefix}-p2-line", height="390px"), md=6),
+            dbc.Col(make_graph_card(f"{prefix}-p2-bar", f"{prefix}-p2-bar", height="390px"), md=6),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p2-pie", f"{prefix}-p2-pie", height="390px"), md=6),
+        ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(
+                make_table_card(
+                    "Detail Data",
+                    "Bảng dữ liệu sau lọc để đối chiếu nhanh với biểu đồ.",
+                    dash_table.DataTable(
+                        id=f"{prefix}-table",
+                        page_action=("none" if prefix in ["lh", "hd"] else "native"),
+                        page_size=12,
+                        style_header={"backgroundColor":"#f2f4f7","color":"#111827","fontWeight":"700"},
+                        style_cell={"backgroundColor":"#ffffff","color":"#111827","textAlign":"center"},
+                        **_detail_table_props(prefix)
+                    )
+                ),
+                md=12
+            )
+        ])
+    ])
+
+def ai_badge(text: str, variant: str = "soft"):
+    return html.Span(text, className=f"ai-mini-badge {variant}")
+
+
+def ai_empty_state(title: str = "AI Copilot sẵn sàng", subtitle: str = "Hãy nhập câu hỏi hoặc chọn một gợi ý nhanh ở phía trên để bắt đầu phân tích dữ liệu theo ngữ cảnh dashboard hiện tại."):
+    return html.Div(
+        [
+            html.Div(fa_icon("fa-robot", 22, "#ffffff"), className="ai-empty-icon"),
+            html.Div(title, className="ai-empty-title"),
+            html.Div(subtitle, className="ai-empty-text"),
+        ],
+        className="ai-empty-state"
+    )
+
+
+def _ai_menu_label(menu: str) -> str:
+    if menu == "home":
+        return "Home overview"
+    try:
+        return get_menu_config(menu).get("menu_label", str(menu).upper())
+    except Exception:
+        return str(menu).upper()
+
+
+def ai_context_tags(context: dict | None):
+    context = context or {}
+    filters = context.get("filters") or {}
+    menu = context.get("menu")
+    page = context.get("page")
+    tags = []
+    if menu:
+        tags.append(_ai_menu_label(menu))
+    if menu == "home":
+        tags.append("Landing page")
+    elif page in [1, 2]:
+        tags.append(f"Page {page}")
+
+    year_val = filters.get("year") or filters.get("year_p2")
+    if year_val is not None and str(year_val) != "":
+        tags.append(f"Năm {year_val}")
+
+    months = filters.get("months") or filters.get("months_p2") or []
+    if isinstance(months, str):
+        months = [months]
+    if months:
+        tags.append(months[0] if len(months) == 1 else f"{len(months)} tháng")
+
+    dims = filters.get("dims") or filters.get("dim") or []
+    if isinstance(dims, str):
+        dims = [dims]
+    if dims:
+        tags.append(dims[0] if len(dims) == 1 else f"{len(dims)} khu vực")
+
+    type_filter = filters.get("type_filter") or filters.get("type") or []
+    if isinstance(type_filter, str):
+        type_filter = [type_filter]
+    if type_filter:
+        tags.append(type_filter[0] if len(type_filter) == 1 else f"{len(type_filter)} nhóm lọc")
+
+    seat_filter = filters.get("seat_filter") or []
+    if isinstance(seat_filter, (str, int, float)):
+        seat_filter = [seat_filter]
+    if seat_filter:
+        seat_first = seat_filter[0]
+        try:
+            tags.append(f"{int(float(seat_first))} chỗ" if len(seat_filter) == 1 else f"{len(seat_filter)} mức chỗ")
+        except Exception:
+            tags.append("Lọc số chỗ")
+
+    return tags[:5]
+
+
+def format_ai_time(ts: str | None) -> str:
+    try:
+        return pd.to_datetime(ts).strftime("%H:%M")
+    except Exception:
+        return ""
+
+
+def render_ai_thread(history):
+    history = history or []
+    if not history:
+        return ai_empty_state()
+
+    bubbles = []
+    for item in history[-6:]:
+        ts_text = format_ai_time(item.get("ts"))
+        source = item.get("source", "typed")
+        question = item.get("q", "")
+        answer = item.get("a", "")
+        context_tags_list = item.get("context_tags") or []
+
+        user_meta = []
+        if source == "chip":
+            user_meta.append(ai_badge("Quick prompt", "accent"))
+        elif source == "batch":
+            user_meta.append(ai_badge("Batch question", "accent"))
+        else:
+            user_meta.append(ai_badge("Manual input", "soft"))
+
+        bubbles.append(
+            html.Div(
+                [
+                    html.Div(fa_icon("fa-user", 15, "#ffffff"), className="ai-avatar"),
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.Span("Bạn", className="ai-role"),
+                                    html.Span(ts_text, className="ai-time"),
+                                ],
+                                className="ai-bubble-head"
+                            ),
+                            html.Div(question, className="ai-bubble-body"),
+                            html.Div(user_meta, className="ai-meta-row"),
+                        ],
+                        className="ai-bubble"
+                    )
+                ],
+                className="ai-row user"
+            )
+        )
+
+        bot_badges = [ai_badge("Đã phân tích", "accent")]
+        for tag in context_tags_list:
+            bot_badges.append(ai_badge(tag, "soft"))
+
+        bubbles.append(
+            html.Div(
+                [
+                    html.Div(fa_icon("fa-sparkles", 15, "#ffffff"), className="ai-avatar"),
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.Span("AI Copilot", className="ai-role"),
+                                    html.Span(ts_text, className="ai-time"),
+                                ],
+                                className="ai-bubble-head"
+                            ),
+                            dcc.Markdown(answer, link_target="_blank", className="ai-bubble-body"),
+                            html.Div(bot_badges, className="ai-meta-row"),
+                        ],
+                        className="ai-bubble"
+                    )
+                ],
+                className="ai-row bot"
+            )
+        )
+
+    return html.Div(bubbles, className="ai-thread")
+
+
+AI_SUGGESTIONS_V3 = [
+    "Cà Mau tháng nào có doanh thu cao nhất năm 2025",
+    "Top 3 tháng doanh thu cao nhất của Cà Mau năm 2025",
+    "Doanh thu tháng gần nhất",
+    "Doanh thu tháng gần nhất so với tháng liền trước (MoM)",
+    "Doanh thu tháng gần nhất so với cùng kỳ năm trước (YoY)",
+    "Doanh thu quý 1/2025",
+    "Doanh thu quý 1/2025 so với cùng kỳ năm trước",
+    "Doanh thu 6 tháng đầu năm 2025",
+    "Tháng 3/2025 khu vực nào có doanh thu cao nhất",
+    "So sánh doanh thu của Rạch Giá và An Giang trong tháng 1 2025 và tháng 10 2025",
+    "Số lượng nhân sự tháng gần nhất",
+    "Số tài xế theo khu vực năm 2025",
+    "Doanh thu xe phân quyền quý 1/2025",
+]
+
+UI_HOTFIX_DROPDOWN_FONT_CSS = """
+/* ===== HOTFIX: dropdown overlay + font-weight normalize (light touch) ===== */
+.executive-filter-panel,
+.executive-control-dock,
+.executive-filter-panel .card-body,
+.executive-control-dock .card-body,
+.executive-graph-card,
+.executive-kpi-card,
+.executive-table-card,
+.exec-filter-shell,
+.exec-filter-dropdown-wrap{
+  overflow: visible !important;
+}
+
+.exec-filter-shell{
+  position: relative;
+  z-index: 20;
+}
+.exec-filter-shell:focus-within{
+  z-index: 9990 !important;
+}
+.exec-filter-dropdown-wrap{
+  position: relative;
+  z-index: 9991 !important;
+}
+
+.executive-dropdown,
+.executive-dropdown .Select,
+.executive-dropdown .Select-control,
+.executive-dropdown .Select-menu-outer,
+.exec-filter-shell .Select,
+.exec-filter-shell .Select-control,
+.exec-filter-shell .Select-menu-outer,
+.Select-menu-outer{
+  overflow: visible !important;
+}
+
+.executive-dropdown .Select-menu-outer,
+.exec-filter-shell .Select-menu-outer,
+.Select-menu-outer{
+  z-index: 99999 !important;
+  max-height: 320px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.executive-dropdown .Select-menu,
+.exec-filter-shell .Select-menu,
+.Select-menu{
+  max-height: 318px !important;
+}
+
+.executive-dropdown .Select-option,
+.exec-filter-shell .Select-option,
+.executive-dropdown .VirtualizedSelectOption,
+.exec-filter-shell .VirtualizedSelectOption{
+  font-weight: 600 !important;
+}
+
+.exec-title,
+.ai-panel-title,
+.ai-empty-title,
+.menu-group-title,
+.kpi-card-title,
+.filter-panel-title,
+.exec-filter-title,
+.home-nav-title,
+.home-nav-group-title{
+  font-weight: 800 !important;
+}
+
+.executive-dropdown .Select-value-label,
+.exec-filter-shell .Select-value-label,
+.executive-dropdown .Select-input > input,
+.exec-filter-shell .Select-input > input{
+  font-weight: 700 !important;
+}
+"""
+
+TYPOGRAPHY_UNIFY_CSS = """
+/* ===== HOTFIX: unify font family + normalize font weight ===== */
+:root{
+  --ui-font: "DejaVu Sans", Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+/* giữ icon Font Awesome không bị vỡ */
+.fa,
+.fas,
+.fa-solid,
+i.fa-solid,
+i[class^="fa-"],
+i[class*=" fa-"]{
+  font-family: "Font Awesome 6 Free" !important;
+  font-weight: 900 !important;
+}
+
+/* ép toàn bộ text dùng cùng 1 font để tránh fallback làm chữ đậm nhạt lẫn nhau */
+html,
+body,
+#react-entry-point,
+#_dash-app-content,
+h1, h2, h3, h4, h5, h6,
+div,
+span,
+p,
+a,
+button,
+input,
+textarea,
+label,
+small,
+strong,
+b,
+li,
+ul,
+ol,
+table,
+thead,
+tbody,
+tr,
+th,
+td,
+.offcanvas-title,
+.card-title,
+.card-text,
+.modal-title,
+.Select-placeholder,
+.Select-value-label,
+.Select-input > input,
+.Select-option,
+.VirtualizedSelectOption,
+.dash-table-container,
+.dash-spreadsheet-container,
+.dash-spreadsheet-inner table{
+  font-family: var(--ui-font) !important;
+  font-synthesis: none !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: optimizeLegibility !important;
+}
+
+body{
+  font-weight: 500 !important;
+}
+
+/* title */
+#top-title,
+.exec-title,
+.ai-panel-title,
+.ai-empty-title,
+.menu-group-title,
+.filter-panel-title,
+.exec-filter-title,
+.home-nav-title,
+.home-nav-group-title,
+.kpi-card-title,
+.section-eyebrow,
+.exec-chip,
+.filter-panel-chip,
+.summary-pill,
+.offcanvas-title{
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+}
+
+/* button / chip / CTA */
+.ai-compose-title,
+.ai-suggestion-title,
+.ai-role,
+.ai-mini-badge,
+.ai-chip,
+.quick-nav-btn,
+.menu-tree-btn,
+.home-nav-cta,
+.home-nav-meta-pill,
+.home-nav-code,
+.home-nav-group,
+.exec-filter-live-tag,
+.kpi-delta-pill,
+.btn{
+  font-weight: 600 !important;
+}
+
+/* subtitle / body / caption */
+.exec-subtitle,
+.menu-group-subtitle,
+.filter-panel-subtitle,
+.exec-filter-helper,
+.home-nav-subtitle,
+.home-nav-group-subtitle,
+.home-mini-note,
+.ai-compose-caption,
+.ai-panel-subtitle,
+.ai-empty-text,
+.ai-bubble-body,
+.ai-thread-note,
+.executive-dropdown .Select-value-label,
+.exec-filter-shell .Select-value-label,
+.executive-dropdown .Select-input > input,
+.exec-filter-shell .Select-input > input,
+.executive-dropdown .Select-option,
+.exec-filter-shell .Select-option,
+.executive-dropdown .VirtualizedSelectOption,
+.exec-filter-shell .VirtualizedSelectOption,
+.Select-placeholder,
+.Select-option,
+.VirtualizedSelectOption,
+.card,
+.card-body,
+.card-text,
+td,
+th{
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+}
+
+strong,
+b{
+  font-weight: 600 !important;
+}
+
+/* sidebar/menu riêng */
+.offcanvas,
+.offcanvas-body,
+.offcanvas .btn,
+.offcanvas .card,
+.offcanvas .card-body,
+.offcanvas .menu-group-title,
+.offcanvas .menu-group-subtitle,
+.offcanvas .menu-tree-btn,
+.offcanvas .small-caption{
+  font-family: var(--ui-font) !important;
+}
+
+.offcanvas .menu-group-title,
+.offcanvas .menu-tree-btn,
+.offcanvas .btn{
+  font-weight: 600 !important;
+}
+
+.offcanvas .menu-group-subtitle,
+.offcanvas .small-caption{
+  font-weight: 500 !important;
+}
+
+/* Plotly text */
+.js-plotly-plot .plotly text,
+.js-plotly-plot .gtitle,
+.js-plotly-plot .xtitle,
+.js-plotly-plot .ytitle,
+.js-plotly-plot .legend text,
+.main-svg text{
+  font-family: var(--ui-font) !important;
+  font-weight: 500 !important;
+}
+"""
+
+app.index_string = app.index_string.replace(
+    "</head>",
+    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
+)
+
+ZOOM_TARGETS = [
+    "home-kpi1", "home-kpi2", "home-kpi3", "home-kpi4",
+    "home-main", "home-region-donut", "home-region-bar", "home-lh-donut", "home-hd-bar"
+]
+for p in DASH_PREFIXES:
+    ZOOM_TARGETS += [f"{p}-p1-kpi1", f"{p}-p1-kpi2", f"{p}-p1-kpi3"]
+    ZOOM_TARGETS += [f"{p}-kpi1", f"{p}-kpi2", f"{p}-kpi3"]
+    ZOOM_TARGETS += [f"{p}-p1-line-kv", f"{p}-p1-line", f"{p}-p1-bar", f"{p}-p1-pie"]
+    ZOOM_TARGETS += [f"{p}-p2-line", f"{p}-p2-bar", f"{p}-p2-pie"]
+
+def _zoomable_wrap(kind: str, target: str):
+    return {"type": "zoomable", "kind": kind, "target": target}
+
+def executive_page_header(title: str, subtitle: str, right_id: str | None = None):
+    right_children = html.Div(id=right_id) if right_id else None
+    return executive_header(title, subtitle, right_children=right_children)
+
+def page_title_block(title: str, subtitle: str):
+    return executive_header(title, subtitle, right_children=[
+        summary_pill("Executive Mode", fa_icon("fa-gauge-high", 12, "#ffffff")),
+        summary_pill("Light UI", fa_icon("fa-sun", 12, "#ffffff"))
+    ])
+
+app.layout = dbc.Container(
+    fluid=True,
+    style={"backgroundColor": APP_LIGHT_BG, "minHeight": "100vh", "paddingBottom": "20px"},
+    children=[
+        dcc.Store(id="menu", data="home"),
+        dcc.Store(id="page", data=0),
+        dcc.Store(id="theme", data="light"),
+
+        dcc.Store(id="filters-home", data={"year": DEFAULT_YEAR, "months": [], "dims": []}),
+        *[dcc.Store(id=f"filters-{p}-p1", data={}) for p in DASH_PREFIXES],
+        *[dcc.Store(id=f"filters-{p}-p2", data={}) for p in DASH_PREFIXES],
+
+        dcc.Store(id="ai-chat-history", data=[]),
+        dcc.Interval(id="refresh-meta", interval=30 * 1000, n_intervals=0),
+
+        dbc.Row([
+            dbc.Col(
+                dbc.Button([ICON_MENU], id="open-menu", color="secondary", outline=True, className="me-2"),
+                width="auto"
+            ),
+            dbc.Col(
+                html.Div(
+                    id="top-title",
+                    style={"fontSize": "18px", "fontWeight": "700", "letterSpacing": "1px", "color": TEXT_LIGHT_UI}
+                )
+            ),
+            dbc.Col(
+                html.Div(
+                    [
+                        dbc.Button(
+                            [ICON_THEME, html.Span(" Theme", className="ms-2")],
+                            id="toggle-theme",
+                            color="secondary",
+                            style={"display": "none"},
+                            disabled=True
+                        ),
+                        html.Img(
+                            src=COMPANY_LOGO_SRC,
+                            style={
+                                "height": "54px",
+                                "width": "auto",
+                                "objectFit": "contain",
+                                "borderRadius": "10px",
+                                "padding": "3px 6px",
+                                "backgroundColor": "#ffffff",
+                                "border": f"1.5px solid {GREEN_BORDER}",
+                                "boxShadow": f"0 4px 14px {GREEN_SHADOW}"
+                            }
+                        ) if COMPANY_LOGO_SRC else html.Div(
+                            "NAM THANG GROUP",
+                            style={
+                                "fontWeight": "900",
+                                "fontSize": "14px",
+                                "padding": "8px 12px",
+                                "borderRadius": "10px",
+                                "backgroundColor": "#fff",
+                                "border": f"1.5px solid {GREEN_BORDER}",
+                                "color": GREEN_PRIMARY,
+                                "boxShadow": f"0 4px 14px {GREEN_SHADOW}"
+                            }
+                        )
+                    ],
+                    className="d-flex align-items-center justify-content-end gap-2"
+                ),
+                width="auto"
+            )
+        ], className="my-2 align-items-center"),
+
+        dbc.Row([
+            dbc.Col(
+                dbc.Card(
+                    dbc.CardBody([
+                        html.Div("DỮ LIỆU CẬP NHẬT LÚC", style={"fontWeight": "700", "opacity": 0.85}),
+                        dbc.Row([
+                            dbc.Col(html.Div(id="data-updated-at", style={"fontSize": "18px", "fontWeight": "800"})),
+                            dbc.Col(
+                                dbc.Button([ICON_DL, html.Span(" Tải Excel")], id="btn-download-excel", color="secondary",
+                                           outline=True, className="float-end"),
+                                width="auto"
+                            )
+                        ], className="g-2 align-items-center")
+                    ]),
+                    style={
+                        "backgroundColor": CARD_LIGHT_BG,
+                        "border": f"1.5px solid {GREEN_BORDER}",
+                        "boxShadow": f"0 8px 18px {GREEN_SHADOW}",
+                        "borderRadius": EXEC_RADIUS
+                    }
+                ),
+                md=6
+            )
+        ], className="mb-2"),
+
+        dbc.Offcanvas(
+            id="sidebar",
+            title=html.Div([ICON_CHART, html.Span("  DASHBOARD MENU")]),
+            is_open=False,
+            placement="start",
+            scrollable=True,
+            style={"backgroundColor": "#ffffff", "color": TEXT_LIGHT_UI, "borderRight": f"1.5px solid {GREEN_BORDER}"},
+            children=html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div("Menu điều hướng tổng thể", style={"fontWeight": "900", "marginBottom": "10px", "color": NAVY_PRIMARY}),
+                            dbc.Button([ICON_HOME, html.Span(" HOME", className="ms-2")], id={"type": "menu-nav", "menu": "home", "source": "sidebar"}, color="success", className="w-100 mb-3"),
+                            html.Div([build_sidebar_menu_section(group_cfg) for group_cfg in MENU_GROUPS], style={"paddingBottom": "12px"}),
+                            html.Hr(style={"borderColor": "#d0d7e2"}),
+                            html.Div("Điều hướng trang", style={"fontWeight": "900", "marginBottom": "10px", "color": NAVY_PRIMARY}),
+                            dbc.Button("Home", id="go-home", color="secondary", outline=True, className="w-100 mb-2"),
+                            dbc.Button("Page 1", id="go-page-1", color="secondary", outline=True, className="w-100 mb-2"),
+                            dbc.Button("Page 2", id="go-page-2", color="secondary", outline=True, className="w-100 mb-2"),
+                            dbc.Button([fa_icon("fa-right-from-bracket", 14), html.Span(" Đăng xuất", className="ms-2")], href="/logout", color="light", className="w-100", style={"border": "1px solid #dcfce7", "color": "#166534", "fontWeight": "900", "background": "#ffffff"}),
+                        ],
+                        style={"flex": "1 1 auto", "minHeight": 0}
+                    ),
+                    html.Div(
+                        [
+                            "Intelligence Developer Nguyen Huu Minh",
+                            html.Br(),
+                            "SQL Data:",
+                            html.Br(),
+                            "Mai Nhat Truong",
+                            html.Br(),
+                            "Danh The Trung",
+                        ],
+                        style={
+                            "marginTop": "18px",
+                            "textAlign": "center",
+                            "opacity": 0.9,
+                            "fontSize": "14px",
+                            "fontWeight": "600",
+                            "whiteSpace": "pre-line",
+                            "backgroundColor": "rgba(255,255,255,0.92)",
+                            "padding": "10px 12px",
+                            "borderRadius": "16px",
+                            "border": "1px solid #e2e8f0",
+                            "boxShadow": EXEC_SHADOW_SOFT,
+                            "flexShrink": 0,
+                        },
+                    ),
+                ],
+                style={"minHeight": "100%", "display": "flex", "flexDirection": "column", "paddingBottom": "8px"}
+            )
+        ),
+
+        dbc.Offcanvas(
+            id="ai-box",
+            title=html.Div([ICON_BOT, html.Span("  AI COPILOT")]),
+            is_open=False,
+            placement="end",
+            scrollable=True,
+            style={"backgroundColor": "#f7fbff", "color": TEXT_LIGHT_UI, "width": "470px", "borderLeft": f"1.5px solid {GREEN_BORDER}"},
+            children=[
+                html.Div(
+                    [
+                        html.Div("AI COPILOT", className="ai-panel-kicker"),
+                        html.Div("Trợ lý phân tích dashboard", className="ai-panel-title"),
+                        html.Div(
+                            "Chat box này hiểu ngữ cảnh của page hiện tại, bộ lọc đang chọn và các câu hỏi gợi ý. Bạn có thể dùng nó như một executive copilot để hỏi nhanh insight ngay trên dashboard.",
+                            className="ai-panel-subtitle"
+                        ),
+                        html.Div(
+                            [
+                                html.Span([fa_icon("fa-brain", 12, "#ffffff"), html.Span("Context aware", className="ms-1")], className="ai-scope-pill"),
+                                html.Span([fa_icon("fa-filter", 12, "#ffffff"), html.Span("Filter synced", className="ms-1")], className="ai-scope-pill"),
+                                html.Span([fa_icon("fa-bolt", 12, "#ffffff"), html.Span("Fast prompt", className="ms-1")], className="ai-scope-pill"),
+                            ],
+                            className="ai-scope-row"
+                        )
+                    ],
+                    className="ai-panel-intro"
+                ),
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Div("Vùng soạn câu hỏi", className="ai-compose-title"),
+                                        html.Div("Bạn có thể nhập 1 câu hoặc nhiều câu. AI sẽ tự bám theo context của menu, page và filter hiện tại.", className="ai-compose-caption"),
+                                    ]
+                                ),
+                                html.Div([fa_icon("fa-sparkles", 12, GREEN_PRIMARY), html.Span("Executive mode", className="ms-1")], className="ai-compose-badge")
+                            ],
+                            className="ai-compose-head"
+                        ),
+                        dbc.Textarea(
+                            id="ai-input",
+                            placeholder="Ví dụ: Doanh thu tháng gần nhất so với tháng trước, hoặc Top 3 khu vực doanh thu cao nhất năm 2025...",
+                        ),
+                        dbc.Row([
+                            dbc.Col(dbc.Button([ICON_SEND, html.Span(" Gửi phân tích")], id="ai-send", color="success", className="mt-3 w-100 ai-action-btn ai-send-btn")),
+                            dbc.Col(dbc.Button([ICON_TRASH, html.Span(" Làm mới hội thoại")], id="ai-clear", color="secondary", outline=True, className="mt-3 w-100 ai-action-btn ai-clear-btn")),
+                        ], className="g-2")
+                    ],
+                    className="ai-compose-shell"
+                ),
+                html.Div(
+                    [
+                        html.Div("Gợi ý nhanh", className="ai-suggestion-title"),
+                        html.Div([
+                            html.Span(
+                                q,
+                                className="ai-chip",
+                                id={"type": "ai-chip", "idx": i},
+                                n_clicks=0,
+                                title="Click để hỏi AI ngay"
+                            )
+                            for i, q in enumerate(AI_SUGGESTIONS_V3)
+                        ], className="ai-wrap")
+                    ],
+                    className="ai-suggestion-shell"
+                ),
+                html.Div("Hội thoại gần nhất", className="ai-thread-note"),
+                dcc.Loading(html.Div(ai_empty_state(), id="ai-output", className="ai-output-shell"), type="default")
+            ]
+        ),
+
+        dcc.Loading(html.Div(id="content"), type="default"),
+
+        dbc.Button(ICON_CHEV_L, id="prev-page", className="page-nav-btn page-nav-left", title="Trang trước", style=PAGE_NAV_LEFT_BASE),
+        dbc.Button(ICON_CHEV_R, id="next-page", className="page-nav-btn page-nav-right", title="Trang sau", style=PAGE_NAV_RIGHT_BASE),
+
+        dbc.Button(
+            ICON_BOT,
+            id="open-ai",
+            color="info",
+            className="position-fixed end-0 me-4",
+            style={"bottom": "88px", "borderRadius": "999px", "width": "56px", "height": "56px",
+                   "boxShadow": "0 0 22px rgba(0,255,255,0.25)", "fontSize": "20px"}
+        ),
+
+        dbc.Modal(
+            id="zoom-modal",
+            is_open=False,
+            size="xl",
+            scrollable=True,
+            backdrop=True,
+            centered=True,
+            style={"maxWidth": "98vw", "width": "98vw"},
+            children=[
+                dbc.ModalHeader(dbc.ModalTitle(id="zoom-title", children="PHÓNG TO"), close_button=True),
+                dbc.ModalBody(
+                    dcc.Loading(type="default", children=html.Div([
+                        html.Div(id="zoom-kpi-render", style={"width": "100%", "maxWidth": "100%"}),
+                        dcc.Graph(
+                            id="zoom-graph",
+                            figure={},
+                            config={"displayModeBar": True, "scrollZoom": True},
+                            style={"display": "none", "height": "82vh"}
+                        ),
+                        html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
+                        html.Div(id="zoom-detail", style={"display": "none", "width": "100%", "maxWidth": "100%", "overflowX": "hidden"})
+                    ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"})),
+                    style={"padding": "10px", "overflowX": "hidden"}
+                )
+            ],
+        ),
+
+        dcc.Store(id="zoom-target", data=None),
+        html.Div([dcc.Store(id={"type": "zoom-store", "target": t}, data=None) for t in ZOOM_TARGETS], style={"display": "none"}),
+        dcc.Download(id="download-excel")
+    ]
+)
+
+@app.callback(
+    Output("content","children"),
+    Input("menu","data"),
+    Input("page","data")
+)
+def render(menu, page):
+    def wrap(children, show):
+        return html.Div(children, style={"display": "block" if show else "none"})
+    try:
+        p = int(page) if page is not None else 0
+    except Exception:
+        p = 0
+    children = [wrap(home_page(), menu == "home")]
+    for prefix in DASH_PREFIXES:
+        cfg = get_menu_config(prefix)
+        children.append(wrap(page_1(prefix, cfg["page1_title"]), menu == prefix and p == 1))
+        children.append(wrap(page_2(prefix, cfg["page2_title"], cfg["df"], "khu_vuc"), menu == prefix and p == 2))
+    return html.Div(children)
+
+
+@app.callback(
+    Output("data-updated-at", "children"),
+    Input("refresh-meta", "n_intervals")
+)
+def show_last_updated(_):
+    try:
+        ts = EXCEL_FILE.stat().st_mtime
+        dt_local = pd.to_datetime(ts, unit="s", utc=True).tz_convert(VN_TZ)
+        return dt_local.strftime("%d/%m/%Y %H:%M:%S (VN)")
+    except Exception:
+        return "Không đọc được thời gian cập nhật"
+
+@app.callback(
+    Output("download-excel", "data"),
+    Input("btn-download-excel", "n_clicks"),
+    State("menu", "data"),
+    State("page", "data"),
+    State("filters-home", "data"),
+    *[State(f"filters-{p}-p1", "data") for p in DASH_PREFIXES],
+    *[State(f"filters-{p}-p2", "data") for p in DASH_PREFIXES],
+    prevent_initial_call=True
+)
+def download_excel(n, menu, page, f_home, *filter_states):
+    try:
+        p1_filter_map = dict(zip(DASH_PREFIXES, filter_states[:len(DASH_PREFIXES)]))
+        p2_filter_map = dict(zip(DASH_PREFIXES, filter_states[len(DASH_PREFIXES):]))
+        ts = pd.Timestamp.now(tz=VN_TZ).strftime("%Y%m%d_%H%M%S")
+
+        if menu == "home":
+            filt = f_home or {}
+            year_val = filt.get("year")
+            months = filt.get("months", []) or []
+            dims = filt.get("dims", []) or []
+            home_dt = apply_common_filters(df_dt, year_val=year_val, months=months, dims=dims)
+            home_lh = apply_common_filters(df_lh, year_val=year_val, months=months, dims=dims)
+            home_hd = apply_common_filters(df_hd, year_val=year_val, months=months, dims=dims)
+
+            overview = _make_summary_for_export(home_dt, "home")
+            region_share = pd.DataFrame()
+            if not home_dt.empty and "khu_vuc" in home_dt.columns:
+                region_share = home_dt.groupby("khu_vuc", as_index=False).agg({
+                    "tong_doanh_thu": "sum",
+                    "tong_so_cuoc": "sum"
+                }).sort_values("tong_doanh_thu", ascending=False)
+            lh_share = pd.DataFrame()
+            if not home_lh.empty and LH_COL in home_lh.columns:
+                lh_share = home_lh.groupby(LH_COL, as_index=False).agg({"tong_doanh_thu": "sum"}).sort_values("tong_doanh_thu", ascending=False)
+            hd_share = pd.DataFrame()
+            if not home_hd.empty and HD_COL in home_hd.columns:
+                hd_share = home_hd.groupby(HD_COL, as_index=False).agg({"tong_so_cuoc": "sum"}).sort_values("tong_so_cuoc", ascending=False)
+
+            filters_sheet = pd.DataFrame([{
+                "menu": "home",
+                "page": 0,
+                "year": year_val,
+                "months": ", ".join(months),
+                "dims(khu_vuc)": ", ".join([str(x) for x in dims]),
+            }])
+
+            bio = BytesIO()
+            with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+                filters_sheet.to_excel(writer, sheet_name="FILTERS", index=False)
+                home_dt.to_excel(writer, sheet_name="DT_FILTERED", index=False)
+                home_lh.to_excel(writer, sheet_name="LH_FILTERED", index=False)
+                home_hd.to_excel(writer, sheet_name="HD_FILTERED", index=False)
+                if overview is not None and not overview.empty:
+                    overview.to_excel(writer, sheet_name="OVERVIEW_MONTHLY", index=False)
+                if region_share is not None and not region_share.empty:
+                    region_share.to_excel(writer, sheet_name="REGION_SHARE", index=False)
+                if lh_share is not None and not lh_share.empty:
+                    lh_share.to_excel(writer, sheet_name="LH_SHARE", index=False)
+                if hd_share is not None and not hd_share.empty:
+                    hd_share.to_excel(writer, sheet_name="HD_SHARE", index=False)
+
+            return dcc.send_bytes(bio.getvalue(), f"export_home_overview_{ts}.xlsx")
+
+        filt = {}
+        if int(page) == 1:
+            filt = p1_filter_map.get(menu, {}) or {}
+        elif int(page) == 2:
+            filt = p2_filter_map.get(menu, {}) or {}
+
+        dff = _apply_export_filters(menu, int(page), filt)
+        summary = _make_summary_for_export(dff, menu)
+        cfg = get_menu_config(menu) if menu in MENU_CONFIG else {}
+
+        filters_sheet = pd.DataFrame([{
+            "menu": menu,
+            "page": int(page),
+            "menu_label": cfg.get("menu_label", menu),
+            "year": (filt or {}).get("year", None),
+            "months": ", ".join((filt or {}).get("months", []) or []),
+            "dims(khu_vuc)": ", ".join([str(x) for x in ((filt or {}).get("dims", []) or [])]),
+            "type_filter": ", ".join([str(x) for x in ((filt or {}).get("type_filter", []) or [])]),
+        }])
+
+        bio = BytesIO()
+        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+            filters_sheet.to_excel(writer, sheet_name="FILTERS", index=False)
+            dff.to_excel(writer, sheet_name="FILTERED_DATA", index=False)
+            if summary is not None and not summary.empty:
+                summary.to_excel(writer, sheet_name="SUMMARY", index=False)
+
+        filename = f"export_{menu}_page{int(page)}_{ts}.xlsx"
+        return dcc.send_bytes(bio.getvalue(), filename)
+    except Exception:
+        return no_update
+
+@app.callback(
+    Output("sidebar", "is_open"),
+    Input("open-menu", "n_clicks"),
+    Input({"type": "menu-nav", "menu": ALL, "source": ALL}, "n_clicks"),
+    Input("go-home", "n_clicks"),
+    Input("go-page-1", "n_clicks"),
+    Input("go-page-2", "n_clicks"),
+    State("sidebar", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_sidebar(n_open, _menu_clicks, g0, g1, g2, is_open):
+    if ctx.triggered_id == "open-menu":
+        return not is_open
+    return False
+
+@app.callback(
+    Output("ai-box", "is_open"),
+    Input("open-ai", "n_clicks"),
+    State("ai-box", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_ai(n, is_open):
+    return not is_open
+
+@app.callback(
+    Output("menu","data"),
+    Output("page","data"),
+    Input({"type": "menu-nav", "menu": ALL, "source": ALL}, "n_clicks"),
+    Input("next-page","n_clicks"),
+    Input("prev-page","n_clicks"),
+    Input("go-home","n_clicks"),
+    Input("go-page-1","n_clicks"),
+    Input("go-page-2","n_clicks"),
+    State("menu","data"),
+    State("page","data"),
+    prevent_initial_call=True
+)
+def navigate_dashboard(_menu_clicks, n_next, n_prev, g0, g1, g2, current_menu, current_page):
+    trig = ctx.triggered_id
+    menu = current_menu or "home"
+    try:
+        page = int(current_page) if current_page is not None else (0 if menu == "home" else 1)
+    except Exception:
+        page = 0 if menu == "home" else 1
+
+    if isinstance(trig, dict) and trig.get("type") == "menu-nav":
+        new_menu = trig.get("menu", "home")
+        return new_menu, (0 if new_menu == "home" else 1)
+    if trig == "go-home":
+        return "home", 0
+    if trig == "go-page-1":
+        return menu, (0 if menu == "home" else 1)
+    if trig == "go-page-2":
+        if menu == "home":
+            raise PreventUpdate
+        return menu, 2
+    if menu == "home":
+        raise PreventUpdate
+    if trig == "next-page":
+        return menu, (2 if page != 2 else 1)
+    if trig == "prev-page":
+        return menu, (1 if page != 1 else 2)
+    return menu, page
+
+@app.callback(
+    Output("theme","data"),
+    Input("toggle-theme","n_clicks"),
+    State("theme","data"),
+    prevent_initial_call=True
+)
+def toggle_theme(n, theme):
+    return "light"
+
+@app.callback(
+    Output("top-title", "children"),
+    Input("menu", "data"),
+    Input("page", "data"),
+)
+def update_top_title(menu, page):
+    if menu == "home":
+        return "HOME  •  EXECUTIVE OVERVIEW"
+    cfg = get_menu_config(menu)
+    group_label = next((g["label"] for g in MENU_GROUPS if g["key"] == cfg.get("group")), "Dashboard")
+    return f"{group_label.upper()}  •  {cfg['menu_label'].upper()}  •  PAGE {page}"
+
+@app.callback(
+    Output("prev-page", "style"),
+    Output("next-page", "style"),
+    Input("menu", "data")
+)
+def toggle_page_nav_visibility(menu):
+    if menu == "home":
+        return {**PAGE_NAV_LEFT_BASE, "display": "none"}, {**PAGE_NAV_RIGHT_BASE, "display": "none"}
+    return PAGE_NAV_LEFT_BASE, PAGE_NAV_RIGHT_BASE
+
+@app.callback(
+    Output("filters-home", "data"),
+    Input("home-year", "value"),
+    Input("home-month", "value"),
+    Input("home-region", "value"),
+    prevent_initial_call=True
+)
+def store_filters_home(year_val, months, regions):
+    regions = regions if isinstance(regions, list) else ([regions] if regions else [])
+    return {"year": year_val, "months": months or [], "dims": regions}
+
+@app.callback(
+    Output("filters-dt-p1", "data"),
+    Input("dt-year", "value"),
+    Input("dt-month", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_dt_p1(year_val, months):
+    return {"year": year_val, "months": months or []}
+
+@app.callback(
+    Output("filters-lh-p1", "data"),
+    Input("lh-year", "value"),
+    Input("lh-month", "value"),
+    Input("lh-type-p1", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_lh_p1(year_val, months, type_filter):
+    return {"year": year_val, "months": months or [], "type_filter": type_filter or []}
+
+@app.callback(
+    Output("filters-hd-p1", "data"),
+    Input("hd-year", "value"),
+    Input("hd-month", "value"),
+    Input("hd-type-p1", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_hd_p1(year_val, months, type_filter):
+    return {"year": year_val, "months": months or [], "type_filter": type_filter or []}
+
+@app.callback(
+    Output("filters-dt-p2", "data"),
+    Input("dt-dim", "value"),
+    Input("dt-year-p2", "value"),
+    Input("dt-month-p2", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_dt_p2(dims, year_val, months):
+    dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+    return {"dims": dims, "year": year_val, "months": months or []}
+
+@app.callback(
+    Output("filters-lh-p2", "data"),
+    Input("lh-dim", "value"),
+    Input("lh-year-p2", "value"),
+    Input("lh-month-p2", "value"),
+    Input("lh-type-p2", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_lh_p2(dims, year_val, months, type_filter):
+    dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+    return {"dims": dims, "year": year_val, "months": months or [], "type_filter": type_filter or []}
+
+@app.callback(
+    Output("filters-hd-p2", "data"),
+    Input("hd-dim", "value"),
+    Input("hd-year-p2", "value"),
+    Input("hd-month-p2", "value"),
+    Input("hd-type-p2", "value"),
+    prevent_initial_call=True
+)
+def _store_filters_hd_p2(dims, year_val, months, type_filter):
+    dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+    return {"dims": dims, "year": year_val, "months": months or [], "type_filter": type_filter or []}
+
+# Fleet filter stores are handled centrally inside _register_simple_menu_callbacks
+# to avoid duplicate callback outputs for xdt/xpq.
+
+@app.callback(
+    Output({"type": "filter-wrap", "id": ALL}, "style"),
+    Input("theme", "data"),
+    State({"type": "filter-wrap", "id": ALL}, "id"),
+    prevent_initial_call=False
+)
+def update_filter_wrap_styles(theme, ids):
+    st = dropdown_container_style(theme)
+    return [st] * len(ids)
+
+def _month_options_for_year(year_val):
+    if year_val is None:
+        opts = MONTH_OPTIONS_ALL
+    else:
+        opts = MONTH_OPTIONS_BY_YEAR.get(int(year_val), [])
+    return [{"label": m, "value": m} for m in opts], opts
+
+@app.callback(
+    Output("home-month", "options"),
+    Output("home-month", "value"),
+    Input("home-year", "value"),
+    State("home-month", "value"),
+    prevent_initial_call=False
+)
+def home_month_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("dt-month", "options"),
+    Output("dt-month", "value"),
+    Input("dt-year", "value"),
+    State("dt-month", "value"),
+    prevent_initial_call=True
+)
+def dt_month_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("lh-month", "options"),
+    Output("lh-month", "value"),
+    Input("lh-year", "value"),
+    State("lh-month", "value"),
+    prevent_initial_call=True
+)
+def lh_month_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("hd-month", "options"),
+    Output("hd-month", "value"),
+    Input("hd-year", "value"),
+    State("hd-month", "value"),
+    prevent_initial_call=True
+)
+def hd_month_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("dt-month-p2", "options"),
+    Output("dt-month-p2", "value"),
+    Input("dt-year-p2", "value"),
+    State("dt-month-p2", "value"),
+    prevent_initial_call=True
+)
+def dt_month_p2_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("lh-month-p2", "options"),
+    Output("lh-month-p2", "value"),
+    Input("lh-year-p2", "value"),
+    State("lh-month-p2", "value"),
+    prevent_initial_call=True
+)
+def lh_month_p2_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+@app.callback(
+    Output("hd-month-p2", "options"),
+    Output("hd-month-p2", "value"),
+    Input("hd-year-p2", "value"),
+    State("hd-month-p2", "value"),
+    prevent_initial_call=True
+)
+def hd_month_p2_depends_on_year(year_val, cur_months):
+    options, allowed = _month_options_for_year(year_val)
+    cur_months = cur_months or []
+    new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+    return options, new_val
+
+def _store_filters_hr(prefix: str, page_key: str, year_val, months, regions, departments):
+    regions = regions if isinstance(regions, list) else ([regions] if regions else [])
+    departments = departments if isinstance(departments, list) else ([departments] if departments else [])
+    payload = {"year": year_val, "months": months or [], "dims": regions, "departments": departments}
+    if page_key == "p2":
+        payload["dims"] = regions
+    return payload
+
+
+for _hr_prefix in HR_MENU_PREFIXES:
+    @app.callback(
+        Output(f"filters-{_hr_prefix}-p1", "data"),
+        Input(f"{_hr_prefix}-year", "value"),
+        Input(f"{_hr_prefix}-month", "value"),
+        Input(f"{_hr_prefix}-region", "value"),
+        Input(f"{_hr_prefix}-dept", "value"),
+        prevent_initial_call=True
+    )
+    def _store_filters_hr_p1(year_val, months, regions, departments, _prefix=_hr_prefix):
+        return _store_filters_hr(_prefix, "p1", year_val, months, regions, departments)
+
+    @app.callback(
+        Output(f"filters-{_hr_prefix}-p2", "data"),
+        Input(f"{_hr_prefix}-dim", "value"),
+        Input(f"{_hr_prefix}-year-p2", "value"),
+        Input(f"{_hr_prefix}-month-p2", "value"),
+        Input(f"{_hr_prefix}-dept-p2", "value"),
+        prevent_initial_call=True
+    )
+    def _store_filters_hr_p2(dims, year_val, months, departments, _prefix=_hr_prefix):
+        dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+        departments = departments if isinstance(departments, list) else ([departments] if departments else [])
+        return {"dims": dims, "year": year_val, "months": months or [], "departments": departments}
+
+    @app.callback(
+        Output(f"{_hr_prefix}-month", "options"),
+        Output(f"{_hr_prefix}-month", "value"),
+        Input(f"{_hr_prefix}-year", "value"),
+        State(f"{_hr_prefix}-month", "value"),
+        prevent_initial_call=True
+    )
+    def _month_depends_on_year_hr_p1(year_val, cur_months, _prefix=_hr_prefix):
+        options, allowed = _month_options_for_year(year_val)
+        cur_months = cur_months or []
+        new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+        return options, new_val
+
+    @app.callback(
+        Output(f"{_hr_prefix}-month-p2", "options"),
+        Output(f"{_hr_prefix}-month-p2", "value"),
+        Input(f"{_hr_prefix}-year-p2", "value"),
+        State(f"{_hr_prefix}-month-p2", "value"),
+        prevent_initial_call=True
+    )
+    def _month_depends_on_year_hr_p2(year_val, cur_months, _prefix=_hr_prefix):
+        options, allowed = _month_options_for_year(year_val)
+        cur_months = cur_months or []
+        new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+        return options, new_val
+
+
+EXTRA_DYNAMIC_PREFIXES = [p for p in DASH_PREFIXES if p not in ["dt", "lh", "hd", "emp", "drv"]]
+
+def _register_simple_menu_callbacks(prefix: str):
+    if prefix in FLEET_MENU_PREFIXES:
+        @app.callback(
+            Output(f"filters-{prefix}-p1", "data"),
+            Input(f"{prefix}-type-p1", "value", allow_optional=True),
+            Input(f"{prefix}-seat-p1", "value", allow_optional=True),
+            prevent_initial_call=True
+        )
+        def _store_filters_p1_fleet(type_filter=None, seat_filter=None, _prefix=prefix):
+            payload = {}
+            if type_filter:
+                payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
+            if seat_filter:
+                payload["seat_filter"] = seat_filter if isinstance(seat_filter, list) else [seat_filter]
+            return payload
+
+        @app.callback(
+            Output(f"filters-{prefix}-p2", "data"),
+            Input(f"{prefix}-dim", "value", allow_optional=True),
+            Input(f"{prefix}-type-p2", "value", allow_optional=True),
+            Input(f"{prefix}-seat-p2", "value", allow_optional=True),
+            prevent_initial_call=True
+        )
+        def _store_filters_p2_fleet(dims, type_filter=None, seat_filter=None, _prefix=prefix):
+            dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+            payload = {"dims": dims}
+            if type_filter:
+                payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
+            if seat_filter:
+                payload["seat_filter"] = seat_filter if isinstance(seat_filter, list) else [seat_filter]
+            return payload
+        return
+
+    @app.callback(
+        Output(f"filters-{prefix}-p1", "data"),
+        Input(f"{prefix}-year", "value", allow_optional=True),
+        Input(f"{prefix}-month", "value", allow_optional=True),
+        Input(f"{prefix}-type-p1", "value", allow_optional=True),
+        prevent_initial_call=True
+    )
+    def _store_filters_p1(year_val, months, type_filter=None, _prefix=prefix):
+        payload = {"year": year_val, "months": months or []}
+        if type_filter:
+            payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
+        return payload
+
+    @app.callback(
+        Output(f"filters-{prefix}-p2", "data"),
+        Input(f"{prefix}-dim", "value", allow_optional=True),
+        Input(f"{prefix}-year-p2", "value", allow_optional=True),
+        Input(f"{prefix}-month-p2", "value", allow_optional=True),
+        Input(f"{prefix}-type-p2", "value", allow_optional=True),
+        prevent_initial_call=True
+    )
+    def _store_filters_p2(dims, year_val, months, type_filter=None, _prefix=prefix):
+        dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+        payload = {"dims": dims, "year": year_val, "months": months or []}
+        if type_filter:
+            payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
+        return payload
+
+    @app.callback(
+        Output(f"{prefix}-month", "options"),
+        Output(f"{prefix}-month", "value"),
+        Input(f"{prefix}-year", "value", allow_optional=True),
+        State(f"{prefix}-month", "value", allow_optional=True),
+        prevent_initial_call=True
+    )
+    def _month_depends_on_year_p1(year_val, cur_months, _prefix=prefix):
+        options, allowed = _month_options_for_year(year_val)
+        cur_months = cur_months or []
+        new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+        return options, new_val
+
+    @app.callback(
+        Output(f"{prefix}-month-p2", "options"),
+        Output(f"{prefix}-month-p2", "value"),
+        Input(f"{prefix}-year-p2", "value", allow_optional=True),
+        State(f"{prefix}-month-p2", "value", allow_optional=True),
+        prevent_initial_call=True
+    )
+    def _month_depends_on_year_p2(year_val, cur_months, _prefix=prefix):
+        options, allowed = _month_options_for_year(year_val)
+        cur_months = cur_months or []
+        new_val = [m for m in cur_months if m in allowed] if year_val is not None else cur_months
+        return options, new_val
+
+for _prefix in EXTRA_DYNAMIC_PREFIXES:
+    _register_simple_menu_callbacks(_prefix)
+
+def _home_prev_period_metrics(dff_full: pd.DataFrame, selected_regions=None, current_month_ts=None):
+    base = apply_region_scope_to_df(dff_full)
+    if selected_regions and "khu_vuc" in base.columns:
+        sel = filter_regions_for_current_user(selected_regions if isinstance(selected_regions, list) else [selected_regions])
+        base = base[base["khu_vuc"].astype(str).isin([str(x) for x in sel])] if sel else base.iloc[0:0].copy()
+    if base.empty or "thang_nam_vn" not in base.columns:
+        return {}
+    g = base.groupby("thang_nam_vn", as_index=False).agg({
+        "tong_doanh_thu": "sum" if "tong_doanh_thu" in base.columns else "count",
+        "tong_so_cuoc": "sum" if "tong_so_cuoc" in base.columns else "count"
+    }).sort_values("thang_nam_vn")
+    if g.empty:
+        return {}
+    current_ts = current_month_ts if current_month_ts is not None else g["thang_nam_vn"].max()
+    current_ts = pd.to_datetime(current_ts)
+    prev_ts = (current_ts - pd.offsets.MonthBegin(1)).to_period("M").to_timestamp()
+    cur = g[g["thang_nam_vn"] == current_ts]
+    prv = g[g["thang_nam_vn"] == prev_ts]
+    cur_rev = safe_number(cur["tong_doanh_thu"].sum()) if "tong_doanh_thu" in g.columns else 0.0
+    cur_trip = safe_number(cur["tong_so_cuoc"].sum()) if "tong_so_cuoc" in g.columns else 0.0
+    prv_rev = safe_number(prv["tong_doanh_thu"].sum()) if "tong_doanh_thu" in g.columns else 0.0
+    prv_trip = safe_number(prv["tong_so_cuoc"].sum()) if "tong_so_cuoc" in g.columns else 0.0
+    cur_avg = cur_rev / cur_trip if cur_trip else 0.0
+    prv_avg = prv_rev / prv_trip if prv_trip else 0.0
+    def _pct(cur_val, prev_val):
+        if prev_val in [0, None]:
+            return None
+        return (cur_val - prev_val) / prev_val * 100.0
+    return {
+        "rev_pct": _pct(cur_rev, prv_rev),
+        "trip_pct": _pct(cur_trip, prv_trip),
+        "avg_pct": _pct(cur_avg, prv_avg),
+        "current_ts": current_ts,
+        "prev_ts": prev_ts,
+        "cur_rev": cur_rev,
+        "cur_trip": cur_trip,
+        "prv_rev": prv_rev,
+        "prv_trip": prv_trip
+    }
+
+def _delta_class(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "neutral"
+    if float(v) > 0:
+        return "positive"
+    if float(v) < 0:
+        return "negative"
+    return "neutral"
+
+@app.callback(
+    Output("home-summary", "children"),
+    Output("home-kpi1", "children"),
+    Output("home-kpi2", "children"),
+    Output("home-kpi3", "children"),
+    Output("home-kpi4", "children"),
+    Output("home-main", "figure"),
+    Output("home-region-donut", "figure"),
+    Output("home-region-bar", "figure"),
+    Output("home-lh-donut", "figure"),
+    Output("home-hd-bar", "figure"),
+    Output("home-table", "data"),
+    Output("home-table", "style_cell"),
+    Output("home-table", "style_header"),
+
+    Output({"type":"zoom-store","target":"home-kpi1"}, "data"),
+    Output({"type":"zoom-store","target":"home-kpi2"}, "data"),
+    Output({"type":"zoom-store","target":"home-kpi3"}, "data"),
+    Output({"type":"zoom-store","target":"home-kpi4"}, "data"),
+    Output({"type":"zoom-store","target":"home-main"}, "data"),
+    Output({"type":"zoom-store","target":"home-region-donut"}, "data"),
+    Output({"type":"zoom-store","target":"home-region-bar"}, "data"),
+    Output({"type":"zoom-store","target":"home-lh-donut"}, "data"),
+    Output({"type":"zoom-store","target":"home-hd-bar"}, "data"),
+
+    Input("home-year", "value"),
+    Input("home-month", "value"),
+    Input("home-region", "value"),
+    Input("theme", "data"),
+)
+def update_home(year_val, months, regions, theme):
+    regions = regions if isinstance(regions, list) else ([regions] if regions else [])
+    dff_dt = apply_common_filters(df_dt, year_val=year_val, months=months or [], dims=regions or [])
+    dff_lh = apply_common_filters(df_lh, year_val=year_val, months=months or [], dims=regions or [])
+    dff_hd = apply_common_filters(df_hd, year_val=year_val, months=months or [], dims=regions or [])
+
+    year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+    month_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+    region_txt = ", ".join(regions[:3]) if regions and len(regions) <= 3 else (f"{len(regions)} khu vực" if regions else ("Phạm vi tài khoản" if current_user_region_scope() is not None else "Tất cả khu vực"))
+
+    summary_children = [
+        summary_pill(year_txt, fa_icon("fa-calendar-days", 12, GREEN_PRIMARY)),
+        summary_pill(month_txt, fa_icon("fa-clock", 12, GREEN_PRIMARY)),
+        summary_pill(region_txt, fa_icon("fa-location-dot", 12, GREEN_PRIMARY)),
+    ]
+
+    total_rev = safe_number(dff_dt["tong_doanh_thu"].sum()) if "tong_doanh_thu" in dff_dt.columns else 0.0
+    total_trip = safe_number(dff_dt["tong_so_cuoc"].sum()) if "tong_so_cuoc" in dff_dt.columns else (
+        safe_number(dff_hd["tong_so_cuoc"].sum()) if "tong_so_cuoc" in dff_hd.columns else 0.0
+    )
+    avg_rev_trip = total_rev / total_trip if total_trip else 0.0
+    active_regions = int(dff_dt["khu_vuc"].nunique()) if "khu_vuc" in dff_dt.columns and not dff_dt.empty else 0
+
+    total_payload = region_payload_value(dff_dt, "tong_doanh_thu", selected_regions=regions or None, max_items=None) if "tong_doanh_thu" in dff_dt.columns else []
+    trip_payload = region_payload_value(dff_dt, "tong_so_cuoc", selected_regions=regions or None, max_items=None) if "tong_so_cuoc" in dff_dt.columns else []
+    avg_payload = region_payload_avg_revenue_per_trip(dff_dt, "tong_doanh_thu", selected_regions=regions or None, max_items=None) if "tong_doanh_thu" in dff_dt.columns and "tong_so_cuoc" in dff_dt.columns else []
+
+    current_month_ts = dff_dt["thang_nam_vn"].max() if ("thang_nam_vn" in dff_dt.columns and not dff_dt.empty) else None
+    compare = _home_prev_period_metrics(df_dt, selected_regions=regions or None, current_month_ts=current_month_ts)
+
+    rev_delta_txt = f"{signed_pct_text(compare.get('rev_pct'))} so với tháng trước" if compare else "Không đủ dữ liệu so sánh"
+    trip_delta_txt = f"{signed_pct_text(compare.get('trip_pct'))} so với tháng trước" if compare else "Không đủ dữ liệu so sánh"
+    avg_delta_txt = f"{signed_pct_text(compare.get('avg_pct'))} so với tháng trước" if compare else "Không đủ dữ liệu so sánh"
+
+    lead_region_name = total_payload[0]["khu_vuc"] if total_payload else "Không có dữ liệu"
+    lead_region_pct = total_payload[0]["pct"] if total_payload else 0.0
+
+    home_kpi1 = home_kpi_markup(
+        fmt_vn(total_rev),
+        f"{year_txt} • {month_txt}",
+        rev_delta_txt,
+        _delta_class(compare.get("rev_pct") if compare else None),
+        region_value_lines_from_payload(total_payload, max_lines=3)
+    )
+    home_kpi2 = home_kpi_markup(
+        fmt_vn(total_trip),
+        f"{year_txt} • {month_txt}",
+        trip_delta_txt,
+        _delta_class(compare.get("trip_pct") if compare else None),
+        region_value_lines_from_payload(trip_payload, max_lines=3)
+    )
+    home_kpi3 = home_kpi_markup(
+        fmt_vn(avg_rev_trip),
+        "Doanh thu trung bình trên mỗi cuốc",
+        avg_delta_txt,
+        _delta_class(compare.get("avg_pct") if compare else None),
+        [_ellipsis_div([_swatch(r["color"]), f'{r["khu_vuc"]}: {r["avg_fmt"]} / cuốc']) for r in avg_payload[:3]]
+    )
+    home_kpi4 = home_kpi_markup(
+        fmt_vn(active_regions),
+        "Số khu vực có phát sinh doanh thu",
+        f"Dẫn đầu: {lead_region_name} ({lead_region_pct:.1f}%)" if total_payload else "Chưa có khu vực dẫn đầu",
+        "neutral",
+        region_value_lines_from_payload(total_payload, max_lines=3)
+    )
+
+    home_kpi1_store = pack_kpi_store("Tổng doanh thu", fmt_vn(total_rev), f"{year_txt} • {month_txt}", total_payload)
+    home_kpi2_store = pack_kpi_store("Tổng số cuốc", fmt_vn(total_trip), f"{year_txt} • {month_txt}", trip_payload)
+    home_kpi3_store = pack_kpi_store("Doanh thu TB/cuốc", fmt_vn(avg_rev_trip), "So sánh theo khu vực", avg_payload)
+    home_kpi4_store = pack_kpi_store("Khu vực hoạt động", fmt_vn(active_regions), f"Dẫn đầu: {lead_region_name}", total_payload)
+
+    if not dff_dt.empty:
+        g_month = dff_dt.groupby("thang_nam_vn", as_index=False).agg({
+            "tong_doanh_thu": "sum",
+            "tong_so_cuoc": "sum"
+        }).sort_values("thang_nam_vn")
+        g_month["thang_label"] = g_month["thang_nam_vn"].dt.strftime("%m/%Y")
+        g_month["rev_fmt"] = g_month["tong_doanh_thu"].apply(fmt_vn)
+        g_month["trip_fmt"] = g_month["tong_so_cuoc"].apply(fmt_vn)
+        g_month["avg_per_trip"] = g_month["tong_doanh_thu"] / g_month["tong_so_cuoc"].replace(0, 1)
+        g_month["avg_per_trip_fmt"] = g_month["avg_per_trip"].apply(fmt_vn)
+
+        fig_home_main = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_home_main.add_trace(
+            go.Bar(
+                x=g_month["thang_nam_vn"],
+                y=g_month["tong_doanh_thu"],
+                name="Doanh thu",
+                marker_color=GREEN_PRIMARY,
+                customdata=np.stack([g_month["rev_fmt"], g_month["trip_fmt"], g_month["avg_per_trip_fmt"]], axis=-1),
+                hovertemplate="Tháng: %{x|%m/%Y}<br>Doanh thu: %{customdata[0]}<br>Số cuốc: %{customdata[1]}<br>TB/cuốc: %{customdata[2]}<extra></extra>"
+            ),
+            secondary_y=False
+        )
+        fig_home_main.add_trace(
+            go.Scatter(
+                x=g_month["thang_nam_vn"],
+                y=g_month["tong_so_cuoc"],
+                mode="lines+markers+text",
+                name="Số cuốc",
+                line=dict(color=NAVY_PRIMARY, width=3),
+                marker=dict(size=8, color=NAVY_PRIMARY),
+                text=[v if len(g_month) <= 8 else "" for v in g_month["trip_fmt"]],
+                textposition="top center",
+                hovertemplate="Tháng: %{x|%m/%Y}<br>Số cuốc: %{y:,.0f}<extra></extra>"
+            ),
+            secondary_y=True
+        )
+        home_title_text = f"Overview doanh thu & số cuốc theo tháng<br>{year_txt} • {month_txt} • {region_txt}"
+        fig_home_main.update_layout(
+            title=dict(
+                text=home_title_text,
+                x=0.5,
+                xanchor="center",
+                y=0.962,
+                yanchor="top",
+                pad=dict(t=18, b=18),
+                font=dict(size=16)
+            ),
+            plot_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
+            paper_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
+            font_color="black" if theme == "light" else "white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0),
+            hovermode="x unified",
+            margin=dict(l=20, r=20, t=_chart_title_margin(home_title_text, base_top=155, min_top=185, extra_per_line=32), b=20),
+            title_automargin=True
+        )
+        fig_home_main.update_xaxes(
+            tickformat="%m/%Y",
+            dtick="M1",
+            ticklabelmode="period",
+            showgrid=True,
+            gridcolor="#e5e7eb" if theme == "light" else "#333",
+            showline=True,
+            linecolor=GREEN_BORDER if theme == "light" else "#64748b",
+            linewidth=1
+        )
+        fig_home_main.update_yaxes(
+            title_text="Doanh thu",
+            showgrid=True,
+            gridcolor="#e5e7eb" if theme == "light" else "#333",
+            showline=True,
+            linecolor=GREEN_BORDER if theme == "light" else "#64748b",
+            linewidth=1,
+            secondary_y=False
+        )
+        fig_home_main.update_yaxes(
+            title_text="Số cuốc",
+            showline=True,
+            linecolor=GREEN_BORDER if theme == "light" else "#64748b",
+            linewidth=1,
+            secondary_y=True
+        )
+        home_main_store = pack_fig_store(
+            fig_home_main,
+            rows=g_month[["thang_label", "rev_fmt", "trip_fmt", "avg_per_trip_fmt"]].to_dict("records"),
+            meta={"chart": "home_combo", "metric_label": "Doanh thu & số cuốc"}
+        )
+
+        g_region = dff_dt.groupby("khu_vuc", as_index=False).agg({
+            "tong_doanh_thu": "sum",
+            "tong_so_cuoc": "sum"
+        }).sort_values("tong_doanh_thu", ascending=False)
+        g_region["rev_fmt"] = g_region["tong_doanh_thu"].apply(fmt_vn)
+        g_region["trip_fmt"] = g_region["tong_so_cuoc"].apply(fmt_vn)
+
+        fig_region_donut = make_vn_donut(
+            g_region,
+            names="khu_vuc",
+            values="tong_doanh_thu",
+            title=f"Cơ cấu doanh thu theo khu vực<br>{year_txt} • {month_txt}",
+            max_slices=8,
+            color_map=REGION_COLOR_MAP,
+            theme=theme
+        )
+        home_region_donut_store = pack_fig_store(
+            fig_region_donut,
+            rows=[{"label": r["khu_vuc"], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["rev_fmt"]} for _, r in g_region.iterrows()],
+            meta={"chart": "home_region_donut", "metric_label": "Doanh thu"}
+        )
+
+        g_top = g_region.head(8).copy()
+        fig_region_bar = px.bar(
+            g_top,
+            y="khu_vuc",
+            x="tong_doanh_thu",
+            orientation="h",
+            text="rev_fmt",
+            color="khu_vuc",
+            color_discrete_map=REGION_COLOR_MAP,
+            hover_data={"rev_fmt": True, "tong_doanh_thu": False, "trip_fmt": True}
+        )
+        fig_region_bar.update_traces(textposition="outside", cliponaxis=False)
+        fig_region_bar = apply_exec_layout(
+            fig_region_bar,
+            theme=theme,
+            title=f"Top khu vực theo doanh thu<br>{year_txt} • {month_txt}",
+            top=125,
+            x_title="Doanh thu",
+            y_title="Khu vực"
+        )
+        fig_region_bar.update_layout(showlegend=False)
+        home_region_bar_store = pack_fig_store(
+            fig_region_bar,
+            rows=[{"khu_vuc": r["khu_vuc"], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["rev_fmt"]} for _, r in g_top.iterrows()],
+            meta={"chart": "home_region_bar", "metric_label": "Doanh thu"}
+        )
+
+        if not dff_lh.empty and LH_COL in dff_lh.columns:
+            g_lh = dff_lh.groupby(LH_COL, as_index=False).agg({"tong_doanh_thu": "sum"}).sort_values("tong_doanh_thu", ascending=False)
+            g_lh["val_fmt"] = g_lh["tong_doanh_thu"].apply(fmt_vn)
+            fig_lh = make_vn_donut(
+                g_lh,
+                names=LH_COL,
+                values="tong_doanh_thu",
+                title=f"Cơ cấu loại hình theo doanh thu<br>{year_txt} • {month_txt}",
+                max_slices=8,
+                theme=theme
+            )
+            home_lh_store = pack_fig_store(
+                fig_lh,
+                rows=[{"label": r[LH_COL], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["val_fmt"]} for _, r in g_lh.iterrows()],
+                meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"}
+            )
+        else:
+            fig_lh = empty_figure("Không có dữ liệu loại hình", theme)
+            home_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
+
+        if not dff_hd.empty and HD_COL in dff_hd.columns and "tong_so_cuoc" in dff_hd.columns:
+            g_hd = dff_hd.groupby(HD_COL, as_index=False).agg({"tong_so_cuoc": "sum"}).sort_values("tong_so_cuoc", ascending=False)
+            g_hd["val_fmt"] = g_hd["tong_so_cuoc"].apply(fmt_vn)
+            fig_hd = px.bar(
+                g_hd,
+                x=HD_COL,
+                y="tong_so_cuoc",
+                text="val_fmt",
+                color=HD_COL,
+                hover_data={"val_fmt": True, "tong_so_cuoc": False}
+            )
+            fig_hd.update_traces(textposition="outside", cliponaxis=False)
+            fig_hd = apply_exec_layout(
+                fig_hd,
+                theme=theme,
+                title=f"Cơ cấu hợp đồng theo số cuốc<br>{year_txt} • {month_txt}",
+                top=125,
+                x_title="Loại hợp đồng",
+                y_title="Số cuốc"
+            )
+            fig_hd.update_layout(showlegend=False)
+            home_hd_store = pack_fig_store(
+                fig_hd,
+                rows=[{"label": r[HD_COL], "metric": float(r["tong_so_cuoc"]), "metric_fmt": r["val_fmt"]} for _, r in g_hd.iterrows()],
+                meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"}
+            )
+        else:
+            fig_hd = empty_figure("Không có dữ liệu hợp đồng", theme)
+            home_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
+
+        if "khu_vuc" in dff_dt.columns:
+            g_top_region_month = dff_dt.groupby(["thang_label", "khu_vuc"], as_index=False)["tong_doanh_thu"].sum()
+            g_top_region_month = g_top_region_month.sort_values(["thang_label", "tong_doanh_thu"], ascending=[True, False])
+            top_region_map = g_top_region_month.drop_duplicates("thang_label").set_index("thang_label")["khu_vuc"].to_dict()
+        else:
+            top_region_map = {}
+
+        snapshot = g_month.copy()
+        snapshot["top_region"] = snapshot["thang_label"].map(top_region_map).fillna("")
+        snapshot["tong_doanh_thu_fmt"] = snapshot["tong_doanh_thu"].apply(fmt_vn)
+        snapshot["tong_so_cuoc_fmt"] = snapshot["tong_so_cuoc"].apply(fmt_vn)
+        snapshot["avg_per_trip_fmt"] = snapshot["avg_per_trip"].apply(fmt_vn)
+        home_table_data = snapshot.sort_values("thang_nam_vn", ascending=False)[
+            ["thang_label", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "top_region"]
+        ].to_dict("records")
+    else:
+        fig_home_main = empty_figure("Không có dữ liệu overview", theme)
+        fig_region_donut = empty_figure("Không có dữ liệu khu vực", theme)
+        fig_region_bar = empty_figure("Không có dữ liệu top khu vực", theme)
+        fig_lh = empty_figure("Không có dữ liệu loại hình", theme)
+        fig_hd = empty_figure("Không có dữ liệu hợp đồng", theme)
+        home_table_data = []
+        home_main_store = pack_fig_store(fig_home_main, rows=[], meta={"chart": "home_combo", "metric_label": "Doanh thu & số cuốc"})
+        home_region_donut_store = pack_fig_store(fig_region_donut, rows=[], meta={"chart": "home_region_donut", "metric_label": "Doanh thu"})
+        home_region_bar_store = pack_fig_store(fig_region_bar, rows=[], meta={"chart": "home_region_bar", "metric_label": "Doanh thu"})
+        home_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
+        home_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
+
+    if theme == "light":
+        style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center", "padding": "8px"}
+        style_header = {"backgroundColor": "#f2f4f7", "color": "black", "fontWeight": "700"}
+    else:
+        style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center", "padding": "8px"}
+        style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
+
+    return (
+        summary_children,
+        home_kpi1,
+        home_kpi2,
+        home_kpi3,
+        home_kpi4,
+        fig_home_main,
+        fig_region_donut,
+        fig_region_bar,
+        fig_lh,
+        fig_hd,
+        home_table_data,
+        style_cell,
+        style_header,
+        home_kpi1_store,
+        home_kpi2_store,
+        home_kpi3_store,
+        home_kpi4_store,
+        home_main_store,
+        home_region_donut_store,
+        home_region_bar_store,
+        home_lh_store,
+        home_hd_store
+    )
+
+
+BB_METRIC_ORDER = ["so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]
+BB_METRIC_LABELS = {
+    "so_tien_thu_duoc": "Số tiền thu được",
+    "so_tien_da_xu_ly": "Số tiền đã hoàn tất xử lý",
+    "so_tien_con_no": "Số tiền còn nợ",
+}
+BB_METRIC_COLOR_MAP = {
+    "Số tiền thu được": GREEN_PRIMARY,
+    "Số tiền đã hoàn tất xử lý": NAVY_PRIMARY,
+    "Số tiền còn nợ": AMBER_PRIMARY,
+}
+
+
+def _bb_metric_long_df(dff: pd.DataFrame, group_cols):
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=list(group_cols) + ["metric_key", "metric_label", "gia_tri", "metric_fmt"])
+    metric_cols = [c for c in BB_METRIC_ORDER if c in dff.columns]
+    if not metric_cols:
+        return pd.DataFrame(columns=list(group_cols) + ["metric_key", "metric_label", "gia_tri", "metric_fmt"])
+    out = dff.groupby(list(group_cols), as_index=False)[metric_cols].sum()
+    out = out.melt(id_vars=list(group_cols), value_vars=metric_cols, var_name="metric_key", value_name="gia_tri")
+    out["metric_label"] = out["metric_key"].map(BB_METRIC_LABELS).fillna(out["metric_key"])
+    out["metric_fmt"] = out["gia_tri"].apply(fmt_vn)
+    return out
+
+
+def _bb_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=[
+            "thang_nam", "khu_vuc", "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+            "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"
+        ])
+    out = dff.copy().sort_values([c for c in ["thang_nam_vn", "khu_vuc"] if c in dff.columns]).reset_index(drop=True)
+    if "thang_nam_vn" in out.columns:
+        out["thang_nam"] = pd.to_datetime(out["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y").fillna("")
+    elif "thang_nam" in out.columns:
+        out["thang_nam"] = pd.to_datetime(out["thang_nam"], errors="coerce").dt.strftime("%m/%Y").fillna("")
+    keep_cols = [
+        "thang_nam", "khu_vuc", "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+        "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"
+    ]
+    for c in keep_cols:
+        if c not in out.columns:
+            out[c] = 0 if c not in ["thang_nam", "khu_vuc"] else ""
+    for c in ["so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat", "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).apply(fmt_vn)
+    return out[keep_cols].copy()
+
+
+def callbacks(prefix: str):
+    cfg = get_menu_config(prefix)
+    df = cfg["df"]
+    value_col = cfg["value_col"]
+    metric_label = cfg.get("metric_label", "Giá trị")
+    metric_axis = metric_label
+    secondary_col = cfg.get("secondary_col", "tong_so_cuoc")
+    secondary_label = cfg.get("secondary_label", "Quy mô")
+    avg_label = cfg.get("avg_label", "Trung bình")
+    avg_mode = cfg.get("avg_mode", "per_secondary")
+    avg_divisor_label = cfg.get("avg_divisor_label", secondary_label.lower())
+    avg_numerator_col = cfg.get("avg_numerator_col", value_col)
+    avg_denominator_col = cfg.get("avg_denominator_col", secondary_col)
+    type_filter_kind = cfg.get("type_filter_kind")
+
+    p1_filter_input = None
+    p2_filter_input = None
+    p1_seat_filter_input = None
+    p2_seat_filter_input = None
+    if type_filter_kind == "lh":
+        p1_filter_input = Input("lh-type-p1", "value", allow_optional=True)
+        p2_filter_input = Input("lh-type-p2", "value", allow_optional=True)
+    elif type_filter_kind == "hd":
+        p1_filter_input = Input("hd-type-p1", "value", allow_optional=True)
+        p2_filter_input = Input("hd-type-p2", "value", allow_optional=True)
+    elif type_filter_kind == "fleet":
+        p1_filter_input = Input(f"{prefix}-type-p1", "value", allow_optional=True)
+        p2_filter_input = Input(f"{prefix}-type-p2", "value", allow_optional=True)
+        p1_seat_filter_input = Input(f"{prefix}-seat-p1", "value", allow_optional=True)
+        p2_seat_filter_input = Input(f"{prefix}-seat-p2", "value", allow_optional=True)
+
+    def _apply_type_filter(dff: pd.DataFrame, type_filter):
+        if type_filter_kind == "lh" and type_filter and LH_COL in dff.columns:
+            return dff[dff[LH_COL].astype(str).isin(type_filter)]
+        if type_filter_kind == "hd" and type_filter and HD_COL in dff.columns:
+            return dff[dff[HD_COL].astype(str).isin(type_filter)]
+        if type_filter_kind == "fleet" and type_filter and "loai_xe" in dff.columns:
+            return dff[dff["loai_xe"].astype(str).isin(type_filter)]
+        return dff
+
+    def _apply_fleet_seat_filter(dff: pd.DataFrame, seat_filter):
+        if type_filter_kind != "fleet" or not seat_filter:
+            return dff
+        raw_vals = seat_filter if isinstance(seat_filter, list) else [seat_filter]
+        seat_vals = []
+        for x in raw_vals:
+            try:
+                seat_vals.append(int(float(x)))
+            except Exception:
+                continue
+        seat_vals = sorted(set([x for x in seat_vals if x > 0]))
+        if not seat_vals:
+            return dff
+        if "so_cho_loc" in dff.columns:
+            seat_series = pd.to_numeric(dff["so_cho_loc"], errors="coerce").fillna(0).round().astype(int)
+        elif "so_cho_binh_quan_xe" in dff.columns:
+            seat_series = pd.to_numeric(dff["so_cho_binh_quan_xe"], errors="coerce").fillna(0).round().astype(int)
+        else:
+            return dff
+        return dff[seat_series.isin(seat_vals)]
+
+    def _avg_payload_and_lines(dff: pd.DataFrame, dims=None):
+        if avg_mode == "per_month":
+            avg_payload = region_payload_avg_metric_per_month(dff, value_col, selected_regions=dims, max_items=None)
+            avg_lines = [
+                _ellipsis_div([_swatch(r["color"]), f'{r["khu_vuc"]}: {r["avg_fmt"]} / tháng']) for r in avg_payload[:6]
+            ]
+            return avg_payload, avg_lines
+        avg_payload = region_payload_avg_ratio(dff, avg_numerator_col, avg_denominator_col, selected_regions=dims, max_items=None)
+        avg_lines = [
+            _ellipsis_div([_swatch(r["color"]), f'{r["khu_vuc"]}: {r["avg_fmt"]} / {avg_divisor_label}']) for r in avg_payload[:6]
+        ]
+        return avg_payload, avg_lines
+
+    if type_filter_kind == "fleet":
+        inputs_p1 = [Input("theme", "data")]
+    else:
+        inputs_p1 = [
+            Input(f"{prefix}-year", "value", allow_optional=True),
+            Input(f"{prefix}-month", "value", allow_optional=True),
+            Input("theme", "data"),
+        ]
+    if p1_filter_input is not None:
+        inputs_p1.append(p1_filter_input)
+    if p1_seat_filter_input is not None:
+        inputs_p1.append(p1_seat_filter_input)
+
+    @app.callback(
+        Output(f"{prefix}-p1-kpi1","children"),
+        Output(f"{prefix}-p1-kpi2","children"),
+        Output(f"{prefix}-p1-kpi3","children"),
+        Output(f"{prefix}-p1-line-kv","figure"),
+        Output(f"{prefix}-p1-line","figure"),
+        Output(f"{prefix}-p1-bar","figure"),
+        Output(f"{prefix}-p1-pie","figure"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi1"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi2"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi3"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-line-kv"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-line"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-bar"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-pie"}, "data"),
+        *inputs_p1,
+        State("menu", "data"),
+        State("page", "data"),
+    )
+    def p1(*args):
+        if type_filter_kind == "fleet":
+            idx = 0
+            theme = args[idx]; idx += 1
+            type_filter = args[idx] if p1_filter_input is not None else None
+            if p1_filter_input is not None:
+                idx += 1
+            seat_filter = args[idx] if p1_seat_filter_input is not None else None
+            if p1_seat_filter_input is not None:
+                idx += 1
+            menu, page = args[idx], args[idx + 1]
+            year_val = None
+            months = []
+        else:
+            if p1_filter_input is not None:
+                year_val, months, theme, type_filter, menu, page = args
+            else:
+                year_val, months, theme, menu, page = args
+                type_filter = None
+            seat_filter = None
+
+        if menu != prefix or int(page) != 1:
+            raise PreventUpdate
+
+        dff = apply_region_scope_to_df(df)
+        if year_val is not None and "nam" in dff.columns:
+            dff = dff[dff["nam"] == int(year_val)]
+        if months and "thang_label" in dff.columns:
+            dff = dff[dff["thang_label"].isin(months)]
+        dff = _apply_type_filter(dff, type_filter)
+        dff = _apply_fleet_seat_filter(dff, seat_filter)
+
+        if type_filter_kind == "fleet":
+            _, tf_txt = _fleet_filter_text([], type_filter, seat_filter)
+            region_df = _fleet_region_snapshot(dff)
+            type_df = _fleet_type_snapshot(dff)
+            region_type_df = _fleet_region_type_snapshot(dff)
+            total = float(pd.to_numeric(region_df.get("so_luong_xe", 0), errors="coerce").fillna(0).sum()) if not region_df.empty else 0.0
+            active_regions = int(region_df["khu_vuc"].nunique()) if not region_df.empty and "khu_vuc" in region_df.columns else 0
+            type_count = int(type_df["loai_xe"].nunique()) if not type_df.empty and "loai_xe" in type_df.columns else 0
+            kpi_subtitle = f"Snapshot toàn đội xe{tf_txt}"
+            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6))
+            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • Snapshot hiện tại", _fleet_kpi_lines_region(region_df, max_lines=6))
+            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • Snapshot hiện tại", _fleet_kpi_lines_type(type_df, max_lines=6))
+            kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • Snapshot hiện tại", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • Snapshot hiện tại", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
+
+            if dff.empty:
+                fig_kv = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+                fig_line = empty_figure("Không có dữ liệu loại xe", theme)
+                fig_bar = empty_figure("Không có dữ liệu cơ cấu loại xe", theme)
+                fig_pie = empty_figure("Không có dữ liệu bản đồ đội xe", theme)
+                return (
+                    kpi1, kpi2, kpi3,
+                    fig_kv, fig_line, fig_bar, fig_pie,
+                    kpi1_store, kpi2_store, kpi3_store,
+                    pack_fig_store(fig_kv, rows=[], meta={"chart": "fleet_region_bar", "metric_label": metric_label}),
+                    pack_fig_store(fig_line, rows=[], meta={"chart": "fleet_type_donut", "metric_label": metric_label}),
+                    pack_fig_store(fig_bar, rows=[], meta={"chart": "fleet_type_bar", "metric_label": metric_label}),
+                    pack_fig_store(fig_pie, rows=[], meta={"chart": "fleet_treemap", "metric_label": metric_label}),
+                )
+
+            g_region = region_df.copy()
+            g_region["rank_fmt"] = [f"#{i}" for i in range(1, len(g_region) + 1)]
+            fig_kv = go.Figure()
+            fig_kv.add_bar(
+                y=g_region["khu_vuc"],
+                x=g_region["so_luong_xe"],
+                orientation="h",
+                text=[f"{x} xe • {p}" for x, p in zip(g_region["xe_fmt"], g_region["ty_trong_fmt"])],
+                textposition="outside",
+                cliponaxis=False,
+                marker=dict(
+                    color=[REGION_COLOR_MAP.get(str(x), GREEN_PRIMARY) for x in g_region["khu_vuc"]],
+                    line=dict(color="#ffffff", width=1.2),
+                ),
+                customdata=np.column_stack([
+                    g_region["xe_fmt"],
+                    g_region["ty_trong_fmt"],
+                    g_region["so_loai_xe"].apply(fmt_vn),
+                    g_region["bks_fmt"],
+                    g_region["rank_fmt"],
+                ]),
+                hovertemplate=(
+                    "Khu vực: %{y}<br>"
+                    "Số xe: %{customdata[0]}<br>"
+                    "Tỷ trọng: %{customdata[1]}<br>"
+                    "Loại xe: %{customdata[2]}<br>"
+                    "Số BKS: %{customdata[3]}<br>"
+                    "Xếp hạng: %{customdata[4]}<extra></extra>"
+                ),
+            )
+            fig_kv = apply_exec_layout(fig_kv, theme=theme, title=f"Bản đồ phân bổ số lượng xe theo khu vực • Snapshot toàn tập đoàn{tf_txt}", top=210, x_title="Số lượng xe", y_title="Khu vực")
+            fig_kv.update_yaxes(categoryorder="array", categoryarray=g_region["khu_vuc"][::-1].tolist())
+            fig_kv.update_layout(showlegend=False)
+            if len(g_region) >= 2:
+                avg_region = float(g_region["so_luong_xe"].mean())
+                fig_kv.add_vline(x=avg_region, line_dash="dash", line_color="#94a3b8", annotation_text=f"TB: {fmt_vn(avg_region)} xe", annotation_position="top right")
+            fig_kv_store = pack_fig_store(fig_kv, rows=g_region[["khu_vuc", "xe_fmt", "ty_trong_fmt", "bks_fmt"]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_region_bar", "metric_label": metric_label})
+
+            g_type = type_df.copy()
+            fig_line = make_vn_donut(g_type, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe • Snapshot toàn tập đoàn{tf_txt}", max_slices=10, color_map=None, theme=theme)
+            fig_line_store = pack_fig_store(fig_line, rows=g_type[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_type_donut", "metric_label": metric_label})
+
+            top_type = g_type.head(12).copy()
+            fig_bar = go.Figure()
+            fig_bar.add_bar(
+                x=top_type["so_luong_xe"],
+                y=top_type["loai_xe"],
+                orientation="h",
+                text=[f"{x} xe" for x in top_type["xe_fmt"]],
+                textposition="outside",
+                cliponaxis=False,
+                marker=dict(color="#16a34a", line=dict(color="#14532d", width=1.1)),
+                customdata=np.column_stack([top_type["xe_fmt"], top_type["ty_trong_fmt"], top_type["so_khu_vuc"].apply(fmt_vn)]),
+                hovertemplate=(
+                    "Loại xe: %{y}<br>"
+                    "Số xe: %{customdata[0]}<br>"
+                    "Tỷ trọng: %{customdata[1]}<br>"
+                    "Hiện diện tại: %{customdata[2]} khu vực<extra></extra>"
+                ),
+            )
+            fig_bar = apply_exec_layout(fig_bar, theme=theme, title=f"Top loại xe theo quy mô đội xe • Snapshot toàn tập đoàn{tf_txt}", top=210, x_title="Số lượng xe", y_title="Loại xe")
+            fig_bar.update_yaxes(categoryorder="array", categoryarray=top_type["loai_xe"][::-1].tolist())
+            fig_bar.update_layout(showlegend=False)
+            fig_bar_store = pack_fig_store(fig_bar, rows=top_type[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_type_bar", "metric_label": metric_label})
+
+            treemap_source = region_type_df.copy()
+            treemap_source["metric_fmt"] = treemap_source["xe_fmt"] + " xe"
+            fig_pie = px.treemap(
+                treemap_source,
+                path=[px.Constant("Toàn đội xe"), "khu_vuc", "loai_xe"],
+                values="so_luong_xe",
+                color="khu_vuc",
+                color_discrete_map=REGION_COLOR_MAP,
+                custom_data=["xe_fmt"],
+            )
+            fig_pie.update_traces(
+                textinfo="label+value",
+                hovertemplate="Nhánh: %{label}<br>Số xe: %{customdata[0]}<extra></extra>",
+                marker=dict(cornerradius=8),
+            )
+            fig_pie = apply_exec_layout(fig_pie, theme=theme, title=f"Bản đồ đội xe theo khu vực và loại xe • Snapshot toàn tập đoàn{tf_txt}", top=210)
+            fig_pie.update_layout(margin=dict(l=12, r=12, t=230, b=12))
+            fig_pie_store = pack_fig_store(fig_pie, rows=treemap_source[["khu_vuc", "loai_xe", "xe_fmt"]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_treemap", "metric_label": metric_label})
+
+            return (
+                kpi1, kpi2, kpi3,
+                fig_kv, fig_line, fig_bar, fig_pie,
+                kpi1_store, kpi2_store, kpi3_store,
+                fig_kv_store, fig_line_store, fig_bar_store, fig_pie_store
+            )
+
+        if prefix == "bb":
+            year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+            mo_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+            count_total = safe_number(dff["so_bien_ban"].sum()) if "so_bien_ban" in dff.columns else 0.0
+            collected_total = safe_number(dff["so_tien_thu_duoc"].sum()) if "so_tien_thu_duoc" in dff.columns else 0.0
+            processed_total = safe_number(dff["so_tien_da_xu_ly"].sum()) if "so_tien_da_xu_ly" in dff.columns else 0.0
+            debt_total = safe_number(dff["so_tien_con_no"].sum()) if "so_tien_con_no" in dff.columns else 0.0
+            kpi_subtitle = f"{year_txt} • {mo_txt} • {fmt_vn(count_total)} biên bản"
+            debt_ratio = (debt_total / processed_total * 100.0) if processed_total > 0 else 0.0
+
+            payload1 = region_payload_value(dff, "so_tien_thu_duoc", selected_regions=None, max_items=None)
+            payload2 = region_payload_value(dff, "so_tien_da_xu_ly", selected_regions=None, max_items=None)
+            payload3 = region_payload_value(dff, "so_tien_con_no", selected_regions=None, max_items=None)
+
+            kpi1 = kpi_content(fmt_vn(collected_total), kpi_subtitle, region_value_lines_from_payload(payload1, max_lines=4))
+            kpi2 = kpi_content(fmt_vn(processed_total), f"{year_txt} • {mo_txt} • Giá trị đã xử lý", region_value_lines_from_payload(payload2, max_lines=4))
+            kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=4))
+
+            kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi_subtitle, payload1)
+            kpi2_store = pack_kpi_store("Số tiền đã hoàn tất xử lý", fmt_vn(processed_total), f"{year_txt} • {mo_txt}", payload2)
+            kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
+
+            if dff.empty:
+                fig_kv = empty_figure("Không có dữ liệu biên bản", theme)
+                fig_line = empty_figure("Không có dữ liệu biên bản", theme)
+                fig_bar = empty_figure("Không có dữ liệu biên bản", theme)
+                fig_pie = empty_figure("Không có dữ liệu biên bản", theme)
+                return (
+                    kpi1, kpi2, kpi3,
+                    fig_kv, fig_line, fig_bar, fig_pie,
+                    kpi1_store, kpi2_store, kpi3_store,
+                    pack_fig_store(fig_kv, rows=[], meta={"chart": "bb_region_grouped", "metric_label": "Biên bản"}),
+                    pack_fig_store(fig_line, rows=[], meta={"chart": "bb_monthly_lines", "metric_label": "Biên bản"}),
+                    pack_fig_store(fig_bar, rows=[], meta={"chart": "bb_monthly_bars", "metric_label": "Biên bản"}),
+                    pack_fig_store(fig_pie, rows=[], meta={"chart": "bb_region_debt", "metric_label": "Biên bản"}),
+                )
+
+            g_region = dff.groupby("khu_vuc", as_index=False)[BB_METRIC_ORDER].sum()
+            g_region = g_region.sort_values("so_tien_con_no", ascending=False)
+            region_long = _bb_metric_long_df(dff, ["khu_vuc"])
+            region_long = region_long.merge(
+                g_region[["khu_vuc", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]],
+                on="khu_vuc",
+                how="left"
+            )
+            region_long["text_show"] = np.where(region_long["metric_key"].eq("so_tien_con_no"), region_long["metric_fmt"], "")
+            region_long["ty_le_no"] = np.where(
+                pd.to_numeric(region_long["so_tien_da_xu_ly"], errors="coerce").fillna(0) > 0,
+                pd.to_numeric(region_long["so_tien_con_no"], errors="coerce").fillna(0)
+                / pd.to_numeric(region_long["so_tien_da_xu_ly"], errors="coerce").fillna(0) * 100.0,
+                0.0,
+            )
+            region_long["thu_fmt"] = pd.to_numeric(region_long["so_tien_thu_duoc"], errors="coerce").fillna(0).apply(fmt_vn)
+            region_long["xl_fmt"] = pd.to_numeric(region_long["so_tien_da_xu_ly"], errors="coerce").fillna(0).apply(fmt_vn)
+            region_long["no_fmt"] = pd.to_numeric(region_long["so_tien_con_no"], errors="coerce").fillna(0).apply(fmt_vn)
+            region_long["ty_le_no_fmt"] = pd.to_numeric(region_long["ty_le_no"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+            region_order = g_region["khu_vuc"].astype(str).tolist()
+            fig_kv = px.bar(
+                region_long,
+                y="khu_vuc",
+                x="gia_tri",
+                orientation="h",
+                color="metric_label",
+                text="text_show",
+                barmode="group",
+                category_orders={"khu_vuc": region_order, "metric_label": [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]},
+                color_discrete_map=BB_METRIC_COLOR_MAP,
+                hover_data={
+                    "metric_fmt": True,
+                    "gia_tri": False,
+                    "thu_fmt": True,
+                    "xl_fmt": True,
+                    "no_fmt": True,
+                    "ty_le_no_fmt": True,
+                },
+            )
+            fig_kv.update_traces(
+                textposition="outside",
+                cliponaxis=False,
+                hovertemplate=(
+                    "Khu vực: %{y}<br>"
+                    "Chỉ số: %{fullData.name}<br>"
+                    "Giá trị: %{customdata[0]}<br>"
+                    "Thu được: %{customdata[1]}<br>"
+                    "Đã xử lý: %{customdata[2]}<br>"
+                    "Còn nợ: %{customdata[3]}<br>"
+                    "Tỷ lệ nợ / đã xử lý: %{customdata[4]}"
+                    "<extra></extra>"
+                )
+            )
+            fig_kv = apply_exec_layout(
+                fig_kv,
+                theme=theme,
+                title=f"So sánh 3 chỉ số tài chính biên bản theo khu vực<br>{year_txt} • {mo_txt}",
+                top=210,
+                x_title="Giá trị",
+                y_title="Khu vực"
+            )
+            fig_kv.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0),
+                bargap=0.24,
+                hovermode="y unified"
+            )
+            fig_kv.update_yaxes(categoryorder="array", categoryarray=region_order, autorange="reversed")
+            top_debt_region = g_region.iloc[0]["khu_vuc"] if not g_region.empty else "-"
+            top_debt_value = g_region.iloc[0]["so_tien_con_no"] if not g_region.empty else 0
+            fig_kv.add_annotation(
+                x=1,
+                y=1.14,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                text=f"Nợ cao nhất: {top_debt_region} • {fmt_vn(top_debt_value)}",
+                font=dict(size=11, color=(TEXT_LIGHT_UI if theme == "light" else "white")),
+                align="right"
+            )
+            rows_kv = [{"khu_vuc": str(r["khu_vuc"]), "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in region_long.iterrows()]
+            fig_kv_store = pack_fig_store(fig_kv, rows=rows_kv, meta={"chart": "bb_region_grouped", "metric_label": "Biên bản", "series_field": "metric_label"})
+
+            monthly_long = _bb_metric_long_df(dff, ["thang_nam_vn"])
+            monthly_long["thang_label"] = pd.to_datetime(monthly_long["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+            fig_line = px.line(
+                monthly_long,
+                x="thang_nam_vn",
+                y="gia_tri",
+                color="metric_label",
+                markers=True,
+                category_orders={"metric_label": [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]},
+                color_discrete_map=BB_METRIC_COLOR_MAP,
+                hover_data={"metric_fmt": True, "gia_tri": False},
+            )
+            fig_line.update_traces(line_shape="spline", line_width=3, marker_size=7)
+            fig_line.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+            fig_line = apply_theme(fig_line, theme)
+            fig_line = apply_chart_title(fig_line, f"Xu hướng 3 chỉ số tài chính biên bản theo tháng<br>{year_txt} • {mo_txt}", top=220, y_title="Giá trị")
+            fig_line = _add_line_point_labels(fig_line, show_all_if_points_le=8)
+            rows_line = [{"thang_label": r["thang_label"], "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in monthly_long.iterrows()]
+            fig_line_store = pack_fig_store(fig_line, rows=rows_line, meta={"chart": "bb_monthly_lines", "metric_label": "Biên bản", "series_field": "metric_label"})
+
+            fig_bar = px.bar(
+                monthly_long,
+                x="thang_nam_vn",
+                y="gia_tri",
+                color="metric_label",
+                text="metric_fmt",
+                barmode="group",
+                category_orders={"metric_label": [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]},
+                color_discrete_map=BB_METRIC_COLOR_MAP,
+                hover_data={"metric_fmt": True, "gia_tri": False},
+            )
+            fig_bar.update_traces(textposition="outside", cliponaxis=False)
+            fig_bar.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0), bargap=0.18)
+            fig_bar = apply_theme(fig_bar, theme)
+            fig_bar = apply_chart_title(fig_bar, f"Biểu đồ cột 3 chỉ số tài chính biên bản theo tháng<br>{year_txt} • {mo_txt}", top=220, y_title="Giá trị")
+            fig_bar_store = pack_fig_store(fig_bar, rows=rows_line, meta={"chart": "bb_monthly_bars", "metric_label": "Biên bản", "series_field": "metric_label"})
+
+            pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_con_no"].sum().sort_values("so_tien_con_no", ascending=False)
+            if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
+                pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
+                pie_value = "so_tien_thu_duoc"
+                pie_title = f"Tỷ trọng số tiền thu được theo khu vực<br>{year_txt} • {mo_txt}"
+            else:
+                pie_value = "so_tien_con_no"
+                pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{year_txt} • {mo_txt}"
+            fig_pie = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
+            pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
+            fig_pie_store = pack_fig_store(fig_pie, rows=pie_source[["khu_vuc", "metric_fmt"]].rename(columns={"khu_vuc": "label"}).to_dict("records"), meta={"chart": "bb_region_debt", "metric_label": pie_title})
+
+            return (
+                kpi1, kpi2, kpi3,
+                fig_kv, fig_line, fig_bar, fig_pie,
+                kpi1_store, kpi2_store, kpi3_store,
+                fig_kv_store, fig_line_store, fig_bar_store, fig_pie_store
+            )
+
+        total = safe_number(dff[value_col].sum()) if value_col in dff.columns else 0.0
+        secondary_total = safe_number(dff[secondary_col].sum()) if secondary_col in dff.columns else 0.0
+        months_n = max(int(dff["thang_label"].nunique()) if "thang_label" in dff.columns and not dff.empty else 1, 1)
+
+        total_payload = region_payload_value(dff, value_col, selected_regions=None, max_items=None)
+        secondary_payload = region_payload_value(dff, secondary_col, selected_regions=None, max_items=None) if secondary_col in dff.columns else []
+        avg_payload, avg_lines = _avg_payload_and_lines(dff)
+
+        if avg_mode == "per_month":
+            avg = total / months_n
+            avg_caption = f"{avg_label} • {months_n} tháng"
+        else:
+            avg_num_total = safe_number(dff[avg_numerator_col].sum()) if avg_numerator_col in dff.columns else total
+            avg_den_total = safe_number(dff[avg_denominator_col].sum()) if avg_denominator_col in dff.columns else secondary_total
+            avg = avg_num_total / max(avg_den_total, 1)
+            avg_caption = f"{avg_label} • {fmt_vn(avg_den_total)} {avg_divisor_label}"
+
+        year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+        mo_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+        tf_txt = ""
+        if type_filter_kind == "lh" and type_filter:
+            tf_txt = f" • Lọc loại hình: {', '.join(type_filter)}"
+        if type_filter_kind == "hd" and type_filter:
+            tf_txt = f" • Lọc loại HĐ: {', '.join(type_filter)}"
+        if type_filter_kind == "fleet" and type_filter:
+            tf_txt = f" • Lọc loại xe: {', '.join(type_filter)}"
+
+        kpi_subtitle = f"{year_txt} • {mo_txt}{tf_txt}"
+        kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, region_value_lines_from_payload(total_payload, max_lines=4))
+        kpi2 = kpi_content(fmt_vn(secondary_total), kpi_subtitle, region_value_lines_from_payload(secondary_payload, max_lines=4))
+        kpi3 = kpi_content(fmt_vn(avg), avg_caption, avg_lines[:4])
+
+        kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, total_payload)
+        kpi2_store = pack_kpi_store(secondary_label, fmt_vn(secondary_total), kpi_subtitle, secondary_payload)
+        kpi3_store = pack_kpi_store(avg_label, fmt_vn(avg), avg_caption, avg_payload)
+
+        if dff.empty:
+            fig_kv = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            fig_line = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            fig_bar = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            fig_pie = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            fig_kv_store = pack_fig_store(fig_kv, rows=[], meta={"chart": "line_kv", "metric_label": metric_label})
+            fig_line_store = pack_fig_store(fig_line, rows=[], meta={"chart": "line_total", "metric_label": metric_label})
+            fig_bar_store = pack_fig_store(fig_bar, rows=[], meta={"chart": "bar_total", "metric_label": metric_label})
+            fig_pie_store = pack_fig_store(fig_pie, rows=[], meta={"chart": "pie_month", "metric_label": metric_label})
+            return (
+                kpi1, kpi2, kpi3,
+                fig_kv, fig_line, fig_bar, fig_pie,
+                kpi1_store, kpi2_store, kpi3_store,
+                fig_kv_store, fig_line_store, fig_bar_store, fig_pie_store
+            )
+
+        g = dff.groupby("thang_nam_vn", as_index=False).agg({value_col: "sum"}).sort_values("thang_nam_vn")
+        g["val_fmt"] = g[value_col].apply(fmt_vn)
+        g["thang_label"] = g["thang_nam_vn"].dt.strftime("%m/%Y")
+
+        if "khu_vuc" in dff.columns:
+            dff_kv, kv_col = top_n_keep_other(dff, "khu_vuc", value_col, n=None, other_label="Khác", keep_cats=PINNED_REGIONS)
+            gkv = dff_kv.groupby(["thang_nam_vn", kv_col], as_index=False).agg({value_col: "sum"}).sort_values("thang_nam_vn")
+            gkv["val_fmt"] = gkv[value_col].apply(fmt_vn)
+            gkv["thang_label"] = gkv["thang_nam_vn"].dt.strftime("%m/%Y")
+            kv_order = gkv.groupby(kv_col, as_index=False)[value_col].sum().sort_values(value_col, ascending=False)[kv_col].tolist()
+            fig_kv = px.line(
+                gkv,
+                x="thang_nam_vn",
+                y=value_col,
+                color=kv_col,
+                category_orders={kv_col: kv_order},
+                color_discrete_map=REGION_COLOR_MAP,
+                markers=True,
+                hover_data={"val_fmt": True, value_col: False},
+            )
+            fig_kv.update_traces(line_shape="spline", line_width=3, marker_size=7)
+            fig_kv.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+            fig_kv = apply_theme(fig_kv, theme)
+            fig_kv = apply_chart_title(fig_kv, f"{metric_label} theo tháng • So sánh giữa các khu vực<br>{year_txt} • {mo_txt}{tf_txt}", top=210, y_title=metric_axis)
+            fig_kv = _add_line_point_labels(fig_kv, show_all_if_points_le=10)
+            rows_kv = [{"thang_label": r["thang_label"], "khu_vuc": str(r[kv_col]), "metric": float(r[value_col]), "metric_fmt": r["val_fmt"]} for _, r in gkv.iterrows()]
+            fig_kv_store = pack_fig_store(fig_kv, rows=rows_kv, meta={"chart": "line_kv", "metric_label": metric_label, "series_field": kv_col})
+        else:
+            fig_kv = empty_figure("Không có dữ liệu khu vực", theme)
+            fig_kv_store = pack_fig_store(fig_kv, rows=[], meta={"chart": "line_kv", "metric_label": metric_label})
+
+        fig_line = px.line(g, x="thang_nam_vn", y=value_col, markers=True, hover_data={"val_fmt": True, value_col: False})
+        fig_line.update_traces(line_shape="spline", line_width=3, marker_size=7)
+        fig_line = apply_theme(fig_line, theme)
+        fig_line = apply_chart_title(fig_line, f"{metric_label} theo tháng • Tổng toàn tập đoàn<br>{year_txt} • {mo_txt}{tf_txt}", top=210, y_title=metric_axis)
+        fig_line = _add_line_point_labels(fig_line, show_all_if_points_le=10)
+        fig_line = enhance_p1_chart2_total_line(fig_line, g, "thang_nam_vn", value_col, metric_label, theme)
+        fig_line_store = pack_fig_store(fig_line, rows=g[["thang_label", "val_fmt"]].to_dict("records"), meta={"chart": "line_total", "metric_label": metric_label})
+
+        fig_bar = px.bar(g, x="thang_nam_vn", y=value_col, text="val_fmt", hover_data={"val_fmt": True, value_col: False})
+        fig_bar.update_traces(textposition="outside", cliponaxis=False)
+        fig_bar.update_layout(margin=dict(t=20))
+        fig_bar = apply_theme(fig_bar, theme)
+        fig_bar = apply_chart_title(fig_bar, f"{metric_label} theo tháng • Biểu đồ cột<br>{year_txt} • {mo_txt}{tf_txt}", top=210, y_title=metric_axis)
+        fig_bar = enhance_p1_chart3_monthly_bar(fig_bar, g, "thang_nam_vn", value_col, metric_label, theme)
+        fig_bar_store = pack_fig_store(fig_bar, rows=g[["thang_label", "val_fmt"]].to_dict("records"), meta={"chart": "bar_total", "metric_label": metric_label})
+
+        g_pie = g.copy()
+        g_pie["thang"] = g_pie["thang_label"]
+        fig_pie = px.pie(g_pie, names="thang", values=value_col, hole=0.45, hover_data={"val_fmt": True, value_col: False})
+        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+        fig_pie = apply_theme(fig_pie, theme)
+        fig_pie = apply_chart_title(fig_pie, f"Tỷ trọng {metric_label.lower()} theo tháng<br>{year_txt} • {mo_txt}{tf_txt}", top=210)
+        fig_pie_store = pack_fig_store(fig_pie, rows=g_pie[["thang", "val_fmt"]].to_dict("records"), meta={"chart": "pie_month", "metric_label": metric_label})
+
+        return (
+            kpi1, kpi2, kpi3,
+            fig_kv, fig_line, fig_bar, fig_pie,
+            kpi1_store, kpi2_store, kpi3_store,
+            fig_kv_store, fig_line_store, fig_bar_store, fig_pie_store
+        )
+
+    if type_filter_kind == "fleet":
+        inputs_p2 = [
+            Input(f"{prefix}-dim","value", allow_optional=True),
+            Input("theme","data"),
+        ]
+    else:
+        inputs_p2 = [
+            Input(f"{prefix}-dim","value", allow_optional=True),
+            Input(f"{prefix}-year-p2","value", allow_optional=True),
+            Input(f"{prefix}-month-p2","value", allow_optional=True),
+            Input("theme","data"),
+        ]
+    if p2_filter_input is not None:
+        inputs_p2.append(p2_filter_input)
+    if p2_seat_filter_input is not None:
+        inputs_p2.append(p2_seat_filter_input)
+
+    @app.callback(
+        Output(f"{prefix}-kpi1","children"),
+        Output(f"{prefix}-kpi2","children"),
+        Output(f"{prefix}-kpi3","children"),
+        Output(f"{prefix}-p2-line","figure"),
+        Output(f"{prefix}-p2-bar","figure"),
+        Output(f"{prefix}-p2-pie","figure"),
+        Output(f"{prefix}-table","data"),
+        Output(f"{prefix}-insight","children"),
+        Output(f"{prefix}-table","style_cell"),
+        Output(f"{prefix}-table","style_header"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi1"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi2"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi3"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-line"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-bar"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-pie"}, "data"),
+        *inputs_p2,
+        State("menu", "data"),
+        State("page", "data"),
+    )
+    def p2(*args):
+        if type_filter_kind == "fleet":
+            idx = 0
+            dim = args[idx]; idx += 1
+            theme = args[idx]; idx += 1
+            type_filter = args[idx] if p2_filter_input is not None else None
+            if p2_filter_input is not None:
+                idx += 1
+            seat_filter = args[idx] if p2_seat_filter_input is not None else None
+            if p2_seat_filter_input is not None:
+                idx += 1
+            menu, page = args[idx], args[idx + 1]
+            year_val = None
+            months = []
+        else:
+            if p2_filter_input is not None:
+                dim, year_val, months, theme, type_filter, menu, page = args
+            else:
+                dim, year_val, months, theme, menu, page = args
+                type_filter = None
+            seat_filter = None
+
+        if menu != prefix or int(page) != 2:
+            raise PreventUpdate
+
+        dims = dim if isinstance(dim, list) else ([dim] if dim else [])
+        dff = apply_region_scope_to_df(df)
+        if dims and "khu_vuc" in dff.columns:
+            dff = dff[dff["khu_vuc"].astype(str).isin([str(x) for x in dims])]
+        if year_val is not None and "nam" in dff.columns:
+            dff = dff[dff["nam"] == int(year_val)]
+        if months and "thang_label" in dff.columns:
+            dff = dff[dff["thang_label"].isin(months)]
+        dff = _apply_type_filter(dff, type_filter)
+        dff = _apply_fleet_seat_filter(dff, seat_filter)
+        dff = dff.sort_values("thang_nam_vn") if "thang_nam_vn" in dff.columns else dff
+
+        if type_filter_kind == "fleet":
+            dims_show, tf_txt = _fleet_filter_text(dims, type_filter, seat_filter)
+            region_df = _fleet_region_snapshot(dff)
+            type_df = _fleet_type_snapshot(dff)
+            region_type_df = _fleet_region_type_snapshot(dff)
+            total = float(pd.to_numeric(region_df.get("so_luong_xe", 0), errors="coerce").fillna(0).sum()) if not region_df.empty else 0.0
+            active_regions = int(region_df["khu_vuc"].nunique()) if not region_df.empty and "khu_vuc" in region_df.columns else 0
+            type_count = int(type_df["loai_xe"].nunique()) if not type_df.empty and "loai_xe" in type_df.columns else 0
+            kpi_subtitle = f"{dims_show}{tf_txt}"
+            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6))
+            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • {dims_show}", _fleet_kpi_lines_region(region_df, max_lines=6))
+            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • {dims_show}", _fleet_kpi_lines_type(type_df, max_lines=6))
+            kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • {dims_show}", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • {dims_show}", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
+            insight = f"{dims_show} • {fmt_vn(total)} xe • {active_regions} khu vực có xe • {type_count} loại xe hoạt động"
+
+            if dff.empty:
+                fig1 = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+                fig2 = empty_figure("Không có dữ liệu heatmap đội xe", theme)
+                fig3 = empty_figure("Không có dữ liệu cơ cấu", theme)
+                style_cell, style_header = _detail_table_theme_styles(theme, prefix)
+                return (
+                    kpi1, kpi2, kpi3,
+                    fig1, fig2, fig3,
+                    [], insight,
+                    style_cell, style_header,
+                    kpi1_store, kpi2_store, kpi3_store,
+                    pack_fig_store(fig1, rows=[], meta={"chart": "fleet_region_bar", "metric_label": metric_label}),
+                    pack_fig_store(fig2, rows=[], meta={"chart": "fleet_heatmap", "metric_label": metric_label}),
+                    pack_fig_store(fig3, rows=[], meta={"chart": "fleet_mix_donut", "metric_label": metric_label}),
+                )
+
+            g_region = region_df.copy()
+            g_region["rank_fmt"] = [f"#{i}" for i in range(1, len(g_region) + 1)]
+            fig1 = go.Figure()
+            fig1.add_bar(
+                y=g_region["khu_vuc"],
+                x=g_region["so_luong_xe"],
+                orientation="h",
+                text=[f"{x} xe • {p}" for x, p in zip(g_region["xe_fmt"], g_region["ty_trong_fmt"])],
+                textposition="outside",
+                cliponaxis=False,
+                marker=dict(
+                    color=[REGION_COLOR_MAP.get(str(x), GREEN_PRIMARY) for x in g_region["khu_vuc"]],
+                    line=dict(color="#ffffff", width=1.2),
+                ),
+                customdata=np.column_stack([
+                    g_region["xe_fmt"],
+                    g_region["ty_trong_fmt"],
+                    g_region["so_loai_xe"].apply(fmt_vn),
+                    g_region["bks_fmt"],
+                    g_region["rank_fmt"],
+                ]),
+                hovertemplate=(
+                    "Khu vực: %{y}<br>"
+                    "Số xe: %{customdata[0]}<br>"
+                    "Tỷ trọng: %{customdata[1]}<br>"
+                    "Loại xe: %{customdata[2]}<br>"
+                    "Số BKS: %{customdata[3]}<br>"
+                    "Xếp hạng: %{customdata[4]}<extra></extra>"
+                ),
+            )
+            fig1 = apply_exec_layout(fig1, theme=theme, title=f"Số lượng xe theo khu vực • Snapshot điều hành<br>{dims_show}{tf_txt}", top=220, x_title="Số lượng xe", y_title="Khu vực")
+            fig1.update_yaxes(categoryorder="array", categoryarray=g_region["khu_vuc"][::-1].tolist())
+            fig1.update_layout(showlegend=False)
+            if len(g_region) >= 2:
+                avg_region = float(g_region["so_luong_xe"].mean())
+                fig1.add_vline(x=avg_region, line_dash="dash", line_color="#94a3b8", annotation_text=f"TB: {fmt_vn(avg_region)} xe", annotation_position="top right")
+            rows1 = g_region[["khu_vuc", "xe_fmt", "ty_trong_fmt", "bks_fmt"]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records")
+            fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "fleet_region_bar", "metric_label": metric_label})
+
+            pivot = region_type_df.pivot(index="loai_xe", columns="khu_vuc", values="so_luong_xe").fillna(0)
+            z = pivot.values
+            text_matrix = [[fmt_vn(v) for v in row] for row in z]
+            fig2 = go.Figure(data=go.Heatmap(
+                z=z,
+                x=list(pivot.columns),
+                y=list(pivot.index),
+                text=text_matrix,
+                texttemplate="%{text}",
+                colorscale="Greens",
+                hovertemplate="Khu vực: %{x}<br>Loại xe: %{y}<br>Số xe: %{z:,.0f}<extra></extra>",
+                colorbar=dict(title="Số xe"),
+            ))
+            fig2 = apply_exec_layout(fig2, theme=theme, title=f"Ma trận phân bổ xe theo khu vực và loại xe<br>{dims_show}{tf_txt}", top=220, x_title="Khu vực", y_title="Loại xe")
+            rows2 = [{"khu_vuc": str(r["khu_vuc"]), "loai_xe": str(r["loai_xe"]), "metric_fmt": r["xe_fmt"]} for _, r in region_type_df.iterrows()]
+            fig2_store = pack_fig_store(fig2, rows=rows2, meta={"chart": "fleet_heatmap", "metric_label": metric_label})
+
+            if type_count > 1:
+                fig3 = make_vn_donut(type_df, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe<br>{dims_show}{tf_txt}", max_slices=10, color_map=None, theme=theme)
+                rows3 = type_df[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records")
+            else:
+                fig3 = make_vn_donut(region_df, names="khu_vuc", values="so_luong_xe", title=f"Tỷ trọng số lượng xe theo khu vực<br>{dims_show}{tf_txt}", max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
+                rows3 = region_df[["khu_vuc", "xe_fmt", "ty_trong_fmt"]].rename(columns={"khu_vuc": "label", "xe_fmt": "metric_fmt"}).to_dict("records")
+            fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "fleet_mix_donut", "metric_label": metric_label})
+
+            table_df = _fleet_table_frame(dff)
+            for c in [col for col in table_df.columns if col not in ["khu_vuc", "loai_xe", "nhom_nhien_lieu"]]:
+                table_df[c] = pd.to_numeric(table_df[c], errors="coerce").fillna(0).apply(fmt_vn)
+            style_cell, style_header = _detail_table_theme_styles(theme, prefix)
+            return (
+                kpi1, kpi2, kpi3,
+                fig1, fig2, fig3,
+                table_df.to_dict("records"), insight,
+                style_cell, style_header,
+                kpi1_store, kpi2_store, kpi3_store,
+                fig1_store, fig2_store, fig3_store
+            )
+
+        if prefix == "bb":
+            year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+            mo_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+            dims_show = ", ".join(dims[:3]) + (" ..." if len(dims) > 3 else "") if dims else "Toàn bộ khu vực"
+            count_total = safe_number(dff["so_bien_ban"].sum()) if "so_bien_ban" in dff.columns else 0.0
+            collected_total = safe_number(dff["so_tien_thu_duoc"].sum()) if "so_tien_thu_duoc" in dff.columns else 0.0
+            processed_total = safe_number(dff["so_tien_da_xu_ly"].sum()) if "so_tien_da_xu_ly" in dff.columns else 0.0
+            debt_total = safe_number(dff["so_tien_con_no"].sum()) if "so_tien_con_no" in dff.columns else 0.0
+            debt_ratio = (debt_total / processed_total * 100.0) if processed_total > 0 else 0.0
+
+            payload1 = region_payload_value(dff, "so_tien_thu_duoc", selected_regions=dims, max_items=None)
+            payload2 = region_payload_value(dff, "so_tien_da_xu_ly", selected_regions=dims, max_items=None)
+            payload3 = region_payload_value(dff, "so_tien_con_no", selected_regions=dims, max_items=None)
+
+            kpi1_sub = f"{dims_show} • {year_txt} • {mo_txt} • {fmt_vn(count_total)} biên bản"
+            kpi1 = kpi_content(fmt_vn(collected_total), kpi1_sub, region_value_lines_from_payload(payload1, max_lines=6))
+            kpi2 = kpi_content(fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", region_value_lines_from_payload(payload2, max_lines=6))
+            kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=6))
+
+            kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi1_sub, payload1)
+            kpi2_store = pack_kpi_store("Số tiền đã hoàn tất xử lý", fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", payload2)
+            kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
+            insight = f"Thu được {fmt_vn(collected_total)} / Đã xử lý {fmt_vn(processed_total)} / Còn nợ {fmt_vn(debt_total)} – {dims_show}"
+
+            if dff.empty:
+                fig1 = empty_figure("Không có dữ liệu biên bản", theme)
+                fig2 = empty_figure("Không có dữ liệu biên bản", theme)
+                fig3 = empty_figure("Không có dữ liệu biên bản", theme)
+                if theme == "light":
+                    style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}
+                    style_header = {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"}
+                else:
+                    style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}
+                    style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
+                return (
+                    kpi1, kpi2, kpi3,
+                    fig1, fig2, fig3,
+                    [], insight,
+                    style_cell, style_header,
+                    kpi1_store, kpi2_store, kpi3_store,
+                    pack_fig_store(fig1, rows=[], meta={"chart": "bb_line", "metric_label": "Biên bản"}),
+                    pack_fig_store(fig2, rows=[], meta={"chart": "bb_bar", "metric_label": "Biên bản"}),
+                    pack_fig_store(fig3, rows=[], meta={"chart": "bb_pie", "metric_label": "Biên bản"}),
+                )
+
+            if len(dims) >= 2:
+                g1 = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False)["so_tien_thu_duoc"].sum().sort_values("thang_nam_vn")
+                g1["metric_fmt"] = g1["so_tien_thu_duoc"].apply(fmt_vn)
+                g1["thang_label"] = g1["thang_nam_vn"].dt.strftime("%m/%Y")
+                kv_order = g1.groupby("khu_vuc", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)["khu_vuc"].tolist()
+                fig1 = px.line(g1, x="thang_nam_vn", y="so_tien_thu_duoc", color="khu_vuc", markers=True, category_orders={"khu_vuc": kv_order}, color_discrete_map=REGION_COLOR_MAP, hover_data={"metric_fmt": True, "so_tien_thu_duoc": False})
+                fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+                fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+                fig1 = apply_theme(fig1, theme)
+                fig1 = apply_chart_title(fig1, f"Số tiền thu được theo tháng • So sánh khu vực<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
+                fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
+                rows1 = [{"thang_label": r["thang_label"], "khu_vuc": str(r["khu_vuc"]), "metric": float(r["so_tien_thu_duoc"]), "metric_fmt": r["metric_fmt"]} for _, r in g1.iterrows()]
+                fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Số tiền thu được", "series_field": "khu_vuc"})
+            else:
+                monthly_long = _bb_metric_long_df(dff, ["thang_nam_vn"])
+                monthly_long["thang_label"] = pd.to_datetime(monthly_long["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+                fig1 = px.line(monthly_long, x="thang_nam_vn", y="gia_tri", color="metric_label", markers=True, category_orders={"metric_label": [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]}, color_discrete_map=BB_METRIC_COLOR_MAP, hover_data={"metric_fmt": True, "gia_tri": False})
+                fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+                fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+                fig1 = apply_theme(fig1, theme)
+                fig1 = apply_chart_title(fig1, f"Xu hướng 3 chỉ số tài chính biên bản theo tháng<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
+                fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
+                rows1 = [{"thang_label": r["thang_label"], "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in monthly_long.iterrows()]
+                fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Biên bản", "series_field": "metric_label"})
+
+            monthly_detail = _bb_metric_long_df(dff, ["thang_nam_vn", "khu_vuc"])
+            monthly_detail["thang_label"] = pd.to_datetime(monthly_detail["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+            monthly_long = monthly_detail.groupby(["thang_nam_vn", "thang_label", "metric_label"], as_index=False)["gia_tri"].sum()
+            monthly_long["metric_fmt"] = monthly_long["gia_tri"].apply(fmt_vn)
+            fig2 = px.bar(
+                monthly_long,
+                x="thang_nam_vn",
+                y="gia_tri",
+                color="metric_label",
+                text="metric_fmt",
+                barmode="group",
+                category_orders={"metric_label": [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]},
+                color_discrete_map=BB_METRIC_COLOR_MAP,
+                hover_data={"metric_fmt": True, "gia_tri": False}
+            )
+            fig2.update_traces(textposition="outside", cliponaxis=False)
+            fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0), bargap=0.18)
+            fig2 = apply_theme(fig2, theme)
+            fig2_title = f"Biểu đồ cột 3 chỉ số tài chính biên bản theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
+            fig2 = apply_chart_title(fig2, fig2_title, top=220, y_title="Giá trị")
+            if len(dims) >= 2:
+                fig2.add_annotation(
+                    x=1,
+                    y=1.14,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                    text=f"Đang cộng gộp {len(dims)} khu vực đã chọn",
+                    font=dict(size=11, color=(TEXT_LIGHT_UI if theme == "light" else "white")),
+                    align="right"
+                )
+            rows2 = [{
+                "thang_label": r["thang_label"],
+                "khu_vuc": str(r["khu_vuc"]),
+                "metric_label": str(r["metric_label"]),
+                "metric": float(r["gia_tri"]),
+                "metric_fmt": r["metric_fmt"]
+            } for _, r in monthly_detail.iterrows()]
+            fig2_store = pack_fig_store(fig2, rows=rows2, meta={"chart": "bb_bar", "metric_label": "Biên bản", "series_field": "metric_label"})
+
+            if len(dims) >= 2 or not dims:
+                pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_con_no"].sum().sort_values("so_tien_con_no", ascending=False)
+                if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
+                    pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
+                    pie_value = "so_tien_thu_duoc"
+                    pie_title = f"Tỷ trọng số tiền thu được theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
+                else:
+                    pie_value = "so_tien_con_no"
+                    pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
+                fig3 = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
+                pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
+                rows3 = [{"label": str(r["khu_vuc"]), "metric_fmt": r["metric_fmt"]} for _, r in pie_source.iterrows()]
+            else:
+                pie_source = dff.groupby("thang_label", as_index=False)["so_tien_con_no"].sum().sort_values("so_tien_con_no", ascending=False)
+                if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
+                    pie_source = dff.groupby("thang_label", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
+                    pie_value = "so_tien_thu_duoc"
+                    pie_title = f"Tỷ trọng số tiền thu được theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
+                else:
+                    pie_value = "so_tien_con_no"
+                    pie_title = f"Tỷ trọng số tiền còn nợ theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
+                pie_source = pie_source.rename(columns={"thang_label": "thang"})
+                fig3 = make_vn_donut(pie_source, names="thang", values=pie_value, title=pie_title, max_slices=12, color_map=None, theme=theme)
+                pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
+                rows3 = [{"label": str(r["thang"]), "metric_fmt": r["metric_fmt"]} for _, r in pie_source.iterrows()]
+            fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "bb_pie", "metric_label": pie_title})
+
+            table_df = _bb_table_frame(dff)
+            style_cell, style_header = _detail_table_theme_styles(theme, prefix)
+
+            return (
+                kpi1, kpi2, kpi3,
+                fig1, fig2, fig3,
+                table_df.to_dict("records"), insight,
+                style_cell, style_header,
+                kpi1_store, kpi2_store, kpi3_store,
+                fig1_store, fig2_store, fig3_store
+            )
+
+        total = safe_number(dff[value_col].sum()) if value_col in dff.columns else 0.0
+        secondary_total = safe_number(dff[secondary_col].sum()) if secondary_col in dff.columns else 0.0
+        months_n = max(int(dff["thang_label"].nunique()) if "thang_label" in dff.columns and not dff.empty else 1, 1)
+
+        total_payload = region_payload_value(dff, value_col, selected_regions=dims, max_items=None)
+        secondary_payload = region_payload_value(dff, secondary_col, selected_regions=dims, max_items=None) if secondary_col in dff.columns else []
+        avg_payload, avg_lines = _avg_payload_and_lines(dff, dims=dims)
+
+        if avg_mode == "per_month":
+            avg = total / months_n
+            avg_caption = f"{avg_label} • {months_n} tháng"
+        else:
+            avg_num_total = safe_number(dff[avg_numerator_col].sum()) if avg_numerator_col in dff.columns else total
+            avg_den_total = safe_number(dff[avg_denominator_col].sum()) if avg_denominator_col in dff.columns else secondary_total
+            avg = avg_num_total / max(avg_den_total, 1)
+            avg_caption = f"{avg_label} • {fmt_vn(avg_den_total)} {avg_divisor_label}"
+
+        year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+        mo_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+        dims_show = ", ".join([str(x) for x in dims]) if dims else "Tất cả khu vực"
+        if dims and len(dims) > 3:
+            dims_show = f"{len(dims)} khu vực đã chọn"
+        tf_txt = ""
+        if type_filter_kind == "lh" and type_filter:
+            tf_txt = f" • Lọc loại hình: {', '.join(type_filter)}"
+        if type_filter_kind == "hd" and type_filter:
+            tf_txt = f" • Lọc loại HĐ: {', '.join(type_filter)}"
+        if type_filter_kind == "fleet" and type_filter:
+            tf_txt = f" • Lọc loại xe: {', '.join(type_filter)}"
+
+        kpi_subtitle = f"{dims_show} • {year_txt} • {mo_txt}{tf_txt}"
+        kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, region_value_lines_from_payload(total_payload, max_lines=6))
+        kpi2 = kpi_content(fmt_vn(secondary_total), kpi_subtitle, region_value_lines_from_payload(secondary_payload, max_lines=6))
+        kpi3 = kpi_content(fmt_vn(avg), avg_caption, avg_lines[:6])
+
+        kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, total_payload)
+        kpi2_store = pack_kpi_store(secondary_label, fmt_vn(secondary_total), kpi_subtitle, secondary_payload)
+        kpi3_store = pack_kpi_store(avg_label, fmt_vn(avg), avg_caption, avg_payload)
+        insight = f"Tổng {metric_label.lower()}: {fmt_vn(total)} – {dims_show}"
+
+        if dff.empty:
+            fig1 = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            fig2 = empty_figure(f"Không có dữ liệu {secondary_label.lower()}", theme)
+            fig3 = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+            style_cell, style_header = _detail_table_theme_styles(theme, prefix)
+            return (
+                kpi1, kpi2, kpi3,
+                fig1, fig2, fig3,
+                [], insight,
+                style_cell, style_header,
+                kpi1_store, kpi2_store, kpi3_store,
+                pack_fig_store(fig1, rows=[], meta={"chart": "line_kv", "metric_label": metric_label}),
+                pack_fig_store(fig2, rows=[], meta={"chart": "bar_kv", "metric_label": secondary_label}),
+                pack_fig_store(fig3, rows=[], meta={"chart": "pie_kv", "metric_label": metric_label}),
+            )
+
+        if "khu_vuc" in dff.columns:
+            dff_kv, kv_col = (dff.copy(), "khu_vuc") if dims else top_n_keep_other(dff, "khu_vuc", value_col, n=None, other_label="Khác", keep_cats=PINNED_REGIONS)
+            gkv = dff_kv.groupby(["thang_nam_vn", kv_col], as_index=False).agg({value_col: "sum"}).sort_values("thang_nam_vn")
+            gkv["val_fmt"] = gkv[value_col].apply(fmt_vn)
+            gkv["thang_label"] = gkv["thang_nam_vn"].dt.strftime("%m/%Y")
+            kv_order = gkv.groupby(kv_col, as_index=False)[value_col].sum().sort_values(value_col, ascending=False)[kv_col].tolist()
+            fig1 = px.line(
+                gkv, x="thang_nam_vn", y=value_col, color=kv_col,
+                category_orders={kv_col: kv_order},
+                color_discrete_map=REGION_COLOR_MAP,
+                markers=True, hover_data={"val_fmt": True, value_col: False}
+            )
+            fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+            fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+            fig1 = apply_theme(fig1, theme)
+            fig1 = apply_chart_title(fig1, f"{metric_label} theo tháng • So sánh khu vực<br>{dims_show} • {year_txt} • {mo_txt}{tf_txt}", top=220, y_title=metric_axis)
+            fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
+            rows1 = [{"thang_label": r["thang_label"], "khu_vuc": str(r[kv_col]), "metric": float(r[value_col]), "metric_fmt": r["val_fmt"]} for _, r in gkv.iterrows()]
+            fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "line_kv", "metric_label": metric_label, "series_field": kv_col})
+        else:
+            fig1 = empty_figure("Không có dữ liệu khu vực", theme)
+            fig1_store = pack_fig_store(fig1, rows=[], meta={"chart": "line_kv", "metric_label": metric_label})
+
+        if secondary_col in dff.columns:
+            if len(dims) >= 2:
+                gsc = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False).agg({secondary_col: "sum"}).sort_values("thang_nam_vn")
+                gsc["metric_fmt"] = gsc[secondary_col].apply(fmt_vn)
+                gsc["thang_label"] = gsc["thang_nam_vn"].dt.strftime("%m/%Y")
+                kv_order2 = gsc.groupby("khu_vuc", as_index=False)[secondary_col].sum().sort_values(secondary_col, ascending=False)["khu_vuc"].tolist()
+                if prefix == "hd":
+                    fig2 = px.bar(
+                        gsc,
+                        x="thang_nam_vn",
+                        y=secondary_col,
+                        color="khu_vuc",
+                        category_orders={"khu_vuc": kv_order2},
+                        color_discrete_map=REGION_COLOR_MAP,
+                        hover_data={"metric_fmt": True, secondary_col: False}
+                    )
+                    fig2.update_layout(barmode="stack", bargap=0.18, legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="left", x=0), hovermode="x unified")
+                    gt = gsc.groupby("thang_nam_vn", as_index=False)[secondary_col].sum().sort_values("thang_nam_vn")
+                    gt["metric_fmt"] = gt[secondary_col].apply(fmt_vn)
+                    total_text = gt["metric_fmt"].tolist() if len(gt) <= 10 else ([""] * max(len(gt)-1,0) + [gt["metric_fmt"].iloc[-1]])
+                    fig2.add_scatter(x=gt["thang_nam_vn"], y=gt[secondary_col], mode="lines+markers+text", name="Tổng", text=total_text, textposition="top center", line=dict(width=3), marker=dict(size=7))
+                    fig2 = apply_theme(fig2, theme)
+                    fig2 = apply_chart_title(fig2, f"{secondary_label} theo tháng • Stacked theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}{tf_txt}", top=220, y_title=secondary_label)
+                else:
+                    fig2 = px.bar(
+                        gsc,
+                        x="thang_nam_vn",
+                        y=secondary_col,
+                        color="khu_vuc",
+                        category_orders={"khu_vuc": kv_order2},
+                        color_discrete_map=REGION_COLOR_MAP,
+                        text="metric_fmt",
+                        hover_data={"metric_fmt": True, secondary_col: False}
+                    )
+                    fig2.update_layout(barmode="group", legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+                    fig2.update_traces(textposition="auto", cliponaxis=False)
+                    fig2 = apply_theme(fig2, theme)
+                    fig2 = apply_chart_title(fig2, f"{secondary_label} theo tháng • So sánh theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}{tf_txt}", top=220, y_title=secondary_label)
+                rows2 = [{"thang_label": r["thang_label"], "khu_vuc": str(r["khu_vuc"]), "metric": float(r[secondary_col]), "metric_fmt": r["metric_fmt"]} for _, r in gsc.iterrows()]
+                fig2_store = pack_fig_store(fig2, rows=rows2, meta={"chart": "bar_kv", "metric_label": secondary_label, "series_field": "khu_vuc"})
+            else:
+                dff_bar = dff.copy()
+                dff_bar["metric_fmt"] = dff_bar[secondary_col].apply(fmt_vn)
+                dff_bar["thang_label"] = dff_bar["thang_nam_vn"].dt.strftime("%m/%Y")
+                fig2 = px.bar(dff_bar, x="thang_nam_vn", y=secondary_col, text="metric_fmt", hover_data={"metric_fmt": True, secondary_col: False})
+                fig2.update_traces(textposition="outside", cliponaxis=False)
+                fig2.update_layout(margin=dict(t=20))
+                fig2 = apply_theme(fig2, theme)
+                fig2 = apply_chart_title(fig2, f"{secondary_label} theo tháng • Khu vực đã chọn<br>{dims_show} • {year_txt} • {mo_txt}{tf_txt}", top=220, y_title=secondary_label)
+                fig2_store = pack_fig_store(fig2, rows=dff_bar[["thang_label", "metric_fmt"]].to_dict("records"), meta={"chart": "bar_total", "metric_label": secondary_label})
+        else:
+            fig2 = empty_figure(f"Không có dữ liệu {secondary_label.lower()}", theme)
+            fig2_store = pack_fig_store(fig2, rows=[], meta={"chart": "bar_unknown", "metric_label": secondary_label})
+
+        if len(dims) >= 2 and "khu_vuc" in dff.columns:
+            fig3 = make_vn_donut(dff, names="khu_vuc", values=value_col, title=f"Tỷ trọng đóng góp theo khu vực • {metric_label}<br>{year_txt} • {mo_txt}{tf_txt}", max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
+            g3 = dff.groupby("khu_vuc", as_index=False)[value_col].sum().sort_values(value_col, ascending=False)
+            g3["val_fmt"] = g3[value_col].apply(fmt_vn)
+            rows3 = [{"label": str(r["khu_vuc"]), "metric": float(r[value_col]), "metric_fmt": r["val_fmt"]} for _, r in g3.iterrows()]
+            fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "pie_kv", "metric_label": metric_label})
+        else:
+            dff_pie = dff.copy()
+            dff_pie["thang"] = dff_pie["thang_nam_vn"].dt.strftime("%m/%Y")
+            fig3 = make_vn_donut(dff_pie, names="thang", values=value_col, title=f"Tỷ trọng {metric_label.lower()} theo tháng<br>{dims_show} • {year_txt} • {mo_txt}{tf_txt}", max_slices=12, color_map=None, theme=theme)
+            g3 = dff_pie.groupby("thang", as_index=False)[value_col].sum().sort_values(value_col, ascending=False)
+            g3["val_fmt"] = g3[value_col].apply(fmt_vn)
+            rows3 = [{"label": str(r["thang"]), "metric": float(r[value_col]), "metric_fmt": r["val_fmt"]} for _, r in g3.iterrows()]
+            fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "pie_month", "metric_label": metric_label})
+
+        dff_table = dff.copy()
+        for col in ["thang_nam", "thang_nam_vn"]:
+            if col in dff_table.columns:
+                dff_table[col] = pd.to_datetime(dff_table[col], errors="coerce").dt.strftime("%m/%Y").fillna("")
+        if "nam" in dff_table.columns:
+            dff_table["nam"] = pd.to_numeric(dff_table["nam"], errors="coerce").astype("Int64").astype(str).replace("<NA>", "")
+        num_cols = [c for c in dff_table.select_dtypes(include="number").columns if c != "nam"]
+        for c in num_cols:
+            dff_table[c] = dff_table[c].apply(fmt_vn)
+
+        style_cell, style_header = _detail_table_theme_styles(theme, prefix)
+
+        return (
+            kpi1, kpi2, kpi3,
+            fig1, fig2, fig3,
+            dff_table.to_dict("records"),
+            insight,
+            style_cell, style_header,
+            kpi1_store, kpi2_store, kpi3_store,
+            fig1_store, fig2_store, fig3_store
+        )
+
+def _hr_filter_df(dff: pd.DataFrame, year_val=None, months=None, regions=None, departments=None) -> pd.DataFrame:
+    out = apply_region_scope_to_df(dff)
+    if year_val is not None and "nam" in out.columns:
+        out = out[out["nam"] == int(year_val)]
+    if months and "thang_label" in out.columns:
+        out = out[out["thang_label"].isin(months)]
+    if regions and "khu_vuc" in out.columns:
+        allowed_regions = filter_regions_for_current_user(regions)
+        if allowed_regions:
+            out = out[out["khu_vuc"].astype(str).isin([str(x) for x in allowed_regions])]
+        else:
+            out = out.iloc[0:0].copy()
+    if departments and "bo_phan" in out.columns:
+        out = out[out["bo_phan"].astype(str).isin([str(x) for x in departments])]
+    return out
+
+
+def _hr_snapshot_df(dff: pd.DataFrame):
+    if dff is None or dff.empty or "thang_nam_vn" not in dff.columns:
+        return dff.iloc[0:0].copy(), None, ""
+    latest_ts = pd.to_datetime(dff["thang_nam_vn"], errors="coerce").max()
+    if pd.isna(latest_ts):
+        return dff.iloc[0:0].copy(), None, ""
+    snap = dff[dff["thang_nam_vn"] == latest_ts].copy()
+    return snap, latest_ts, latest_ts.strftime("%m/%Y")
+
+
+def _hr_filter_text(year_val=None, months=None, regions=None, departments=None):
+    year_txt = f"Năm {int(year_val)}" if year_val is not None else "Tất cả năm"
+    mo_txt = months[0] if isinstance(months, list) and len(months) == 1 else (f"{len(months)} tháng đã chọn" if months else "Tất cả tháng")
+    region_txt = regions[0] if isinstance(regions, list) and len(regions) == 1 else (f"{len(regions)} khu vực" if regions else ("Phạm vi tài khoản" if current_user_region_scope() is not None else "Tất cả khu vực"))
+    dept_txt = departments[0] if isinstance(departments, list) and len(departments) == 1 else (f"{len(departments)} bộ phận" if departments else "Tất cả bộ phận")
+    return year_txt, mo_txt, region_txt, dept_txt
+
+
+def _hr_lifecycle_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "nhom": ["Dưới 1 năm", "1 - 3 năm", "Trên 3 năm"],
+        "gia_tri": [
+            float(snapshot.get("so_duoi_1_nam", pd.Series(dtype=float)).sum()),
+            float(snapshot.get("so_tu_1_den_3_nam", pd.Series(dtype=float)).sum()),
+            float(snapshot.get("so_tren_3_nam", pd.Series(dtype=float)).sum()),
+        ]
+    })
+
+
+def _hr_driver_retention_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "nhom": ["Giữ ổn định", "Vào làm", "Nghỉ việc"],
+        "gia_tri": [
+            float(snapshot.get("so_giu_on_dinh", pd.Series(dtype=float)).sum()),
+            float(snapshot.get("so_vao_lam", pd.Series(dtype=float)).sum()),
+            float(snapshot.get("so_nghi_viec", pd.Series(dtype=float)).sum()),
+        ]
+    })
+
+
+def _hr_previous_snapshot_df(dff: pd.DataFrame, latest_ts):
+    if dff is None or dff.empty or latest_ts is None or "thang_nam_vn" not in dff.columns:
+        return dff.iloc[0:0].copy(), None, ""
+    ts_values = pd.to_datetime(dff["thang_nam_vn"], errors="coerce").dropna().sort_values().unique().tolist()
+    prev_candidates = [ts for ts in ts_values if pd.Timestamp(ts) < pd.Timestamp(latest_ts)]
+    if not prev_candidates:
+        return dff.iloc[0:0].copy(), None, ""
+    prev_ts = pd.Timestamp(prev_candidates[-1])
+    snap = dff[dff["thang_nam_vn"] == prev_ts].copy()
+    return snap, prev_ts, prev_ts.strftime("%m/%Y")
+
+
+def _hr_metric_delta(curr: float, prev: float):
+    curr = safe_number(curr)
+    prev = safe_number(prev)
+    diff = curr - prev
+    pct = (diff / prev * 100.0) if prev > 0 else (100.0 if curr > 0 else 0.0)
+    return diff, pct
+
+
+def _hr_delta_class(diff: float) -> str:
+    if diff > 0:
+        return "positive"
+    if diff < 0:
+        return "negative"
+    return "neutral"
+
+
+def _hr_monthly_snapshot(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["thang_nam_vn", "thang_label", "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan", "ty_le_tang", "ty_le_giam", "ty_le_giu_chan"])
+    g = dff.groupby("thang_nam_vn", as_index=False).agg(
+        so_luong_nhan_su=("so_luong_nhan_su", "sum"),
+        so_vao_lam=("so_vao_lam", "sum"),
+        so_nghi_viec=("so_nghi_viec", "sum"),
+        so_duoi_1_nam=("so_duoi_1_nam", "sum"),
+        so_tu_1_den_3_nam=("so_tu_1_den_3_nam", "sum"),
+        so_tren_3_nam=("so_tren_3_nam", "sum"),
+        headcount_dau_ky=("headcount_dau_ky", "sum"),
+        so_giu_on_dinh=("so_giu_on_dinh", "sum"),
+        bien_dong_thuan=("bien_dong_thuan", "sum"),
+        ty_le_tang=("ty_le_tang", "mean"),
+        ty_le_giam=("ty_le_giam", "mean"),
+        ty_le_giu_chan=("ty_le_giu_chan", "mean"),
+    ).sort_values("thang_nam_vn")
+    g["thang_label"] = pd.to_datetime(g["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+    if "bien_dong_thuan" in g.columns:
+        g["bien_dong_thuan"] = np.where(g["bien_dong_thuan"].abs() > 0, g["bien_dong_thuan"], g["so_vao_lam"] - g["so_nghi_viec"])
+    return g
+
+
+def _hr_region_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
+    if snapshot is None or snapshot.empty:
+        return pd.DataFrame(columns=["khu_vuc", "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "headcount_dau_ky", "so_giu_on_dinh", "ty_le_tang", "ty_le_giam", "ty_le_giu_chan"])
+    g = snapshot.groupby("khu_vuc", as_index=False).agg(
+        so_luong_nhan_su=("so_luong_nhan_su", "sum"),
+        so_vao_lam=("so_vao_lam", "sum"),
+        so_nghi_viec=("so_nghi_viec", "sum"),
+        so_duoi_1_nam=("so_duoi_1_nam", "sum"),
+        so_tu_1_den_3_nam=("so_tu_1_den_3_nam", "sum"),
+        so_tren_3_nam=("so_tren_3_nam", "sum"),
+        headcount_dau_ky=("headcount_dau_ky", "sum"),
+        so_giu_on_dinh=("so_giu_on_dinh", "sum"),
+        ty_le_tang=("ty_le_tang", "mean"),
+        ty_le_giam=("ty_le_giam", "mean"),
+        ty_le_giu_chan=("ty_le_giu_chan", "mean"),
+    ).sort_values(["so_luong_nhan_su", "so_giu_on_dinh"], ascending=[False, False])
+    return g
+
+
+def _hr_make_kpi_card(main_value, subtitle, delta_text=None, delta_class="neutral", extra_lines=None):
+    return home_kpi_markup(main_value, subtitle, delta_text=delta_text, delta_class=delta_class, extra_lines=extra_lines or [])
+
+
+def _hr_build_kpi_lines(region_df: pd.DataFrame, value_col: str, mode: str = "value"):
+    if region_df is None or region_df.empty or value_col not in region_df.columns:
+        return []
+    rows = region_df.head(4)
+    lines = []
+    for _, r in rows.iterrows():
+        color = REGION_COLOR_MAP.get(str(r.get("khu_vuc", "Khác")), "#888")
+        value_txt = fmt_pct(r.get(value_col, 0), 1) if mode == "pct" else fmt_vn(r.get(value_col, 0))
+        lines.append(_ellipsis_div([_swatch(color), f"{r.get('khu_vuc', '')}: {value_txt}"]))
+    return lines
+
+
+def _hr_stacked_lifecycle_percent(gm: pd.DataFrame) -> pd.DataFrame:
+    if gm is None or gm.empty:
+        return pd.DataFrame(columns=["thang_nam_vn", "thang_label", "nhom_vong_doi", "gia_tri", "metric_fmt"])
+    life = gm[["thang_nam_vn", "thang_label", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"]].copy()
+    denom = life[["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"]].sum(axis=1).replace(0, np.nan)
+    for c in ["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"]:
+        life[c] = (life[c] / denom * 100.0).fillna(0.0)
+    life = life.melt(id_vars=["thang_nam_vn", "thang_label"], value_vars=["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"], var_name="nhom_vong_doi", value_name="gia_tri")
+    life["nhom_vong_doi"] = life["nhom_vong_doi"].map({"so_duoi_1_nam": "Dưới 1 năm", "so_tu_1_den_3_nam": "1 - 3 năm", "so_tren_3_nam": "Trên 3 năm"})
+    life["metric_fmt"] = life["gia_tri"].apply(lambda x: fmt_pct(x, 1))
+    return life
+
+
+def _hr_driver_region_retention(region_snapshot: pd.DataFrame) -> pd.DataFrame:
+    if region_snapshot is None or region_snapshot.empty:
+        return pd.DataFrame(columns=["khu_vuc", "ty_le_giu_chan"])
+    out = region_snapshot[["khu_vuc", "ty_le_giu_chan", "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec"]].copy()
+    out["ty_le_giu_chan"] = pd.to_numeric(out["ty_le_giu_chan"], errors="coerce").fillna(0.0)
+    return out.sort_values(["ty_le_giu_chan", "so_luong_nhan_su"], ascending=[False, False])
+
+
+def _hr_kpi_zoom_rows(region_df: pd.DataFrame, focus_col: str, focus_mode: str = "value") -> list:
+    if region_df is None or region_df.empty or "khu_vuc" not in region_df.columns:
+        return []
+    d = region_df.copy()
+    numeric_cols = [
+        "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec",
+        "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam",
+        "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan",
+        "ty_le_tang", "ty_le_giam", "ty_le_giu_chan"
+    ]
+    for c in numeric_cols:
+        if c not in d.columns:
+            d[c] = 0
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0)
+
+    if focus_col not in d.columns:
+        d[focus_col] = 0
+    d[focus_col] = pd.to_numeric(d[focus_col], errors="coerce").fillna(0)
+
+    total_focus = float(d[focus_col].sum()) if focus_mode != "pct" else 0.0
+    if focus_mode == "pct":
+        d["value_fmt"] = d[focus_col].apply(lambda x: fmt_pct(x, 1))
+    else:
+        d["value_fmt"] = d[focus_col].apply(fmt_vn)
+        d["pct"] = np.where(total_focus > 0, d[focus_col] / total_focus * 100.0, 0.0)
+        d["pct_fmt"] = d["pct"].apply(lambda x: fmt_pct(x, 1))
+
+    for c in ["so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "headcount_dau_ky", "so_giu_on_dinh"]:
+        d[f"{c}_fmt"] = d[c].apply(fmt_vn)
+    d["bien_dong_thuan_fmt"] = d["bien_dong_thuan"].apply(signed_diff_text)
+    for c in ["ty_le_tang", "ty_le_giam", "ty_le_giu_chan"]:
+        d[f"{c}_fmt"] = d[c].apply(lambda x: fmt_pct(x, 1))
+
+    sort_cols = [focus_col]
+    ascending = [False]
+    if "so_luong_nhan_su" in d.columns and focus_col != "so_luong_nhan_su":
+        sort_cols.append("so_luong_nhan_su")
+        ascending.append(False)
+    d = d.sort_values(sort_cols, ascending=ascending)
+
+    keep = [
+        "khu_vuc", "value_fmt", "pct", "pct_fmt",
+        "so_luong_nhan_su_fmt", "so_vao_lam_fmt", "so_nghi_viec_fmt",
+        "so_duoi_1_nam_fmt", "so_tu_1_den_3_nam_fmt", "so_tren_3_nam_fmt",
+        "headcount_dau_ky_fmt", "so_giu_on_dinh_fmt", "bien_dong_thuan_fmt",
+        "ty_le_tang_fmt", "ty_le_giam_fmt", "ty_le_giu_chan_fmt"
+    ]
+    keep = [c for c in keep if c in d.columns]
+    return d[keep].to_dict("records")
+
+
+def _hr_flow_drill_rows(dff: pd.DataFrame, join_label: str, leave_label: str) -> list:
+    if dff is None or dff.empty:
+        return []
+    g = dff.groupby(["thang_label", "khu_vuc"], as_index=False).agg(
+        so_vao_lam=("so_vao_lam", "sum"),
+        so_nghi_viec=("so_nghi_viec", "sum"),
+        bien_dong_thuan=("bien_dong_thuan", "sum")
+    )
+    g[join_label] = g["so_vao_lam"]
+    g[leave_label] = g["so_nghi_viec"]
+    g["Biến động thuần"] = g["bien_dong_thuan"]
+    long = g.melt(
+        id_vars=["thang_label", "khu_vuc"],
+        value_vars=[join_label, leave_label, "Biến động thuần"],
+        var_name="label",
+        value_name="gia_tri"
+    )
+    long["metric_fmt"] = np.where(
+        long["label"].eq("Biến động thuần"),
+        long["gia_tri"].apply(signed_diff_text),
+        long["gia_tri"].apply(fmt_vn)
+    )
+    return long[["thang_label", "khu_vuc", "label", "metric_fmt"]].to_dict("records")
+
+
+def _hr_driver_rate_drill_rows(dff: pd.DataFrame) -> list:
+    if dff is None or dff.empty:
+        return []
+    g = dff.groupby(["thang_label", "khu_vuc"], as_index=False).agg(
+        headcount_dau_ky=("headcount_dau_ky", "sum"),
+        so_vao_lam=("so_vao_lam", "sum"),
+        so_nghi_viec=("so_nghi_viec", "sum"),
+        so_giu_on_dinh=("so_giu_on_dinh", "sum")
+    )
+    g["Tỷ lệ tăng"] = np.where(g["headcount_dau_ky"] > 0, g["so_vao_lam"] / g["headcount_dau_ky"] * 100.0, np.where(g["so_vao_lam"] > 0, 100.0, 0.0))
+    g["Tỷ lệ giảm"] = np.where(g["headcount_dau_ky"] > 0, g["so_nghi_viec"] / g["headcount_dau_ky"] * 100.0, 0.0)
+    g["Tỷ lệ giữ chân"] = np.where(g["headcount_dau_ky"] > 0, g["so_giu_on_dinh"] / g["headcount_dau_ky"] * 100.0, np.where((g["so_giu_on_dinh"] + g["so_vao_lam"]) > 0, 100.0, 0.0))
+    long = g.melt(
+        id_vars=["thang_label", "khu_vuc"],
+        value_vars=["Tỷ lệ tăng", "Tỷ lệ giảm", "Tỷ lệ giữ chân"],
+        var_name="label",
+        value_name="gia_tri"
+    )
+    long["metric_fmt"] = long["gia_tri"].apply(lambda x: fmt_pct(x, 1))
+    return long[["thang_label", "khu_vuc", "label", "metric_fmt"]].to_dict("records")
+
+
+def _hr_lifecycle_percent_by_region(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["thang_label", "khu_vuc", "nhom_vong_doi", "metric_fmt", "count_fmt", "pct_segment_fmt"])
+    g = dff.groupby(["thang_nam_vn", "thang_label", "khu_vuc"], as_index=False).agg(
+        so_duoi_1_nam=("so_duoi_1_nam", "sum"),
+        so_tu_1_den_3_nam=("so_tu_1_den_3_nam", "sum"),
+        so_tren_3_nam=("so_tren_3_nam", "sum")
+    )
+    g["tong_vong_doi"] = g[["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"]].sum(axis=1)
+    long = g.melt(
+        id_vars=["thang_nam_vn", "thang_label", "khu_vuc", "tong_vong_doi"],
+        value_vars=["so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam"],
+        var_name="nhom_vong_doi",
+        value_name="so_luong"
+    )
+    long["nhom_vong_doi"] = long["nhom_vong_doi"].map({
+        "so_duoi_1_nam": "Dưới 1 năm",
+        "so_tu_1_den_3_nam": "1 - 3 năm",
+        "so_tren_3_nam": "Trên 3 năm"
+    })
+    long["gia_tri"] = np.where(long["tong_vong_doi"] > 0, long["so_luong"] / long["tong_vong_doi"] * 100.0, 0.0)
+    long["metric_fmt"] = long["gia_tri"].apply(lambda x: fmt_pct(x, 1))
+    long["count_fmt"] = long["so_luong"].apply(fmt_vn)
+    long["pct_segment_fmt"] = long["metric_fmt"]
+    return long[["thang_label", "khu_vuc", "nhom_vong_doi", "metric_fmt", "count_fmt", "pct_segment_fmt"]]
+
+
+def _hr_pie_drill_rows(region_snapshot: pd.DataFrame, prefix: str) -> list:
+    if region_snapshot is None or region_snapshot.empty:
+        return []
+    d = region_snapshot.copy()
+    if prefix == "drv":
+        long = pd.DataFrame({
+            "khu_vuc": list(d["khu_vuc"]) * 3,
+            "label": (["Giữ ổn định"] * len(d)) + (["Vào làm"] * len(d)) + (["Nghỉ việc"] * len(d)),
+            "gia_tri": list(pd.to_numeric(d.get("so_giu_on_dinh", 0), errors="coerce").fillna(0))
+                       + list(pd.to_numeric(d.get("so_vao_lam", 0), errors="coerce").fillna(0))
+                       + list(pd.to_numeric(d.get("so_nghi_viec", 0), errors="coerce").fillna(0))
+        })
+    else:
+        long = pd.DataFrame({
+            "khu_vuc": list(d["khu_vuc"]) * 3,
+            "label": (["Dưới 1 năm"] * len(d)) + (["1 - 3 năm"] * len(d)) + (["Trên 3 năm"] * len(d)),
+            "gia_tri": list(pd.to_numeric(d.get("so_duoi_1_nam", 0), errors="coerce").fillna(0))
+                       + list(pd.to_numeric(d.get("so_tu_1_den_3_nam", 0), errors="coerce").fillna(0))
+                       + list(pd.to_numeric(d.get("so_tren_3_nam", 0), errors="coerce").fillna(0))
+        })
+    total_by_label = long.groupby("label", as_index=False)["gia_tri"].sum().rename(columns={"gia_tri": "tong_label"})
+    long = long.merge(total_by_label, on="label", how="left")
+    long["pct"] = np.where(long["tong_label"] > 0, long["gia_tri"] / long["tong_label"] * 100.0, 0.0)
+    long["metric_fmt"] = long["gia_tri"].apply(fmt_vn)
+    long["pct_fmt"] = long["pct"].apply(lambda x: fmt_pct(x, 1))
+    return long[["khu_vuc", "label", "metric_fmt", "pct", "pct_fmt"]].to_dict("records")
+
+
+def _hr_style_table(theme: str):
+    if theme == "light":
+        return ({"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}, {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"})
+    return ({"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}, {"backgroundColor": "#222", "color": "white", "fontWeight": "700"})
+
+
+def hr_callbacks(prefix: str):
+    cfg = get_menu_config(prefix)
+    df = cfg["df"]
+    metric_label = cfg["metric_label"]
+    join_label = cfg["secondary_label"]
+    leave_label = cfg["avg_label"]
+
+    @app.callback(
+        Output(f"{prefix}-p1-kpi1","children"),
+        Output(f"{prefix}-p1-kpi2","children"),
+        Output(f"{prefix}-p1-kpi3","children"),
+        Output(f"{prefix}-p1-line-kv","figure"),
+        Output(f"{prefix}-p1-line","figure"),
+        Output(f"{prefix}-p1-bar","figure"),
+        Output(f"{prefix}-p1-pie","figure"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi1"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi2"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-kpi3"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-line-kv"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-line"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-bar"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p1-pie"}, "data"),
+        Input(f"{prefix}-year", "value", allow_optional=True),
+        Input(f"{prefix}-month", "value", allow_optional=True),
+        Input(f"{prefix}-region", "value", allow_optional=True),
+        Input(f"{prefix}-dept", "value", allow_optional=True),
+        Input("theme", "data"),
+        State("menu", "data"),
+        State("page", "data"),
+    )
+    def hr_p1(year_val, months, regions, departments, theme, menu, page):
+        if menu != prefix or int(page) != 1:
+            raise PreventUpdate
+        regions = regions if isinstance(regions, list) else ([regions] if regions else [])
+        departments = departments if isinstance(departments, list) else ([departments] if departments else [])
+        dff = _hr_filter_df(df, year_val, months or [], regions, departments)
+        gm = _hr_monthly_snapshot(dff)
+        snapshot, latest_ts, latest_label = _hr_snapshot_df(dff)
+        prev_snapshot, _prev_ts, prev_label = _hr_previous_snapshot_df(dff, latest_ts)
+        region_snapshot = _hr_region_snapshot(snapshot)
+
+        headcount = safe_number(snapshot.get("so_luong_nhan_su", pd.Series(dtype=float)).sum())
+        join_count = safe_number(snapshot.get("so_vao_lam", pd.Series(dtype=float)).sum())
+        leave_count = safe_number(snapshot.get("so_nghi_viec", pd.Series(dtype=float)).sum())
+        prev_headcount = safe_number(prev_snapshot.get("so_luong_nhan_su", pd.Series(dtype=float)).sum())
+        prev_join = safe_number(prev_snapshot.get("so_vao_lam", pd.Series(dtype=float)).sum())
+        prev_leave = safe_number(prev_snapshot.get("so_nghi_viec", pd.Series(dtype=float)).sum())
+        diff_head, pct_head = _hr_metric_delta(headcount, prev_headcount)
+        diff_join, pct_join = _hr_metric_delta(join_count, prev_join)
+        diff_leave, pct_leave = _hr_metric_delta(leave_count, prev_leave)
+        year_txt, mo_txt, region_txt, dept_txt = _hr_filter_text(year_val, months or [], regions, departments)
+        subtitle = f"Snapshot tháng {latest_label if latest_label else ''} • {year_txt} • {mo_txt} • {region_txt} • {dept_txt}"
+        compare_sub = prev_label if prev_label else "kỳ trước"
+        join_rate = (join_count / headcount * 100.0) if headcount > 0 else 0.0
+        leave_rate = (leave_count / max(prev_headcount, 1) * 100.0) if prev_headcount > 0 else 0.0
+        retention_rate = safe_number(snapshot.get("ty_le_giu_chan", pd.Series(dtype=float)).mean()) if prefix == "drv" else max(0.0, 100.0 - leave_rate)
+
+        kpi1 = _hr_make_kpi_card(fmt_vn(headcount), subtitle, f"{signed_diff_text(diff_head)} • {signed_pct_text(pct_head)} • so với {compare_sub}", _hr_delta_class(diff_head), _hr_build_kpi_lines(region_snapshot, "so_luong_nhan_su"))
+        kpi2 = _hr_make_kpi_card(fmt_vn(join_count), f"{join_label} • Tỷ lệ vào làm {fmt_pct(join_rate, 1)}", f"{signed_diff_text(diff_join)} • {signed_pct_text(pct_join)} • so với {compare_sub}", _hr_delta_class(diff_join), _hr_build_kpi_lines(region_snapshot, "so_vao_lam"))
+        kpi3 = _hr_make_kpi_card(fmt_vn(leave_count), (f"{leave_label} • Giữ chân {fmt_pct(retention_rate, 1)}" if prefix == "drv" else f"{leave_label} • Tỷ lệ nghỉ việc {fmt_pct(leave_rate, 1)}"), f"{signed_diff_text(diff_leave)} • {signed_pct_text(pct_leave)} • so với {compare_sub}", _hr_delta_class(-diff_leave), (_hr_build_kpi_lines(_hr_driver_region_retention(region_snapshot), "ty_le_giu_chan", mode="pct") if prefix == "drv" else _hr_build_kpi_lines(region_snapshot, "so_nghi_viec")))
+
+        kpi1_store = pack_kpi_store(metric_label, fmt_vn(headcount), subtitle, _hr_kpi_zoom_rows(region_snapshot, "so_luong_nhan_su"))
+        kpi2_store = pack_kpi_store(join_label, fmt_vn(join_count), subtitle, _hr_kpi_zoom_rows(region_snapshot, "so_vao_lam"))
+        kpi3_store = pack_kpi_store(
+            leave_label,
+            fmt_vn(leave_count),
+            subtitle,
+            (_hr_kpi_zoom_rows(_hr_driver_region_retention(region_snapshot), "ty_le_giu_chan", focus_mode="pct") if prefix == "drv" else _hr_kpi_zoom_rows(region_snapshot, "so_nghi_viec"))
+        )
+
+        if dff.empty or gm.empty:
+            fig_empty = empty_figure("Không có dữ liệu nhân sự", theme)
+            empty_store = pack_fig_store(fig_empty, rows=[], meta={"chart": "hr_empty", "metric_label": metric_label})
+            return kpi1, kpi2, kpi3, fig_empty, fig_empty, fig_empty, fig_empty, kpi1_store, kpi2_store, kpi3_store, empty_store, empty_store, empty_store, empty_store
+
+        gkv = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False).agg(so_luong_nhan_su=("so_luong_nhan_su", "sum")).sort_values("thang_nam_vn")
+        gkv["metric_fmt"] = gkv["so_luong_nhan_su"].apply(fmt_vn)
+        gkv["thang_label"] = gkv["thang_nam_vn"].dt.strftime("%m/%Y")
+        kv_order = gkv.groupby("khu_vuc", as_index=False)["so_luong_nhan_su"].sum().sort_values("so_luong_nhan_su", ascending=False)["khu_vuc"].tolist()
+        fig_kv = px.line(gkv, x="thang_nam_vn", y="so_luong_nhan_su", color="khu_vuc", category_orders={"khu_vuc": kv_order}, color_discrete_map=REGION_COLOR_MAP, markers=True, hover_data={"metric_fmt": True, "so_luong_nhan_su": False})
+        fig_kv.update_traces(line_shape="spline", line_width=3, marker_size=7)
+        fig_kv.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+        fig_kv = apply_theme(fig_kv, theme)
+        fig_kv = apply_chart_title(fig_kv, f"{metric_label} theo tháng • So sánh khu vực<br>{year_txt} • {mo_txt} • {dept_txt}", top=210, y_title=metric_label)
+        fig_kv = _add_line_point_labels(fig_kv, show_all_if_points_le=10)
+        fig_kv_store = pack_fig_store(fig_kv, rows=gkv[["thang_label", "khu_vuc", "metric_fmt"]].to_dict("records"), meta={"chart": "line_kv", "metric_label": metric_label})
+
+        gm["join_fmt"] = gm["so_vao_lam"].apply(fmt_vn)
+        gm["leave_fmt"] = gm["so_nghi_viec"].apply(fmt_vn)
+        gm["net_fmt"] = gm["bien_dong_thuan"].apply(signed_diff_text)
+        fig_line = go.Figure()
+        fig_line.add_bar(x=gm["thang_nam_vn"], y=gm["so_vao_lam"], name=join_label, customdata=gm[["join_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>" + join_label + ": %{customdata[0]}<extra></extra>")
+        fig_line.add_bar(x=gm["thang_nam_vn"], y=-gm["so_nghi_viec"], name=leave_label, customdata=gm[["leave_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>" + leave_label + ": %{customdata[0]}<extra></extra>")
+        fig_line.add_scatter(x=gm["thang_nam_vn"], y=gm["bien_dong_thuan"], name="Biến động thuần", mode="lines+markers+text", text=gm["net_fmt"], textposition="top center", customdata=gm[["net_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>Biến động thuần: %{customdata[0]}<extra></extra>")
+        fig_line = apply_theme(fig_line, theme)
+        fig_line.update_layout(barmode="relative", legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+        fig_line = apply_chart_title(fig_line, f"Dòng chảy nhân sự theo tháng • Vào làm / nghỉ việc / biến động thuần<br>{year_txt} • {region_txt} • {dept_txt}", top=220, y_title="Số lượng")
+        fig_line_store = pack_fig_store(fig_line, rows=_hr_flow_drill_rows(dff, join_label, leave_label), meta={"chart": "hr_flow", "metric_label": "Dòng chảy nhân sự", "series_field": "label"})
+
+        life = _hr_stacked_lifecycle_percent(gm)
+        fig_bar = px.bar(life, x="thang_nam_vn", y="gia_tri", color="nhom_vong_doi", barmode="stack", text="metric_fmt", hover_data={"metric_fmt": True, "gia_tri": False})
+        fig_bar.update_traces(textposition="inside")
+        fig_bar.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0), yaxis_ticksuffix="%")
+        fig_bar = apply_theme(fig_bar, theme)
+        fig_bar = apply_chart_title(fig_bar, f"Cơ cấu vòng đời nhân sự theo tháng • Tỷ trọng 3 nhóm<br>{year_txt} • {region_txt} • {dept_txt}", top=210, y_title="Tỷ trọng (%)")
+        fig_bar_store = pack_fig_store(fig_bar, rows=_hr_lifecycle_percent_by_region(dff).to_dict("records"), meta={"chart": "lifecycle_percent", "metric_label": "Tỷ trọng vòng đời", "series_field": "nhom_vong_doi"})
+
+        pie_df = _hr_driver_retention_snapshot(snapshot) if prefix == "drv" else _hr_lifecycle_snapshot(snapshot)
+        pie_title = (f"Cơ cấu giữ chân tài xế • Snapshot {latest_label}<br>{region_txt} • {dept_txt}" if prefix == "drv" else f"Cơ cấu vòng đời nhân sự • Snapshot {latest_label}<br>{region_txt} • {dept_txt}")
+        fig_pie = make_vn_donut(pie_df, names="nhom", values="gia_tri", title=pie_title, max_slices=6, color_map=None, theme=theme)
+        pie_df["metric_fmt"] = pie_df["gia_tri"].apply(fmt_vn)
+        fig_pie_store = pack_fig_store(fig_pie, rows=_hr_pie_drill_rows(region_snapshot, prefix), meta={"chart": "pie", "metric_label": pie_title, "series_field": "label"})
+
+        return kpi1, kpi2, kpi3, fig_kv, fig_line, fig_bar, fig_pie, kpi1_store, kpi2_store, kpi3_store, fig_kv_store, fig_line_store, fig_bar_store, fig_pie_store
+
+    @app.callback(
+        Output(f"{prefix}-kpi1","children"),
+        Output(f"{prefix}-kpi2","children"),
+        Output(f"{prefix}-kpi3","children"),
+        Output(f"{prefix}-p2-line","figure"),
+        Output(f"{prefix}-p2-bar","figure"),
+        Output(f"{prefix}-p2-pie","figure"),
+        Output(f"{prefix}-table","data"),
+        Output(f"{prefix}-insight","children"),
+        Output(f"{prefix}-table","style_cell"),
+        Output(f"{prefix}-table","style_header"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi1"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi2"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-kpi3"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-line"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-bar"}, "data"),
+        Output({"type":"zoom-store","target": f"{prefix}-p2-pie"}, "data"),
+        Input(f"{prefix}-dim","value", allow_optional=True),
+        Input(f"{prefix}-year-p2","value", allow_optional=True),
+        Input(f"{prefix}-month-p2","value", allow_optional=True),
+        Input(f"{prefix}-dept-p2","value", allow_optional=True),
+        Input("theme", "data"),
+        State("menu", "data"),
+        State("page", "data"),
+    )
+    def hr_p2(dims, year_val, months, departments, theme, menu, page):
+        if menu != prefix or int(page) != 2:
+            raise PreventUpdate
+        dims = dims if isinstance(dims, list) else ([dims] if dims else [])
+        departments = departments if isinstance(departments, list) else ([departments] if departments else [])
+        dff = _hr_filter_df(df, year_val, months or [], dims, departments)
+        gm = _hr_monthly_snapshot(dff)
+        snapshot, latest_ts, latest_label = _hr_snapshot_df(dff)
+        prev_snapshot, _prev_ts, prev_label = _hr_previous_snapshot_df(dff, latest_ts)
+        region_snapshot = _hr_region_snapshot(snapshot)
+
+        headcount = safe_number(snapshot.get("so_luong_nhan_su", pd.Series(dtype=float)).sum())
+        join_count = safe_number(snapshot.get("so_vao_lam", pd.Series(dtype=float)).sum())
+        leave_count = safe_number(snapshot.get("so_nghi_viec", pd.Series(dtype=float)).sum())
+        prev_headcount = safe_number(prev_snapshot.get("so_luong_nhan_su", pd.Series(dtype=float)).sum())
+        diff_head, pct_head = _hr_metric_delta(headcount, prev_headcount)
+        year_txt, mo_txt, region_txt, dept_txt = _hr_filter_text(year_val, months or [], dims, departments)
+        subtitle = f"Snapshot tháng {latest_label if latest_label else ''} • {year_txt} • {mo_txt} • {region_txt} • {dept_txt}"
+        insight = f"{metric_label}: {fmt_vn(headcount)} • {join_label}: {fmt_vn(join_count)} • {leave_label}: {fmt_vn(leave_count)}"
+        if prefix == "drv":
+            retention = safe_number(snapshot.get("ty_le_giu_chan", pd.Series(dtype=float)).mean())
+            insight += f" • Giữ chân tài xế: {fmt_pct(retention, 1)}"
+        else:
+            insight += f" • Biến động thuần: {signed_diff_text(join_count - leave_count)}"
+
+        kpi1 = _hr_make_kpi_card(fmt_vn(headcount), subtitle, f"{signed_diff_text(diff_head)} • {signed_pct_text(pct_head)} • so với {prev_label if prev_label else 'kỳ trước'}", _hr_delta_class(diff_head), _hr_build_kpi_lines(region_snapshot, "so_luong_nhan_su"))
+        kpi2 = _hr_make_kpi_card(fmt_vn(join_count), f"{join_label} • Snapshot {latest_label if latest_label else ''}", f"Tỷ lệ vào làm {fmt_pct((join_count / headcount * 100.0) if headcount > 0 else 0.0, 1)}", "positive", _hr_build_kpi_lines(region_snapshot, "so_vao_lam"))
+        kpi3 = _hr_make_kpi_card(fmt_vn(leave_count), (f"{leave_label} • Giữ chân {fmt_pct(safe_number(snapshot.get('ty_le_giu_chan', pd.Series(dtype=float)).mean()), 1)}" if prefix == "drv" else f"{leave_label} • Biến động thuần {signed_diff_text(join_count - leave_count)}"), (f"Giữ chân {fmt_pct(safe_number(snapshot.get('ty_le_giu_chan', pd.Series(dtype=float)).mean()), 1)}" if prefix == "drv" else f"Tỷ lệ nghỉ việc {fmt_pct((leave_count / max(prev_headcount, 1) * 100.0) if prev_headcount > 0 else 0.0, 1)}"), ("positive" if prefix == "drv" else _hr_delta_class(join_count - leave_count)), (_hr_build_kpi_lines(_hr_driver_region_retention(region_snapshot), "ty_le_giu_chan", mode="pct") if prefix == "drv" else _hr_build_kpi_lines(region_snapshot, "so_nghi_viec")))
+
+        fig_pie_store = pack_fig_store(fig_pie, rows=_hr_pie_drill_rows(region_snapshot, prefix), meta={"chart": "pie", "metric_label": pie_title, "series_field": "label"})
+
+        style_cell, style_header = _hr_style_table(theme)
+        if dff.empty or gm.empty:
+            fig_empty = empty_figure("Không có dữ liệu nhân sự", theme)
+            empty_store = pack_fig_store(fig_empty, rows=[], meta={"chart": "hr_empty", "metric_label": metric_label})
+            return kpi1, kpi2, kpi3, fig_empty, fig_empty, fig_empty, [], insight, style_cell, style_header, kpi1_store, kpi2_store, kpi3_store, empty_store, empty_store, empty_store
+
+        gline = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False).agg(so_luong_nhan_su=("so_luong_nhan_su", "sum")).sort_values("thang_nam_vn")
+        gline["metric_fmt"] = gline["so_luong_nhan_su"].apply(fmt_vn)
+        gline["thang_label"] = gline["thang_nam_vn"].dt.strftime("%m/%Y")
+        kv_order = gline.groupby("khu_vuc", as_index=False)["so_luong_nhan_su"].sum().sort_values("so_luong_nhan_su", ascending=False)["khu_vuc"].tolist()
+        fig1 = px.line(gline, x="thang_nam_vn", y="so_luong_nhan_su", color="khu_vuc", category_orders={"khu_vuc": kv_order}, color_discrete_map=REGION_COLOR_MAP, markers=True, hover_data={"metric_fmt": True, "so_luong_nhan_su": False})
+        fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
+        fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+        fig1 = apply_theme(fig1, theme)
+        fig1 = apply_chart_title(fig1, f"{metric_label} theo tháng • So sánh khu vực<br>{year_txt} • {mo_txt} • {dept_txt}", top=220, y_title=metric_label)
+        fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
+        fig1_store = pack_fig_store(fig1, rows=gline[["thang_label", "khu_vuc", "metric_fmt"]].to_dict("records"), meta={"chart": "line_kv", "metric_label": metric_label})
+
+        if prefix == "drv":
+            gr = gm[["thang_nam_vn", "thang_label", "ty_le_tang", "ty_le_giam", "ty_le_giu_chan"]].copy()
+            gr["tang_fmt"] = gr["ty_le_tang"].apply(lambda x: fmt_pct(x, 1))
+            gr["giam_fmt"] = gr["ty_le_giam"].apply(lambda x: fmt_pct(x, 1))
+            gr["giu_fmt"] = gr["ty_le_giu_chan"].apply(lambda x: fmt_pct(x, 1))
+            fig2 = go.Figure()
+            fig2.add_bar(x=gr["thang_nam_vn"], y=gr["ty_le_tang"], name="Tỷ lệ tăng", customdata=gr[["tang_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>Tỷ lệ tăng: %{customdata[0]}<extra></extra>")
+            fig2.add_bar(x=gr["thang_nam_vn"], y=gr["ty_le_giam"], name="Tỷ lệ giảm", customdata=gr[["giam_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>Tỷ lệ giảm: %{customdata[0]}<extra></extra>")
+            fig2.add_scatter(x=gr["thang_nam_vn"], y=gr["ty_le_giu_chan"], name="Tỷ lệ giữ chân", mode="lines+markers+text", text=gr["giu_fmt"], textposition="top center", customdata=gr[["giu_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>Tỷ lệ giữ chân: %{customdata[0]}<extra></extra>")
+            fig2 = apply_theme(fig2, theme)
+            fig2.update_layout(barmode="group", legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0), yaxis_ticksuffix="%")
+            fig2 = apply_chart_title(fig2, f"Tỷ trọng tăng / giảm và giữ chân tài xế theo tháng<br>{year_txt} • {region_txt} • {dept_txt}", top=220, y_title="Tỷ lệ (%)")
+            fig2_store = pack_fig_store(fig2, rows=_hr_driver_rate_drill_rows(dff), meta={"chart": "driver_rate_combo", "metric_label": "Tỷ lệ tăng giảm và giữ chân", "series_field": "label"})
+        else:
+            gbar = gm[["thang_nam_vn", "thang_label", "so_vao_lam", "so_nghi_viec", "bien_dong_thuan"]].copy()
+            gbar["join_fmt"] = gbar["so_vao_lam"].apply(fmt_vn)
+            gbar["leave_fmt"] = gbar["so_nghi_viec"].apply(fmt_vn)
+            gbar["net_fmt"] = gbar["bien_dong_thuan"].apply(signed_diff_text)
+            fig2 = go.Figure()
+            fig2.add_bar(x=gbar["thang_nam_vn"], y=gbar["so_vao_lam"], name=join_label, customdata=gbar[["join_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>" + join_label + ": %{customdata[0]}<extra></extra>")
+            fig2.add_bar(x=gbar["thang_nam_vn"], y=gbar["so_nghi_viec"], name=leave_label, customdata=gbar[["leave_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>" + leave_label + ": %{customdata[0]}<extra></extra>")
+            fig2.add_scatter(x=gbar["thang_nam_vn"], y=gbar["bien_dong_thuan"], name="Biến động thuần", mode="lines+markers+text", text=gbar["net_fmt"], textposition="top center", customdata=gbar[["net_fmt"]].to_numpy(), hovertemplate="Tháng: %{x|%m/%Y}<br>Biến động thuần: %{customdata[0]}<extra></extra>")
+            fig2 = apply_theme(fig2, theme)
+            fig2.update_layout(barmode="group", legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
+            fig2 = apply_chart_title(fig2, f"Vào làm / nghỉ việc và biến động thuần theo tháng<br>{year_txt} • {region_txt} • {dept_txt}", top=220, y_title="Số lượng")
+            fig2_store = pack_fig_store(fig2, rows=_hr_flow_drill_rows(dff, join_label, leave_label), meta={"chart": "join_leave_net", "metric_label": "Biến động nhân sự", "series_field": "label"})
+
+        pie_df = _hr_driver_retention_snapshot(snapshot) if prefix == "drv" else _hr_lifecycle_snapshot(snapshot)
+        pie_title = (f"Cơ cấu giữ chân tài xế • Snapshot {latest_label}<br>{region_txt} • {dept_txt}" if prefix == "drv" else f"Cơ cấu vòng đời nhân sự • Snapshot {latest_label}<br>{region_txt} • {dept_txt}")
+        fig3 = make_vn_donut(pie_df, names="nhom", values="gia_tri", title=pie_title, max_slices=6, color_map=None, theme=theme)
+        pie_df["metric_fmt"] = pie_df["gia_tri"].apply(fmt_vn)
+        fig3_store = pack_fig_store(fig3, rows=_hr_pie_drill_rows(region_snapshot, prefix), meta={"chart": "pie", "metric_label": pie_title, "series_field": "label"})
+
+        table_df = dff.copy().sort_values(["thang_nam_vn", "khu_vuc", "bo_phan"]).reset_index(drop=True)
+        table_df["thang_nam"] = pd.to_datetime(table_df["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y").fillna("")
+        table_df["net_flow"] = pd.to_numeric(table_df.get("so_vao_lam", 0), errors="coerce").fillna(0) - pd.to_numeric(table_df.get("so_nghi_viec", 0), errors="coerce").fillna(0)
+        for col in ["so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan", "net_flow"]:
+            if col in table_df.columns:
+                table_df[col] = table_df[col].apply(fmt_vn)
+        for col in ["ty_le_tang", "ty_le_giam", "ty_le_giu_chan"]:
+            if col in table_df.columns:
+                table_df[col] = table_df[col].apply(lambda x: fmt_pct(x, 1))
+        keep_cols = [c for c in ["thang_nam", "khu_vuc", "bo_phan", "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "net_flow", "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan", "ty_le_tang", "ty_le_giam", "ty_le_giu_chan"] if c in table_df.columns]
+        return kpi1, kpi2, kpi3, fig1, fig2, fig3, table_df[keep_cols].to_dict("records"), insight, style_cell, style_header, kpi1_store, kpi2_store, kpi3_store, fig1_store, fig2_store, fig3_store
+
+for _prefix in [p for p in DASH_PREFIXES if p not in HR_MENU_PREFIXES]:
+    callbacks(_prefix)
+for _prefix in HR_MENU_PREFIXES:
+    hr_callbacks(_prefix)
+
+@app.callback(
+    Output("zoom-modal", "is_open"),
+    Output("zoom-title", "children"),
+    Output("zoom-kpi-render", "children"),
+    Output("zoom-graph", "figure"),
+    Output("zoom-graph", "style"),
+    Output("zoom-detail", "children"),
+    Output("zoom-detail", "style"),
+    Output("zoom-target", "data"),
+
+    Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
+    Input("zoom-modal", "n_dismiss"),
+    Input("zoom-graph", "clickData"),
+
+    State("zoom-modal", "is_open"),
+    State("zoom-target", "data"),
+    State({"type":"zoom-store","target":ALL}, "data"),
+    State("theme", "data"),
+    prevent_initial_call=True
+)
+def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_data, theme):
+    trig = ctx.triggered_id
+
+    if trig == "zoom-modal":
+        return False, no_update, no_update, no_update, {"display":"none"}, no_update, {"display":"none"}, None
+
+    if trig == "zoom-graph":
+        if not is_open or not zoom_target:
+            raise PreventUpdate
+        target = zoom_target.get("target")
+        if not target:
+            raise PreventUpdate
+
+        store = _get_store_for_target(target, _all_store_data) or {}
+        if not store or store.get("kind") != "fig":
+            raise PreventUpdate
+
+        meta = store.get("meta", {}) or {}
+        rows = store.get("rows", []) or []
+        fig = store.get("figure", {}) or {}
+
+        if not rows:
+            detail = html.Div("Không có dữ liệu drill-down cho biểu đồ này.", style={"opacity":0.85})
+            return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+
+        pt = (clickData.get("points") or [{}])[0]
+        x = pt.get("x", None)
+        label = pt.get("label", None)
+
+        trace_name = None
+        region = None
+        try:
+            curve = pt.get("curveNumber", None)
+            if curve is not None and isinstance(fig.get("data", []), list) and curve < len(fig["data"]):
+                trace_name = fig["data"][curve].get("name", None)
+                region = trace_name
+        except Exception:
+            trace_name = None
+            region = None
+
+        month_label = safe_month_label(x) if x is not None else (str(label) if label else None)
+        df = pd.DataFrame(rows)
+        series_field = str(meta.get("series_field") or meta.get("series_key") or "").strip()
+
+        if "thang_label" in df.columns and month_label:
+            df = df[df["thang_label"].astype(str) == str(month_label)]
+        if series_field and series_field in df.columns and trace_name:
+            df2 = df[df[series_field].astype(str) == str(trace_name)]
+            if not df2.empty:
+                df = df2
+        elif "khu_vuc" in df.columns and region and region != "Khác":
+            df2 = df[df["khu_vuc"].astype(str) == str(region)]
+            if not df2.empty:
+                df = df2
+        if "label" in df.columns and label:
+            df2 = df[df["label"].astype(str) == str(label)]
+            if not df2.empty:
+                df = df2
+        if "pct" in df.columns and "pct_fmt" not in df.columns:
+            df["pct_fmt"] = pd.to_numeric(df["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+
+        if df.empty:
+            detail = html.Div("Không tìm thấy dòng dữ liệu phù hợp cho điểm bạn click.", style={"opacity":0.85})
+            return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+
+        metric_label = meta.get("metric_label", "Giá trị")
+
+        preferred_cols = [
+            ("Tháng", "thang_label"),
+            ("Khu vực", "khu_vuc"),
+            ("Nhóm", "label"),
+            ("Nhóm vòng đời", "nhom_vong_doi"),
+            (metric_label, "metric_fmt"),
+            (metric_label, "val_fmt"),
+            ("Tỷ trọng", "pct_fmt"),
+            ("Quy mô", "count_fmt"),
+            ("Đóng góp nhóm", "pct_segment_fmt"),
+        ]
+        out_cols = [(a, b) for a, b in preferred_cols if b in df.columns]
+
+        if not out_cols:
+            out_cols = [(c, c) for c in df.columns[:8]]
+
+        columns = [{"name": a, "id": b} for a, b in out_cols]
+        data = df[[b for _, b in out_cols if b in df.columns]].to_dict("records")
+
+        title = f"CHI TIẾT • {metric_label}"
+        subtitle = []
+        if month_label:
+            subtitle.append(f"Tháng: {month_label}")
+        if region:
+            subtitle.append(f"Trace/KV: {region}")
+
+        style_header, style_cell, style_table, wrapper_style = _zoom_table_styles(theme, dense=True)
+
+        detail = dbc.Card(
+            dbc.CardBody([
+                html.Div(title, style={"fontSize":"15px","fontWeight":"900"}),
+                html.Div(" • ".join(subtitle), style={"opacity":0.85,"marginBottom":"8px","fontWeight":"700"}),
+                html.Div(
+                    dash_table.DataTable(
+                        columns=columns,
+                        data=data,
+                        page_size=14,
+                        style_cell=style_cell,
+                        style_header=style_header,
+                        style_table=style_table,
+                    ),
+                    style=wrapper_style,
+                )
+            ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
+            style={"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+        )
+        return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+
+    if isinstance(trig, dict) and trig.get("type") == "zoomable":
+        nclick = None
+        try:
+            nclick = (ctx.triggered[0] or {}).get("value", None)
+        except Exception:
+            nclick = None
+        if not nclick or int(nclick) <= 0:
+            raise PreventUpdate
+
+        kind = trig.get("kind")
+        target = trig.get("target")
+        if not target:
+            raise PreventUpdate
+
+        store = _get_store_for_target(target, _all_store_data) or {}
+        if not store:
+            raise PreventUpdate
+
+        title = f"PHÓNG TO • {target}"
+        detail_children = []
+        detail_style = {"display": "none"}
+
+        if store.get("kind") == "kpi" or kind == "kpi":
+            rows = store.get("rows", []) or []
+            cols = []
+            data = []
+            df_zoom = pd.DataFrame(rows)
+
+            if not df_zoom.empty and "pct" in df_zoom.columns and "pct_fmt" not in df_zoom.columns:
+                df_zoom["pct_fmt"] = pd.to_numeric(df_zoom["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+
+            preferred_cols = [
+                ("Khu vực", "khu_vuc"),
+                (store.get("title", "Giá trị"), "value_fmt"),
+                ("Trung bình", "avg_fmt"),
+                ("Tỷ trọng", "pct_fmt"),
+                ("Nhân sự", "so_luong_nhan_su_fmt"),
+                ("Vào làm", "so_vao_lam_fmt"),
+                ("Nghỉ việc", "so_nghi_viec_fmt"),
+                ("Đầu kỳ", "headcount_dau_ky_fmt"),
+                ("Giữ ổn định", "so_giu_on_dinh_fmt"),
+                ("Biến động thuần", "bien_dong_thuan_fmt"),
+                ("Dưới 1 năm", "so_duoi_1_nam_fmt"),
+                ("1 - 3 năm", "so_tu_1_den_3_nam_fmt"),
+                ("Trên 3 năm", "so_tren_3_nam_fmt"),
+                ("Tỷ lệ tăng", "ty_le_tang_fmt"),
+                ("Tỷ lệ giảm", "ty_le_giam_fmt"),
+                ("Tỷ lệ giữ chân", "ty_le_giu_chan_fmt"),
+            ]
+            if not df_zoom.empty:
+                use_cols = [(a, b) for a, b in preferred_cols if b in df_zoom.columns]
+                if not use_cols:
+                    use_cols = [(c, c) for c in df_zoom.columns[:8]]
+                cols = [{"name": a, "id": b} for a, b in use_cols]
+                data = df_zoom[[b for _, b in use_cols]].to_dict("records")
+
+            z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
+            if theme == "light":
+                z_card_style = {"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+            else:
+                z_card_style = {"border":"1px solid #3b3b57","boxShadow":"0 0 20px rgba(90,80,255,0.15)", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+
+            kpi_card = dbc.Card(
+                dbc.CardBody([
+                    html.Div(store.get("title","KPI"), style={"fontSize":"14px","fontWeight":"900","opacity":0.85}),
+                    html.Div(store.get("main","0"), style={"fontSize":"44px","fontWeight":"900","marginTop":"6px"}),
+                    html.Div(store.get("subtitle",""), style={"fontSize":"13px","opacity":0.85,"fontWeight":"800","marginTop":"4px"}),
+                    html.Hr(style={"borderColor":"#d0d7e2" if theme=="light" else "#444"}),
+                    html.Div(
+                        dash_table.DataTable(
+                            columns=cols,
+                            data=data,
+                            page_size=12,
+                            style_header=z_style_header,
+                            style_cell=z_style_cell,
+                            style_table=z_style_table,
+                        ) if cols else html.Div("Không có breakdown theo khu vực.", style={"opacity":0.8}),
+                        style=z_wrapper_style,
+                    )
+                ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
+                style=z_card_style
+            )
+            return True, title, kpi_card, {}, {"display":"none"}, [], {"display":"none"}, {"kind":"kpi","target":target}
+
+        fig_dict = store.get("figure", {})
+        fig_dict = enhance_zoom_figure(fig_dict)
+
+        detail_style = {"display":"block"}
+        detail_children = html.Div("Click vào 1 điểm/cột để xem chi tiết.", style={"opacity":0.8, "fontWeight":"700"})
+
+        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, detail_style, {"kind":"fig","target":target}
+
+    raise PreventUpdate
+
+def strip_accents(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+def norm_q(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = strip_accents(s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def detect_year(text: str):
+    m = re.search(r"(19|20)\d{2}", text)
+    return int(m.group()) if m else None
+
+def detect_month_label(text: str):
+    m = re.search(r"\b(0?[1-9]|1[0-2])\s*/\s*((19|20)\d{2})\b", text)
+    if m:
+        mm = int(m.group(1))
+        yy = int(m.group(2))
+        return f"{mm:02d}/{yy}"
+    m2 = re.search(r"\bthang\s*(0?[1-9]|1[0-2])\s*(nam)?\s*((19|20)\d{2})\b", norm_q(text))
+    if m2:
+        mm = int(m2.group(1))
+        yy = int(m2.group(3))
+        return f"{mm:02d}/{yy}"
+    return None
+
+def detect_month_number(text: str):
+    t = norm_q(text)
+    m = re.search(r"\bthang\s*(0?[1-9]|1[0-2])\b", t)
+    if m:
+        return int(m.group(1))
+    m2 = re.search(r"\bt\s*(0?[1-9]|1[0-2])\b", t)
+    if m2:
+        return int(m2.group(1))
+    return None
+
+def detect_top_n(text: str):
+    m = re.search(r"\btop\s*(\d+)\b", norm_q(text))
+    return int(m.group(1)) if m else None
+
+def detect_bottom_n(text: str):
+    m = re.search(r"\bbottom\s*(\d+)\b", norm_q(text))
+    return int(m.group(1)) if m else None
+
+def choose_dataset(question: str):
+    q = norm_q(question)
+    for prefix in DASH_PREFIXES:
+        cfg = get_menu_config(prefix)
+        if any(norm_q(k) in q for k in cfg.get("dataset_keywords", [])):
+            return prefix, apply_region_scope_to_df(cfg["df"]), cfg["value_col"]
+    if "hop dong" in q or "so cuoc" in q or "số cuốc" in question.lower():
+        return "hd", apply_region_scope_to_df(df_hd), "tong_so_cuoc"
+    if "loai hinh" in q or "loại hình" in question.lower():
+        return "lh", apply_region_scope_to_df(df_lh), "tong_doanh_thu"
+    return "dt", apply_region_scope_to_df(df_dt), "tong_doanh_thu"
+
+def detect_metric_intent(question: str, value_col_default: str = "tong_doanh_thu"):
+    q = norm_q(question)
+    if any(k in q for k in ["thu duoc", "thu được", "thu hoi", "thu hồi", "da thu", "đã thu"]):
+        metric_col = "so_tien_thu_duoc"
+    elif any(k in q for k in ["con no", "còn nợ", "no dong", "nợ đọng", "chua thu", "chưa thu"]):
+        metric_col = "so_tien_con_no"
+    elif any(k in q for k in ["da xu ly", "đã xử lý", "hoan tat xu ly", "hoàn tất xử lý"]):
+        metric_col = "so_tien_da_xu_ly"
+    elif any(k in q for k in ["tong tien de xuat", "tổng tiền đề xuất", "de xuat", "đề xuất"]):
+        metric_col = "tong_tien_de_xuat"
+    else:
+        primary_terms = ["doanh thu", "revenue", "chi phi", "chi phí", "gia tri", "giá trị", "diem tiep thi", "điểm tiếp thị"]
+        secondary_terms = ["so cuoc", "số cuốc", "cuoc", "trip", "so nhan vien", "số nhân viên", "so tai xe", "số tài xế", "chien dich", "chiến dịch", "so bien ban", "số biên bản", "so xe", "số xe"]
+        if any(k in q for k in primary_terms):
+            metric_col = "tong_doanh_thu"
+        elif any(k in q for k in secondary_terms):
+            metric_col = "tong_so_cuoc"
+        else:
+            metric_col = value_col_default
+    return {"metric_col": metric_col, "mode": "total"}
+
+def extract_type_filter(question: str, key: str):
+    q = norm_q(question)
+    if key == "lh":
+        hits = []
+        for canon in LH_CANON + ["Khác"]:
+            if norm_q(canon) in q:
+                hits.append(canon)
+        return hits or None
+    if key == "hd":
+        hits = []
+        for canon in HD_CANON + ["Khác"]:
+            if norm_q(canon) in q:
+                hits.append(canon)
+        return hits or None
+    if key in {"xdt", "xpq"}:
+        hits = []
+        for opt in VEHICLE_TYPE_OPTIONS.get(key, []):
+            val = str(opt.get("value"))
+            if norm_q(val) in q:
+                hits.append(val)
+        return hits or None
+    return None
+
+def detect_regions_in_question(question: str, region_pool=None):
+    q = norm_q(question)
+    hits = []
+    pool = region_pool if region_pool is not None else ALL_REGIONS
+    for r in pool:
+        rr = norm_q(r)
+        if rr and rr in q:
+            hits.append(r)
+    if not hits:
+        q2 = re.sub(r"[^a-z0-9\s]+", " ", q)
+        q2 = re.sub(r"\s+", " ", q2).strip()
+        for r in pool:
+            rr = re.sub(r"[^a-z0-9\s]+", " ", norm_q(r))
+            rr = re.sub(r"\s+", " ", rr).strip()
+            if rr and rr in q2:
+                hits.append(r)
+    return list(dict.fromkeys(hits))
+
+def detect_intent_advanced(question: str):
+    q = norm_q(question)
+    if any(k in q for k in ["cao nhat", "lon nhat", "nhieu nhat", "top "]):
+        return "top"
+    if any(k in q for k in ["thap nhat", "nho nhat", "it nhat", "bottom "]):
+        return "bottom"
+    if any(k in q for k in ["ty trong", "phan tram", "dong gop", "share", "contribution"]):
+        return "share"
+    if any(k in q for k in ["xu huong", "trend", "theo thang", "tang", "giam", "so sanh", "vs", "mom", "yoy"]):
+        return "trend"
+    return "total"
+
+def _pct(a, total):
+    return (a / total * 100.0) if total and total > 0 else 0.0
+
+def answer_question(question: str, context: dict | None = None) -> str:
+    context = context or {}
+    q_raw = (question or "").strip()
+    if not q_raw:
+        return "Bạn hãy nhập câu hỏi (ví dụ: *Doanh thu T01/2025 khu vực Cà Mau?*)"
+    qn = norm_q(q_raw)
+
+    def _int(x, default=None):
+        try:
+            return int(x)
+        except Exception:
+            return default
+
+    def _extract_years(text: str):
+        yrs = [int(y) for y in re.findall(r"\b(20\d{2})\b", text)]
+        yrs = [y for y in yrs if 2000 <= y <= 2100]
+        return list(dict.fromkeys(yrs))
+
+    def _month_label(m: int, y: int):
+        return f"{m:02d}/{y}"
+
+    def _parse_month_label(lb: str):
+        m = re.match(r"^\s*(\d{2})/(\d{4})\s*$", str(lb))
+        if not m:
+            return None
+        mm = int(m.group(1))
+        yy = int(m.group(2))
+        try:
+            return pd.Timestamp(year=yy, month=mm, day=1)
+        except Exception:
+            return None
+
+    def _extract_month_pairs(text: str):
+        pairs = []
+        patterns = [
+            r"(?:\b|t)(0?[1-9]|1[0-2])\s*[\/\-]\s*(20\d{2})\b",
+            r"\bthang\s*(0?[1-9]|1[0-2])\s*(?:nam\s*)?(20\d{2})\b",
+        ]
+        for pat in patterns:
+            for m, y in re.findall(pat, text, flags=re.I):
+                mm, yy = _int(m), _int(y)
+                if mm and yy and 1 <= mm <= 12:
+                    pairs.append((mm, yy))
+        return list(dict.fromkeys(pairs))
+
+    def _extract_quarters(text: str):
+        out = []
+        patterns = [
+            r"\bquy\s*([1-4])\s*(?:nam\s*)?(20\d{2})\b",
+            r"\bq\s*([1-4])\s*[\/\-\s]?\s*(20\d{2})\b",
+        ]
+        for pat in patterns:
+            for qv, yv in re.findall(pat, text, flags=re.I):
+                qq, yy = _int(qv), _int(yv)
+                if qq and yy:
+                    out.append((qq, yy))
+        return list(dict.fromkeys(out))
+
+    def _extract_halfyears(text: str):
+        out = []
+        for half_word, half_id in [("dau", 1), ("cuoi", 2)]:
+            pat = rf"\b(?:6|sau)\s*thang\s*{half_word}\s*(?:nam\s*)?(20\d{{2}})\b"
+            for y in re.findall(pat, text, flags=re.I):
+                yy = _int(y)
+                if yy:
+                    out.append((half_id, yy))
+        for half_word, half_id in [("dau", 1), ("cuoi", 2)]:
+            pat = rf"\bnua\s*{half_word}\s*(?:nam\s*)?(20\d{{2}})\b"
+            for y in re.findall(pat, text, flags=re.I):
+                yy = _int(y)
+                if yy:
+                    out.append((half_id, yy))
+        for h, y in re.findall(r"\bh\s*([12])\s*[\/\-\s]?\s*(20\d{2})\b", text, flags=re.I):
+            hh, yy = _int(h), _int(y)
+            if hh and yy:
+                out.append((hh, yy))
+        return list(dict.fromkeys(out))
+
+    def _quarter_months(qv: int, yv: int):
+        mlist = {1: [1,2,3], 2: [4,5,6], 3: [7,8,9], 4: [10,11,12]}.get(qv, [])
+        return [_month_label(m, yv) for m in mlist]
+
+    def _halfyear_months(hv: int, yv: int):
+        mlist = [1,2,3,4,5,6] if hv == 1 else [7,8,9,10,11,12]
+        return [_month_label(m, yv) for m in mlist]
+
+    def _month_range_labels(m1, y1, m2, y2):
+        try:
+            start = pd.Timestamp(year=y1, month=m1, day=1)
+            end = pd.Timestamp(year=y2, month=m2, day=1)
+            if end < start:
+                start, end = end, start
+            rng = pd.date_range(start, end, freq="MS")
+            return [_month_label(int(d.month), int(d.year)) for d in rng]
+        except Exception:
+            return []
+
+    def _shift_month_labels_by_year(labels, year_delta=-1):
+        out = []
+        for lb in (labels or []):
+            ts = _parse_month_label(lb)
+            if ts is None:
+                continue
+            out.append(_month_label(int(ts.month), int(ts.year + year_delta)))
+        return out
+
+    def _prev_month_label(lb: str):
+        ts = _parse_month_label(lb)
+        if ts is None:
+            return None
+        prev = ts - pd.offsets.MonthBegin(1)
+        return _month_label(int(prev.month), int(prev.year))
+
+    def _choose_dataset_with_context(q_norm: str):
+        explicit = False
+        for _prefix in DASH_PREFIXES:
+            _cfg = get_menu_config(_prefix)
+            if any(norm_q(k) in q_norm for k in _cfg.get("dataset_keywords", [])):
+                explicit = True
+                break
+        if explicit:
+            ds_key0, dfx0, _ = choose_dataset(q_norm)
+            return ds_key0, dfx0
+        default_menu = context.get("menu")
+        if default_menu in DASH_PREFIXES:
+            cfg_menu = get_menu_config(default_menu)
+            return default_menu, apply_region_scope_to_df(cfg_menu["df"])
+        if default_menu == "home":
+            return "dt", apply_region_scope_to_df(df_dt)
+        ds_key0, dfx0, _ = choose_dataset(q_norm)
+        return ds_key0, dfx0
+
+    def _pick_type_value(df_: pd.DataFrame, col: str, q_norm: str):
+        if not col or col not in df_.columns:
+            return None
+        vals = [v for v in df_[col].dropna().astype(str).unique().tolist() if str(v).strip()]
+        if not vals:
+            return None
+        q2 = re.sub(r"[^a-z0-9\s]+", " ", q_norm)
+        q2 = re.sub(r"\s+", " ", q2).strip()
+        best = None
+        best_len = 0
+        for v in vals:
+            vn = norm_q(v)
+            vn2 = re.sub(r"[^a-z0-9\s]+", " ", vn)
+            vn2 = re.sub(r"\s+", " ", vn2).strip()
+            if vn2 and vn2 in q2 and len(vn2) > best_len:
+                best = v
+                best_len = len(vn2)
+        return best
+
+    def _fmt_value(v):
+        return fmt_vn(v)
+
+    def _group_by_month(df_, metric_col, date_col, month_col):
+        if date_col in df_.columns:
+            try:
+                s = df_.groupby(date_col)[metric_col].sum().sort_index()
+                return s, "date"
+            except Exception:
+                pass
+        if month_col in df_.columns:
+            s = df_.groupby(month_col)[metric_col].sum()
+            try:
+                idx_order = sorted(
+                    s.index,
+                    key=lambda x: pd.to_datetime(f"01/{x}", format="%d/%m/%Y", errors="coerce")
+                )
+                s = s.reindex(idx_order)
+            except Exception:
+                pass
+            return s, "label"
+        return pd.Series(dtype=float), "none"
+
+    def _latest_months_from_df(df_, metric_col, date_col, month_col):
+        s, kind_s = _group_by_month(df_, metric_col, date_col, month_col)
+        if len(s) == 0:
+            return None, None, kind_s
+        last_key = s.index[-1]
+        if kind_s == "date":
+            try:
+                ts = pd.Timestamp(last_key)
+                return _month_label(int(ts.month), int(ts.year)), last_key, kind_s
+            except Exception:
+                return None, last_key, kind_s
+        return str(last_key), last_key, kind_s
+
+    def _compare_text(cur_val, prev_val, cur_desc, prev_desc, ask_pct_first=False):
+        diff = cur_val - prev_val
+        pctv = (diff / prev_val * 100.0) if prev_val else None
+        direction = "tăng" if diff > 0 else "giảm" if diff < 0 else "không đổi"
+        lines = [
+            f"**{cur_desc}:** {_fmt_value(cur_val)}",
+            f"**{prev_desc}:** {_fmt_value(prev_val)}",
+        ]
+        if pctv is not None:
+            if ask_pct_first:
+                lines.append(f"**Biến động (%):** {pctv:+.1f}% ({direction})")
+                lines.append(f"**Chênh lệch tuyệt đối:** {_fmt_value(diff)}")
+            else:
+                lines.append(f"**Chênh lệch:** {_fmt_value(diff)} ({pctv:+.1f}%)")
+        else:
+            lines.append(f"**Chênh lệch:** {_fmt_value(diff)}")
+        return "\n".join(lines)
+
+    ds_key, df = _choose_dataset_with_context(qn)
+    REV_COL = "tong_doanh_thu"
+    TRIP_COL = "tong_so_cuoc"
+    MONTH_COL = "thang_label"
+    DATE_COL = "thang_nam"
+    YEAR_COL = "nam"
+    REGION_COL = "khu_vuc"
+
+    cfg_ds = get_menu_config(ds_key) if ds_key in MENU_CONFIG else {}
+    default_metric_col = cfg_ds.get("value_col", TRIP_COL if ds_key == "hd" else REV_COL)
+    metric_info = detect_metric_intent(q_raw, value_col_default=default_metric_col)
+    metric = metric_info.get("metric_col", default_metric_col) if isinstance(metric_info, dict) else metric_info
+
+    if metric not in df.columns:
+        if default_metric_col in df.columns:
+            metric = default_metric_col
+        elif REV_COL in df.columns:
+            metric = REV_COL
+        else:
+            metric = TRIP_COL
+
+    if metric == cfg_ds.get("value_col"):
+        metric_name = cfg_ds.get("metric_label", "Doanh thu" if metric == REV_COL else "Số cuốc")
+    elif metric == cfg_ds.get("secondary_col"):
+        metric_name = cfg_ds.get("secondary_label", "Số cuốc")
+    else:
+        metric_name = "Doanh thu" if metric == REV_COL else "Số cuốc"
+
+    ctx_filters = context.get("filters") or {}
+    ctx_year = ctx_filters.get("year") or ctx_filters.get("year_p2")
+    ctx_months = ctx_filters.get("months") or ctx_filters.get("months_p2")
+    ctx_regions = ctx_filters.get("dim") or ctx_filters.get("dims")
+    if isinstance(ctx_regions, str):
+        ctx_regions = [ctx_regions]
+
+    same_period_flag = any(k in qn for k in [
+        "cung ky", "so voi cung ky", "so sanh cung ky", "cung ky nam truoc"
+    ])
+    mom_flag = any(k in qn for k in [
+        " mom", "mom ", " month over month", "so voi thang truoc", "so sanh voi thang truoc", "mo m"
+    ]) or ("mom" in qn)
+    yoy_flag = any(k in qn for k in [
+        " yoy", "yoy ", " year over year", "so voi cung ky", "so sanh cung ky", "cung ky nam truoc"
+    ]) or ("yoy" in qn)
+    ask_pct_first = any(k in qn for k in [
+        "bao nhieu %", "bao nhieu phan tram", "bao nhiêu %", "bao nhiêu phần trăm", "phan tram", "%"
+    ])
+
+    latest_month_flag = any(k in qn for k in [
+        "thang gan nhat", "thang moi nhat", "thang recent", "gan day nhat", "moi nhat"
+    ])
+    prev_month_flag = any(k in qn for k in [
+        "thang lien truoc", "thang liền trước", "thang truoc", "tháng trước"
+    ]) and not mom_flag
+
+    years = _extract_years(qn)
+    month_pairs = _extract_month_pairs(qn)
+    quarter_pairs = _extract_quarters(qn)
+    halfyear_pairs = _extract_halfyears(qn)
+
+    range_labels = []
+    mrange = re.search(
+        r"(?:tu|từ)\s*(0?[1-9]|1[0-2])\s*[\/\-]\s*(20\d{2})\s*(?:den|đến)\s*(0?[1-9]|1[0-2])\s*[\/\-]\s*(20\d{2})",
+        qn
+    )
+    if mrange:
+        m1, y1, m2, y2 = map(int, mrange.groups())
+        range_labels = _month_range_labels(m1, y1, m2, y2)
+
+    months_labels = []
+    time_scope_desc = None
+
+    if range_labels:
+        months_labels = range_labels
+        if len(months_labels) >= 2:
+            time_scope_desc = f"Từ {months_labels[0]} đến {months_labels[-1]}"
+    elif month_pairs:
+        months_labels = [_month_label(m, y) for m, y in month_pairs]
+    elif quarter_pairs:
+        tmp = []
+        q_descs = []
+        for qv, yv in quarter_pairs:
+            tmp.extend(_quarter_months(qv, yv))
+            q_descs.append(f"Q{qv}/{yv}")
+        months_labels = list(dict.fromkeys(tmp))
+        time_scope_desc = ", ".join(q_descs)
+        if not years:
+            years = list(dict.fromkeys([yv for _, yv in quarter_pairs]))
+    elif halfyear_pairs:
+        tmp = []
+        h_descs = []
+        for hv, yv in halfyear_pairs:
+            tmp.extend(_halfyear_months(hv, yv))
+            h_descs.append(f"H{hv}/{yv}")
+        months_labels = list(dict.fromkeys(tmp))
+        time_scope_desc = ", ".join(h_descs)
+        if not years:
+            years = list(dict.fromkeys([yv for _, yv in halfyear_pairs]))
+    else:
+        ml = detect_month_label(q_raw)
+        if ml:
+            months_labels = [ml]
+
+    requested_regions = detect_regions_in_question(q_raw, region_pool=ALL_REGIONS)
+    blocked_regions = [r for r in requested_regions if not user_can_access_region(r)]
+    if blocked_regions:
+        return "Tài khoản của bạn không có quyền xem dữ liệu của khu vực: " + ", ".join(blocked_regions) + ". Vui lòng dùng tài khoản tổng hoặc tài khoản đã được cấp đúng khu vực."
+    regions = filter_regions_for_current_user(requested_regions)
+
+    if not years and ctx_year is not None:
+        years = [ctx_year] if isinstance(ctx_year, int) else [int(ctx_year)] if str(ctx_year).isdigit() else []
+    if not months_labels and ctx_months:
+        months_labels = ctx_months[:] if isinstance(ctx_months, list) else [ctx_months]
+    if not regions and ctx_regions:
+        regions = filter_regions_for_current_user(ctx_regions[:] if isinstance(ctx_regions, list) else [ctx_regions])
+
+    type_col = LH_COL if ds_key == "lh" else HD_COL if ds_key == "hd" else None
+    type_value = _pick_type_value(df, type_col, qn) if type_col else None
+    if not type_value and type_col:
+        tv = ctx_filters.get("type_filter")
+        if isinstance(tv, list) and len(tv) == 1:
+            type_value = tv[0]
+        elif isinstance(tv, str) and tv.strip():
+            type_value = tv
+        elif ctx_filters.get("type"):
+            type_value = ctx_filters.get("type")
+
+    dff_scope = apply_region_scope_to_df(df)
+    if YEAR_COL in dff_scope.columns and years:
+        dff_scope = dff_scope[dff_scope[YEAR_COL].isin(years)]
+    if REGION_COL in dff_scope.columns and regions:
+        dff_scope = dff_scope[dff_scope[REGION_COL].isin(regions)]
+    if type_col and type_value and type_col in dff_scope.columns:
+        dff_scope = dff_scope[dff_scope[type_col] == type_value]
+
+    if not months_labels and (latest_month_flag or prev_month_flag):
+        latest_lb, _, _ = _latest_months_from_df(dff_scope, metric, DATE_COL, MONTH_COL)
+        if latest_lb:
+            if latest_month_flag:
+                months_labels = [latest_lb]
+                time_scope_desc = f"Tháng gần nhất ({latest_lb})"
+            elif prev_month_flag:
+                prev_lb = _prev_month_label(latest_lb)
+                if prev_lb:
+                    months_labels = [prev_lb]
+                    time_scope_desc = f"Tháng liền trước ({prev_lb})"
+
+    dff = dff_scope.copy()
+    if MONTH_COL in dff.columns and months_labels:
+        dff = dff[dff[MONTH_COL].isin(months_labels)]
+
+    if dff.empty:
+        scope = []
+        if time_scope_desc:
+            scope.append(f"giai đoạn {time_scope_desc}")
+        if years:
+            scope.append(f"năm {', '.join(map(str, years))}")
+        if months_labels:
+            scope.append(f"tháng {', '.join(months_labels)}")
+        if regions:
+            scope.append(f"khu vực {', '.join(regions)}")
+        if type_value:
+            scope.append(f"{type_col} = {type_value}")
+        s = ", ".join(scope) if scope else "bộ lọc hiện tại"
+        return f"Không tìm thấy dữ liệu phù hợp với {s}. Bạn thử đổi năm/tháng/khu vực hoặc bỏ bớt điều kiện nhé."
+
+    intent = detect_intent_advanced(q_raw)
+
+    parts = []
+    ds_name = get_menu_config(ds_key).get("menu_label", ds_key.upper()) if ds_key in MENU_CONFIG else ds_key.upper()
+    parts.append(f"**Dataset:** {ds_name} • **Chỉ tiêu:** {metric_name}")
+
+    f_desc = []
+    if time_scope_desc:
+        f_desc.append(f"Giai đoạn: {time_scope_desc}")
+    if years:
+        f_desc.append(f"Năm: {', '.join(map(str, years))}")
+    if months_labels:
+        if len(months_labels) <= 6:
+            f_desc.append(f"Tháng: {', '.join(months_labels)}")
+        else:
+            f_desc.append(f"Tháng: {len(months_labels)} tháng")
+    if regions:
+        f_desc.append(f"Khu vực: {', '.join(regions)}")
+    if type_value:
+        f_desc.append(f"{type_col}: {type_value}")
+    if f_desc:
+        parts.append("**Bộ lọc:** " + " | ".join(f_desc))
+
+    if len(months_labels) == 1 and (mom_flag or yoy_flag):
+        cur_month = str(months_labels[0])
+        comp_month = None
+        comp_desc = None
+
+        if mom_flag:
+            comp_month = _prev_month_label(cur_month)
+            comp_desc = f"Tháng trước ({comp_month})" if comp_month else "Tháng trước"
+        elif yoy_flag:
+            shifted = _shift_month_labels_by_year([cur_month], -1)
+            comp_month = shifted[0] if shifted else None
+            comp_desc = f"Cùng kỳ năm trước ({comp_month})" if comp_month else "Cùng kỳ năm trước"
+
+        cur_val = float(dff[metric].sum()) if metric in dff.columns else 0.0
+        prev_df = dff_scope.copy()
+        if comp_month and MONTH_COL in prev_df.columns:
+            prev_df = prev_df[prev_df[MONTH_COL].astype(str) == str(comp_month)]
+        else:
+            prev_df = prev_df.iloc[0:0]
+
+        prev_val = float(prev_df[metric].sum()) if (not prev_df.empty and metric in prev_df.columns) else 0.0
+        cur_desc = f"Hiện tại ({cur_month})"
+
+        if mom_flag and yoy_flag:
+            prev_m = _prev_month_label(cur_month)
+            prev_y = _shift_month_labels_by_year([cur_month], -1)
+            prev_y = prev_y[0] if prev_y else None
+
+            prev_df_m = dff_scope.copy()
+            if prev_m and MONTH_COL in prev_df_m.columns:
+                prev_df_m = prev_df_m[prev_df_m[MONTH_COL].astype(str) == str(prev_m)]
+            else:
+                prev_df_m = prev_df_m.iloc[0:0]
+
+            prev_df_y = dff_scope.copy()
+            if prev_y and MONTH_COL in prev_df_y.columns:
+                prev_df_y = prev_df_y[prev_df_y[MONTH_COL].astype(str) == str(prev_y)]
+            else:
+                prev_df_y = prev_df_y.iloc[0:0]
+
+            prev_val_m = float(prev_df_m[metric].sum()) if (not prev_df_m.empty and metric in prev_df_m.columns) else 0.0
+            prev_val_y = float(prev_df_y[metric].sum()) if (not prev_df_y.empty and metric in prev_df_y.columns) else 0.0
+
+            block = []
+            block.append(_compare_text(cur_val, prev_val_m, cur_desc, f"Tháng trước ({prev_m})", ask_pct_first))
+            block.append(_compare_text(cur_val, prev_val_y, cur_desc, f"Cùng kỳ năm trước ({prev_y})", ask_pct_first))
+            parts.append("**So sánh MoM & YoY:**\n" + "\n\n".join(block))
+            return "\n\n".join(parts)
+
+        parts.append(_compare_text(cur_val, prev_val, cur_desc, comp_desc or "Kỳ so sánh", ask_pct_first))
+        return "\n\n".join(parts)
+
+    if same_period_flag:
+        prev_df = df.copy()
+        prev_years = []
+        prev_months = []
+
+        if months_labels:
+            prev_months = _shift_month_labels_by_year(months_labels, -1)
+            prev_years = sorted(list(dict.fromkeys([int(m.split("/")[1]) for m in prev_months if "/" in m])))
+        elif years:
+            prev_years = [int(y) - 1 for y in years]
+        else:
+            if ctx_year is not None:
+                try:
+                    prev_years = [int(ctx_year) - 1]
+                except Exception:
+                    prev_years = []
+
+        if YEAR_COL in prev_df.columns and prev_years:
+            prev_df = prev_df[prev_df[YEAR_COL].isin(prev_years)]
+        if MONTH_COL in prev_df.columns and prev_months:
+            prev_df = prev_df[prev_df[MONTH_COL].isin(prev_months)]
+        if REGION_COL in prev_df.columns and regions:
+            prev_df = prev_df[prev_df[REGION_COL].isin(regions)]
+        if type_col and type_value and type_col in prev_df.columns:
+            prev_df = prev_df[prev_df[type_col] == type_value]
+
+        cur_val = float(dff[metric].sum()) if metric in dff.columns else 0.0
+        prev_val = float(prev_df[metric].sum()) if (not prev_df.empty and metric in prev_df.columns) else 0.0
+
+        cur_period_desc = ""
+        prev_period_desc = ""
+        if months_labels:
+            cur_period_desc = ", ".join(months_labels) if len(months_labels) <= 6 else f"{len(months_labels)} tháng"
+            prev_period_desc = ", ".join(prev_months) if len(prev_months) <= 6 else f"{len(prev_months)} tháng (năm trước)"
+        elif years:
+            cur_period_desc = ", ".join(map(str, years))
+            prev_period_desc = ", ".join(map(str, prev_years))
+
+        parts.append(_compare_text(
+            cur_val, prev_val,
+            f"Kỳ hiện tại ({cur_period_desc or 'hiện tại'})",
+            f"Cùng kỳ năm trước ({prev_period_desc or 'năm trước'})",
+            ask_pct_first=ask_pct_first
+        ))
+
+        if months_labels and MONTH_COL in dff.columns:
+            g_cur = dff.groupby(MONTH_COL)[metric].sum()
+            g_prev = prev_df.groupby(MONTH_COL)[metric].sum() if (not prev_df.empty and MONTH_COL in prev_df.columns) else pd.Series(dtype=float)
+            compare_rows = []
+            for cur_m in months_labels:
+                ts = _parse_month_label(cur_m)
+                if ts is None:
+                    continue
+                prev_m = _month_label(int(ts.month), int(ts.year - 1))
+                v_cur = float(g_cur.get(cur_m, 0.0))
+                v_prev = float(g_prev.get(prev_m, 0.0))
+                dlt = v_cur - v_prev
+                pctv = (dlt / v_prev * 100.0) if v_prev else None
+                if pctv is None:
+                    compare_rows.append(f"- {cur_m} vs {prev_m}: {_fmt_value(dlt)}")
+                else:
+                    compare_rows.append(f"- {cur_m} vs {prev_m}: {_fmt_value(dlt)} ({pctv:+.1f}%)")
+            if compare_rows:
+                parts.append("**Chi tiết theo tháng:**\n" + "\n".join(compare_rows[:12]))
+
+        return "\n\n".join(parts)
+
+    if any(k in qn for k in ["trung binh", "tb", "avg", "average"]):
+        if REV_COL in dff.columns and TRIP_COL in dff.columns and any(k in qn for k in ["moi cuoc", "mỗi cuốc", "/cuoc", "per trip", "1 cuoc"]):
+            rev = float(dff[REV_COL].sum())
+            trips = float(dff[TRIP_COL].sum())
+            val = rev / trips if trips else 0.0
+            parts.append(f"**Doanh thu TB / cuốc:** {_fmt_value(val)}")
+            return "\n\n".join(parts)
+
+        s_m, _ = _group_by_month(dff, metric, DATE_COL, MONTH_COL)
+        if len(s_m) > 0:
+            val = float(s_m.mean())
+            parts.append(f"**Trung bình theo tháng:** {_fmt_value(val)} (trên {len(s_m)} tháng)")
+            return "\n\n".join(parts)
+
+    if any(k in qn for k in ["so sanh", "so voi", "vs", "versus", "khac nhau", "chenh"]):
+        if MONTH_COL in dff.columns and REGION_COL in dff.columns and len(regions) >= 2 and len(months_labels) >= 2:
+            regions_req = list(dict.fromkeys(regions))
+            months_req = list(dict.fromkeys(months_labels))
+            gcmp = dff.groupby([MONTH_COL, REGION_COL], as_index=False)[metric].sum()
+
+            def _val_of(month_label, region_name):
+                x = gcmp[
+                    (gcmp[MONTH_COL].astype(str) == str(month_label)) &
+                    (gcmp[REGION_COL].astype(str) == str(region_name))
+                ]
+                if x.empty:
+                    return 0.0
+                return float(x[metric].sum())
+
+            lines = ["**So sánh theo tháng & khu vực:**"]
+            for ml in months_req:
+                lines.append(f"- **{ml}**")
+                for rg in regions_req:
+                    v = _val_of(ml, rg)
+                    lines.append(f"  - {rg}: {_fmt_value(v)}")
+
+            if len(regions_req) >= 2:
+                r1, r2 = regions_req[0], regions_req[1]
+                lines.append("**Chênh lệch từng tháng:**")
+                for ml in months_req:
+                    v1 = _val_of(ml, r1)
+                    v2 = _val_of(ml, r2)
+                    diff = v1 - v2
+                    if diff > 0:
+                        lead = r1
+                    elif diff < 0:
+                        lead = r2
+                    else:
+                        lead = None
+
+                    if lead is None:
+                        lines.append(f"- {ml}: bằng nhau ({_fmt_value(v1)})")
+                    else:
+                        lines.append(f"- {ml}: {lead} cao hơn {_fmt_value(abs(diff))}")
+
+            if len(months_req) >= 2:
+                m_first, m_last = months_req[0], months_req[-1]
+                lines.append(f"**Biến động từ {m_first} đến {m_last}:**")
+                for rg in regions_req:
+                    v_first = _val_of(m_first, rg)
+                    v_last = _val_of(m_last, rg)
+                    delta = v_last - v_first
+                    pctv = (delta / v_first * 100.0) if v_first else None
+                    if pctv is None:
+                        lines.append(f"- {rg}: {_fmt_value(delta)}")
+                    else:
+                        lines.append(f"- {rg}: {_fmt_value(delta)} ({pctv:+.1f}%)")
+
+            parts.append("\n".join(lines))
+            return "\n\n".join(parts)
+
+        yrs_in_q = _extract_years(qn)
+        if YEAR_COL in dff.columns and len(yrs_in_q) >= 2:
+            yrs = yrs_in_q[:3]
+            tmp = df.copy()
+            tmp = tmp[tmp[YEAR_COL].isin(yrs)]
+            if months_labels and MONTH_COL in tmp.columns:
+                tmp = tmp[tmp[MONTH_COL].isin(months_labels)]
+            if regions and REGION_COL in tmp.columns:
+                tmp = tmp[tmp[REGION_COL].isin(regions)]
+            if type_col and type_value and type_col in tmp.columns:
+                tmp = tmp[tmp[type_col] == type_value]
+
+            s = tmp.groupby(YEAR_COL)[metric].sum().sort_index()
+            if len(s) >= 2:
+                lines = [f"- {y}: {_fmt_value(v)}" for y, v in s.items()]
+                y0, y1 = s.index[0], s.index[1]
+                v0, v1 = float(s.iloc[0]), float(s.iloc[1])
+                diff = v1 - v0
+                pctv = (diff / v0 * 100.0) if v0 else None
+                parts.append("**So sánh theo năm:**\n" + "\n".join(lines))
+                if pctv is not None:
+                    parts.append(f"**Chênh lệch {y1} so với {y0}:** {_fmt_value(diff)} ({pctv:+.1f}%)")
+                else:
+                    parts.append(f"**Chênh lệch {y1} so với {y0}:** {_fmt_value(diff)}")
+                return "\n\n".join(parts)
+
+        if REGION_COL in dff.columns and len(regions) >= 2:
+            s = dff.groupby(REGION_COL)[metric].sum().sort_values(ascending=False)
+            lines = [f"- {r}: {_fmt_value(s.loc[r])}" for r in regions if r in s.index]
+            parts.append("**So sánh theo khu vực:**\n" + ("\n".join(lines) if lines else "- Không đủ dữ liệu"))
+
+            if len(lines) >= 2:
+                r0, r1 = regions[0], regions[1]
+                v0 = float(s.loc[r0]) if r0 in s.index else 0.0
+                v1 = float(s.loc[r1]) if r1 in s.index else 0.0
+                diff = v0 - v1
+                pctv = (diff / v1 * 100.0) if v1 else None
+                if pctv is not None:
+                    parts.append(f"**Chênh lệch {r0} so với {r1}:** {_fmt_value(diff)} ({pctv:+.1f}%)")
+                else:
+                    parts.append(f"**Chênh lệch {r0} so với {r1}:** {_fmt_value(diff)}")
+            return "\n\n".join(parts)
+
+    if intent in ("top", "bottom"):
+        n = 5
+        mtop = re.search(r"\btop\s*(\d{1,2})\b", qn)
+        mbot = re.search(r"\bbottom\s*(\d{1,2})\b", qn)
+
+        if mtop:
+            n = max(1, min(20, int(mtop.group(1))))
+        elif mbot:
+            n = max(1, min(20, int(mbot.group(1))))
+        else:
+            if ("nao" in qn or "khu vuc nao" in qn or "thang nao" in qn):
+                n = 1
+
+        ascending = (intent == "bottom")
+        month_ranking_hint = ("thang nao" in qn) or (("thang" in qn) and (mtop or mbot))
+        if month_ranking_hint and (DATE_COL in dff.columns or MONTH_COL in dff.columns):
+            g_m, kind_m = _group_by_month(dff, metric, DATE_COL, MONTH_COL)
+            g_m = g_m.sort_values(ascending=ascending).head(n)
+
+            def _to_month_label_from_key(x):
+                if kind_m == "date":
+                    try:
+                        ts = pd.Timestamp(x)
+                        return _month_label(int(ts.month), int(ts.year))
+                    except Exception:
+                        return str(x)
+                return str(x)
+
+            if len(g_m) > 0:
+                if n == 1:
+                    month_key = g_m.index[0]
+                    month_lbl = _to_month_label_from_key(month_key)
+                    month_val = float(g_m.iloc[0])
+                    rank_label = "cao nhất" if not ascending else "thấp nhất"
+                    parts.append(f"**Tháng có {metric_name.lower()} {rank_label}:** {month_lbl} ({_fmt_value(month_val)})")
+                    return "\n\n".join(parts)
+                else:
+                    title = "Top" if not ascending else "Bottom"
+                    lines = [f"- {_to_month_label_from_key(idx)}: {_fmt_value(val)}" for idx, val in g_m.items()]
+                    parts.append(f"**{title} {n} tháng theo {metric_name}:**\n" + "\n".join(lines))
+                    return "\n\n".join(parts)
+
+        if REGION_COL in dff.columns:
+            g = dff.groupby(REGION_COL)[metric].sum().sort_values(ascending=ascending).head(n)
+            if n == 1 and len(g) > 0:
+                top_region = str(g.index[0])
+                top_value = float(g.iloc[0])
+                label_rank = "cao nhất" if not ascending else "thấp nhất"
+                parts.append(f"**Khu vực có {metric_name.lower()} {label_rank}:** {top_region} ({_fmt_value(top_value)})")
+                return "\n\n".join(parts)
+            title = "Top" if not ascending else "Bottom"
+            lines = [f"- {idx}: {_fmt_value(val)}" for idx, val in g.items()]
+            parts.append(f"**{title} {n} khu vực theo {metric_name}:**\n" + "\n".join(lines))
+            return "\n\n".join(parts)
+
+        total = float(dff[metric].sum())
+        parts.append(f"**{metric_name}:** {_fmt_value(total)}")
+        return "\n\n".join(parts)
+
+    if intent == "share":
+        if REGION_COL in dff.columns:
+            g = dff.groupby(REGION_COL)[metric].sum().sort_values(ascending=False)
+            total = float(g.sum())
+            lines = []
+            for idx, val in g.head(8).items():
+                pctv = (float(val) / total * 100.0) if total else 0.0
+                lines.append(f"- {idx}: {_fmt_value(val)} ({pctv:.1f}%)")
+            parts.append("**Tỷ trọng theo khu vực:**\n" + "\n".join(lines))
+            return "\n\n".join(parts)
+        total = float(dff[metric].sum())
+        parts.append(f"**Tổng {metric_name}:** {_fmt_value(total)}")
+        return "\n\n".join(parts)
+
+    if intent == "trend":
+        s, kind_s = _group_by_month(dff, metric, DATE_COL, MONTH_COL)
+        if len(s) > 0:
+            lines = []
+            show = s if len(s) <= 12 else pd.concat([s.head(6), s.tail(6)])
+            for d, v in show.items():
+                if kind_s == "date":
+                    try:
+                        ts = pd.Timestamp(d)
+                        lab = _month_label(int(ts.month), int(ts.year))
+                    except Exception:
+                        lab = str(d)
+                else:
+                    lab = str(d)
+                lines.append(f"- {lab}: {_fmt_value(v)}")
+
+            parts.append("**Xu hướng theo tháng:**\n" + "\n".join(lines))
+
+            if len(s) >= 2:
+                last, prev = float(s.iloc[-1]), float(s.iloc[-2])
+                diff = last - prev
+                pctv = (diff / prev * 100.0) if prev else None
+                if pctv is not None:
+                    if ask_pct_first:
+                        parts.append(f"**Biến động tháng gần nhất (%):** {pctv:+.1f}%")
+                        parts.append(f"**Chênh lệch tuyệt đối:** {_fmt_value(diff)}")
+                    else:
+                        parts.append(f"**Tháng gần nhất so với tháng trước:** {_fmt_value(diff)} ({pctv:+.1f}%)")
+                else:
+                    parts.append(f"**Tháng gần nhất so với tháng trước:** {_fmt_value(diff)}")
+            return "\n\n".join(parts)
+
+    total = float(dff[metric].sum())
+    parts.append(f"**Tổng {metric_name}:** {_fmt_value(total)}")
+
+    if REGION_COL in dff.columns and not detect_regions_in_question(q_raw):
+        g = dff.groupby(REGION_COL)[metric].sum().sort_values(ascending=False).head(5)
+        lines = [f"- {idx}: {_fmt_value(val)}" for idx, val in g.items()]
+        parts.append("**Top 5 khu vực (tham khảo):**\n" + "\n".join(lines))
+
+    parts.append(
+        '\n*Gợi ý:* Bạn có thể hỏi: **"Cà Mau tháng nào cao nhất"**, '
+        '**"Top 3 tháng doanh thu cao nhất của Cà Mau năm 2025"**, '
+        '**"Doanh thu tháng gần nhất so với tháng liền trước (MoM)"**, '
+        '**"Doanh thu tháng gần nhất so với cùng kỳ năm trước (YoY)"**, '
+        '**"Doanh thu quý 1/2025"**, **"Doanh thu 6 tháng đầu năm 2025"**, '
+        '**"Doanh thu quý 1/2025 so với cùng kỳ năm trước"**, '
+        '**"So sánh doanh thu của Rạch Giá và An Giang trong tháng 1 2025 và tháng 10 2025"**.'
+    )
+    return "\n\n".join(parts)
+
+@app.callback(
+    Output("ai-chat-history", "data"),
+    Output("ai-output", "children"),
+    Input("ai-send", "n_clicks"),
+    Input("ai-clear", "n_clicks"),
+    Input({"type": "ai-chip", "idx": ALL}, "n_clicks"),
+    State("ai-input", "value"),
+    State("ai-chat-history", "data"),
+    State("menu", "data"),
+    State("page", "data"),
+    State("filters-home", "data"),
+    *[State(f"filters-{p}-p1", "data") for p in DASH_PREFIXES],
+    *[State(f"filters-{p}-p2", "data") for p in DASH_PREFIXES],
+    prevent_initial_call=True
+)
+def ai_chat(n_send, n_clear, _chip_clicks, question, history, menu, page, f_home, *filter_states):
+    trigger = ctx.triggered_id
+    history = history or []
+
+    if trigger == "ai-clear":
+        return [], ai_empty_state("Đã xoá lịch sử chat", "Hội thoại đã được làm mới. Hãy nhập câu hỏi mới hoặc chọn một gợi ý nhanh để bắt đầu lại.")
+
+    try:
+        p = int(page) if page is not None else 0
+    except Exception:
+        p = 0
+
+    p1_filter_map = dict(zip(DASH_PREFIXES, filter_states[:len(DASH_PREFIXES)]))
+    p2_filter_map = dict(zip(DASH_PREFIXES, filter_states[len(DASH_PREFIXES):]))
+
+    if menu == "home":
+        filters = f_home or {}
+    elif p == 1:
+        filters = p1_filter_map.get(menu, {}) or {}
+    elif p == 2:
+        filters = p2_filter_map.get(menu, {}) or {}
+    else:
+        filters = {}
+
+    context = {"menu": menu, "page": p, "filters": filters}
+    context_tags_list = ai_context_tags(context)
+    menu_label = _ai_menu_label(menu)
+
+    q_raw = ""
+    used_chip = False
+    if isinstance(trigger, dict) and trigger.get("type") == "ai-chip":
+        try:
+            idx = int(trigger.get("idx"))
+            if 0 <= idx < len(AI_SUGGESTIONS_V3):
+                q_raw = AI_SUGGESTIONS_V3[idx]
+                used_chip = True
+        except Exception:
+            q_raw = ""
+    elif trigger == "ai-send":
+        q_raw = (question or "").strip()
+    else:
+        raise PreventUpdate
+
+    if not q_raw:
+        return history, ai_empty_state("Chưa có câu hỏi hợp lệ", "Hãy nhập câu hỏi hoặc chọn một gợi ý nhanh ở phía trên để AI bắt đầu phân tích.")
+
+    def split_questions(raw: str):
+        raw = raw.replace(";", "\n")
+        raw = re.sub(r"[?]+", "?\n", raw)
+        parts = [x.strip() for x in raw.splitlines() if x.strip()]
+        return parts[:8]
+
+    questions = [q_raw] if used_chip else split_questions(q_raw)
+    source_label = "chip" if used_chip else ("batch" if len(questions) > 1 else "typed")
+
+    for q in questions:
+        ans = answer_question(q, context=context)
+        history.append({
+            "q": q,
+            "a": ans,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "menu": menu,
+            "menu_label": menu_label,
+            "page": p,
+            "source": source_label,
+            "context_tags": context_tags_list,
+        })
+
+    return history, render_ai_thread(history)
+
+
+@app.callback(
+    Output("ai-input", "value"),
+    Input("ai-send", "n_clicks"),
+    prevent_initial_call=True
+)
+def clear_ai_input(_):
+    return ""
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8050")),
+        debug=_env_flag("DASH_DEBUG", False)
+    )
