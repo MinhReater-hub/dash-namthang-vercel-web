@@ -329,7 +329,7 @@ def _normalize_auth_user_record(username: str, raw: dict) -> dict:
     regions_norm = _normalize_region_list(regions)
     is_admin = role_raw in {"admin", "super", "global", "all"} or ("*" in [str(x).strip() for x in regions if x is not None])
     return {
-        "username": str(username).strip().lower(),
+        "username": str(username).strip(),
         "display_name": str(raw.get("display_name") or raw.get("full_name") or username).strip(),
         "role": "admin" if is_admin else "region",
         "regions": [] if is_admin else regions_norm,
@@ -338,52 +338,20 @@ def _normalize_auth_user_record(username: str, raw: dict) -> dict:
         "is_active": bool(raw.get("is_active", True)),
     }
 
-def _slugify_username(value: str) -> str:
-    txt = norm_text(value)
-    txt = re.sub(r"[^a-z0-9]+", "", txt)
-    return txt or "user"
-
-def _all_dashboard_regions() -> list[str]:
-    try:
-        regions = [str(x).strip() for x in globals().get("ALL_REGIONS", []) if str(x).strip()]
-    except Exception:
-        regions = []
-    regions = [canon_region_name(x) for x in regions]
-    return [str(x) for x in regions if x not in [None, "", "Tổng hợp"]]
-
-def _auto_region_user_store() -> dict:
-    default_region_password = os.getenv("DEFAULT_REGION_PASSWORD", "123456")
-    auto_store = {}
-    for region_name in _all_dashboard_regions():
-        username = _slugify_username(region_name)
-        auto_store[username] = {
-            "display_name": f"Quản lý {region_name}",
-            "password": default_region_password,
-            "role": "region",
-            "regions": [region_name],
-            "is_active": True,
-        }
-    return auto_store
-
 def load_auth_user_store() -> dict:
     store = None
     for candidate in _auth_users_candidates():
         try:
             if candidate.exists():
-                store = json.loads(candidate.read_text(encoding="utf-8-sig"))
+                store = json.loads(candidate.read_text(encoding="utf-8"))
                 break
         except Exception:
             continue
     if store is None:
-        store = {}
-    merged_store = {}
-    merged_store.update(_default_user_store())
-    merged_store.update(_auto_region_user_store())
-    if isinstance(store, dict):
-        merged_store.update(store)
+        store = _default_user_store()
     users = {}
-    if isinstance(merged_store, dict):
-        for username, payload in merged_store.items():
+    if isinstance(store, dict):
+        for username, payload in store.items():
             rec = _normalize_auth_user_record(username, payload if isinstance(payload, dict) else {})
             if rec["username"] and rec.get("is_active", True):
                 users[rec["username"]] = rec
@@ -614,7 +582,7 @@ LOGIN_PAGE_TEMPLATE = """
       <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" required>
       <button type="submit">Đăng nhập vào dashboard</button>
       {% if default_hint %}
-      <div class="hint"><strong>Lưu ý:</strong> Nếu chưa có <code>users.json</code>, hệ thống sẽ tự tạo tài khoản <strong>admin / {{ default_admin_password }}</strong> và các user khu vực với mật khẩu mặc định <strong>{{ default_region_password }}</strong>. Hãy đổi mật khẩu trước khi public.</div>
+      <div class="hint"><strong>Lưu ý:</strong> Chưa tìm thấy file <code>users.json</code>, hệ thống đang dùng user mặc định để bạn test nhanh: <strong>admin / admin123</strong>. Hãy tạo file <code>users.json</code> trước khi public.</div>
       {% endif %}
     </form>
   </div>
@@ -3133,7 +3101,7 @@ def healthz():
 @server.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = str(request.form.get("username", "")).strip().lower()
+        username = str(request.form.get("username", "")).strip()
         password = request.form.get("password", "")
         users = load_auth_user_store()
         user_record = users.get(username)
@@ -3168,8 +3136,6 @@ def login():
         error=error_msg,
         next_path=next_path,
         default_hint=_auth_store_source() == "default",
-        default_admin_password=os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
-        default_region_password=os.getenv("DEFAULT_REGION_PASSWORD", "123456"),
     )
 
 @server.get("/logout")
@@ -5836,7 +5802,22 @@ app.layout = dbc.Container(
                             dbc.Button("Home", id="go-home", color="secondary", outline=True, className="w-100 mb-2"),
                             dbc.Button("Page 1", id="go-page-1", color="secondary", outline=True, className="w-100 mb-2"),
                             dbc.Button("Page 2", id="go-page-2", color="secondary", outline=True, className="w-100 mb-2"),
-                            dbc.Button([fa_icon("fa-right-from-bracket", 14), html.Span(" Đăng xuất", className="ms-2")], href="/logout", color="light", className="w-100", style={"border": "1px solid #dcfce7", "color": "#166534", "fontWeight": "900", "background": "#ffffff"}),
+                            dbc.Button(
+                                [fa_icon("fa-right-from-bracket", 14, "#166534"), html.Span(" Đăng xuất", className="ms-2")],
+                                href="/logout",
+                                external_link=True,
+                                color="light",
+                                className="w-100 mt-2",
+                                style={
+                                    "border": "1px solid #dcfce7",
+                                    "color": "#166534",
+                                    "fontWeight": "900",
+                                    "background": "#ffffff",
+                                    "position": "relative",
+                                    "zIndex": 3000,
+                                    "pointerEvents": "auto",
+                                },
+                            ),
                         ],
                         style={"flex": "1 1 auto", "minHeight": 0}
                     ),
