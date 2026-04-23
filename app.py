@@ -192,6 +192,8 @@ EXCEL_FILE = _resolve_first_existing_path([
 ])
 
 DATA_LOAD_ERROR = None
+DATA_LOAD_ERRORS = []
+EXCEL_BOOK = None
 
 def _empty_dashboard_df(kind: str) -> pd.DataFrame:
     base_cols = ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "tong_doanh_thu", "tong_so_cuoc"]
@@ -201,21 +203,35 @@ def _empty_dashboard_df(kind: str) -> pd.DataFrame:
         base_cols += ["loai_hop_dong_std"]
     return pd.DataFrame(columns=list(dict.fromkeys(base_cols)))
 
+
+def _parse_excel_sheet_or_empty(book: pd.ExcelFile, sheet_name: str, kind: str) -> pd.DataFrame:
+    try:
+        return book.parse(sheet_name=sheet_name)
+    except Exception as e:
+        DATA_LOAD_ERRORS.append(f"{sheet_name}: {e}")
+        return _empty_dashboard_df(kind)
+
+
+df_dt = _empty_dashboard_df("dt")
+df_lh = _empty_dashboard_df("lh")
+df_hd = _empty_dashboard_df("hd")
+
 if EXCEL_FILE is not None:
     try:
-        df_dt = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_Thang_KhuVuc")
-        df_lh = pd.read_excel(EXCEL_FILE, sheet_name="DoanhThu_LH_KV_Thang")
-        df_hd = pd.read_excel(EXCEL_FILE, sheet_name="HopDong_KV_Thang")
+        EXCEL_BOOK = pd.ExcelFile(EXCEL_FILE)
+        df_dt = _parse_excel_sheet_or_empty(EXCEL_BOOK, "DoanhThu_Thang_KhuVuc", "dt")
+        df_lh = _parse_excel_sheet_or_empty(EXCEL_BOOK, "DoanhThu_LH_KV_Thang", "lh")
+        df_hd = _parse_excel_sheet_or_empty(EXCEL_BOOK, "HopDong_KV_Thang", "hd")
+        if DATA_LOAD_ERRORS:
+            DATA_LOAD_ERROR = "Lỗi đọc một số sheet Excel: " + " | ".join(DATA_LOAD_ERRORS[:3])
     except Exception as e:
-        DATA_LOAD_ERROR = f"Lỗi đọc file Excel: {e}"
+        EXCEL_BOOK = None
+        DATA_LOAD_ERROR = f"Lỗi mở file Excel: {e}"
         df_dt = _empty_dashboard_df("dt")
         df_lh = _empty_dashboard_df("lh")
         df_hd = _empty_dashboard_df("hd")
 else:
     DATA_LOAD_ERROR = "Không tìm thấy file Excel dữ liệu. Hãy kiểm tra lại đường dẫn 'bao_cao_doanh_thu_tong_hop.xlsx'."
-    df_dt = _empty_dashboard_df("dt")
-    df_lh = _empty_dashboard_df("lh")
-    df_hd = _empty_dashboard_df("hd")
 
 for df in [df_dt, df_lh, df_hd]:
     df["thang_nam"] = pd.to_datetime(df["thang_nam"]).dt.to_period("M").dt.to_timestamp()
@@ -592,17 +608,22 @@ LOGIN_PAGE_TEMPLATE = """
 </html>
 """
 try:
-    _excel_sheet_names = set(pd.ExcelFile(EXCEL_FILE).sheet_names) if EXCEL_FILE is not None else set()
+    _excel_sheet_names = set(EXCEL_BOOK.sheet_names) if EXCEL_BOOK is not None else set()
 except Exception:
     _excel_sheet_names = set()
 
+_OPTIONAL_SHEET_CACHE = {}
+
 def _read_optional_sheet(candidates):
-    if EXCEL_FILE is None:
+    if EXCEL_BOOK is None:
         return None
     try:
         for sheet_name in candidates:
             if sheet_name in _excel_sheet_names:
-                return pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
+                if sheet_name not in _OPTIONAL_SHEET_CACHE:
+                    _OPTIONAL_SHEET_CACHE[sheet_name] = EXCEL_BOOK.parse(sheet_name=sheet_name)
+                cached = _OPTIONAL_SHEET_CACHE.get(sheet_name)
+                return cached.copy() if isinstance(cached, pd.DataFrame) else cached
     except Exception:
         return None
     return None
@@ -2079,6 +2100,229 @@ AI_LAUNCHER_CSS = """
   }
   .ai-launcher-copy{ display:none; }
   .ai-launcher-orb{ width:48px; height:48px; }
+}
+"""
+
+PREMIUM_LOADING_CSS = """
+.page-content-shell{
+  position:relative;
+  min-height:56vh;
+}
+.page-loading-shell{
+  padding-top:4px;
+}
+.page-loading-hero{
+  position:relative;
+  overflow:hidden;
+  border-radius:28px;
+  padding:22px 24px;
+  background:linear-gradient(135deg,#0f172a 0%, #14532d 58%, #16a34a 100%);
+  box-shadow:0 24px 54px rgba(15,23,42,0.18);
+  color:#ffffff;
+  margin-bottom:16px;
+}
+.page-loading-hero::after{
+  content:"";
+  position:absolute;
+  top:-42px;
+  right:-42px;
+  width:180px;
+  height:180px;
+  border-radius:50%;
+  background:rgba(255,255,255,0.08);
+}
+.page-loading-kicker{
+  position:relative;
+  z-index:1;
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:1px;
+  text-transform:uppercase;
+  opacity:0.88;
+}
+.page-loading-title{
+  position:relative;
+  z-index:1;
+  font-size:28px;
+  font-weight:900;
+  line-height:1.08;
+  margin-top:8px;
+  max-width:720px;
+}
+.page-loading-subtitle{
+  position:relative;
+  z-index:1;
+  font-size:13px;
+  line-height:1.6;
+  opacity:0.92;
+  margin-top:10px;
+  max-width:760px;
+}
+.page-loading-pill-row{
+  position:relative;
+  z-index:1;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:14px;
+}
+.page-loading-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  color:#ffffff;
+  background:rgba(255,255,255,0.12);
+  border:1px solid rgba(255,255,255,0.18);
+}
+.page-loading-skeleton-card{
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  border:1px solid #e3ebf3;
+  border-radius:22px;
+  box-shadow:0 18px 36px rgba(15,23,42,0.08);
+  padding:18px;
+  min-height:148px;
+}
+.page-loading-skeleton-title{
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:.6px;
+  text-transform:uppercase;
+  color:#64748b;
+  margin-bottom:14px;
+}
+.page-loading-chart-shell{
+  background:linear-gradient(180deg,#ffffff 0%, #f8fbff 100%);
+  border:1px solid #e3ebf3;
+  border-radius:22px;
+  box-shadow:0 18px 36px rgba(15,23,42,0.08);
+  padding:18px;
+  min-height:256px;
+}
+.page-loading-skeleton,
+.page-loading-skeleton-bar,
+.page-loading-skeleton-dot{
+  position:relative;
+  overflow:hidden;
+  background:linear-gradient(90deg, #e9eef5 8%, #f7fbff 28%, #e9eef5 48%);
+  background-size:220% 100%;
+  animation:premiumPageShimmer 1.55s linear infinite;
+}
+.page-loading-skeleton{
+  height:14px;
+  border-radius:999px;
+  margin-bottom:10px;
+}
+.page-loading-skeleton.sm{ width:34%; }
+.page-loading-skeleton.md{ width:58%; }
+.page-loading-skeleton.lg{ width:78%; }
+.page-loading-skeleton.full{ width:100%; }
+.page-loading-skeleton:last-child{ margin-bottom:0; }
+.page-loading-skeleton-bar{
+  height:178px;
+  border-radius:18px;
+}
+.page-loading-chart-mini{
+  display:flex;
+  align-items:flex-end;
+  gap:10px;
+  height:170px;
+  margin-top:10px;
+}
+.page-loading-chart-mini .bar{
+  flex:1 1 0;
+  border-radius:14px 14px 6px 6px;
+  min-width:0;
+}
+.page-loading-chart-mini .bar.h1{ height:34%; }
+.page-loading-chart-mini .bar.h2{ height:58%; }
+.page-loading-chart-mini .bar.h3{ height:82%; }
+.page-loading-chart-mini .bar.h4{ height:46%; }
+.page-loading-chart-mini .bar.h5{ height:68%; }
+.page-loading-chart-mini .bar.h6{ height:91%; }
+.page-loading-chart-mini .bar.h7{ height:53%; }
+.page-loading-chart-mini .bar.h8{ height:73%; }
+._dash-loading-callback{
+  position:fixed !important;
+  top:12px !important;
+  left:50% !important;
+  transform:translateX(-50%) !important;
+  width:min(760px, calc(100vw - 20px)) !important;
+  min-height:82px !important;
+  padding:14px 18px 18px !important;
+  border-radius:24px !important;
+  background:linear-gradient(135deg, rgba(15,23,42,0.98) 0%, rgba(20,83,45,0.97) 58%, rgba(22,163,74,0.96) 100%) !important;
+  border:1px solid rgba(255,255,255,0.14) !important;
+  box-shadow:0 26px 60px rgba(15,23,42,0.28), 0 0 0 1px rgba(34,197,94,0.18) inset !important;
+  backdrop-filter:blur(18px);
+  -webkit-backdrop-filter:blur(18px);
+  z-index:2147483200 !important;
+  color:transparent !important;
+  font-size:0 !important;
+  overflow:hidden !important;
+  pointer-events:none !important;
+}
+._dash-loading-callback::before{
+  content:"Đang tải dữ liệu dashboard\\AKPI, biểu đồ và bộ lọc đang được dựng ở phần trên cùng. Bạn không cần cuộn xuống để biết hệ thống vẫn đang tải.";
+  white-space:pre-line;
+  display:block;
+  color:#ffffff;
+  font-size:13px;
+  font-weight:900;
+  line-height:1.5;
+  letter-spacing:.2px;
+  padding-right:120px;
+}
+._dash-loading-callback::after{
+  content:"";
+  position:absolute;
+  left:18px;
+  right:18px;
+  bottom:14px;
+  height:8px;
+  border-radius:999px;
+  background-image:linear-gradient(
+    90deg,
+    rgba(255,255,255,0.12) 0%,
+    rgba(255,255,255,0.18) 15%,
+    rgba(134,239,172,0.95) 48%,
+    rgba(255,255,255,0.18) 82%,
+    rgba(255,255,255,0.12) 100%
+  );
+  background-size:220% 100%;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);
+  animation:premiumTopLoader 1.25s linear infinite;
+}
+@keyframes premiumTopLoader{
+  0%{ background-position:200% 0; }
+  100%{ background-position:-40% 0; }
+}
+@keyframes premiumPageShimmer{
+  0%{ background-position:200% 0; }
+  100%{ background-position:-60% 0; }
+}
+@media (max-width: 768px){
+  .page-loading-hero{
+    padding:18px 18px 20px;
+    border-radius:24px;
+  }
+  .page-loading-title{
+    font-size:22px;
+  }
+  ._dash-loading-callback{
+    top:10px !important;
+    width:calc(100vw - 16px) !important;
+    min-height:74px !important;
+    padding:12px 14px 16px !important;
+    border-radius:20px !important;
+  }
+  ._dash-loading-callback::before{
+    font-size:12px;
+    padding-right:0;
+  }
 }
 """
 
@@ -5861,7 +6105,7 @@ b{
 
 app.index_string = app.index_string.replace(
     "</head>",
-    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
+    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{PREMIUM_LOADING_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
 )
 
 ZOOM_TARGETS = [
@@ -5886,6 +6130,98 @@ def page_title_block(title: str, subtitle: str):
         summary_pill("Executive Mode", fa_icon("fa-gauge-high", 12, "#ffffff")),
         summary_pill("Light UI", fa_icon("fa-sun", 12, "#ffffff"))
     ])
+
+
+def _loading_metric_card(title: str):
+    return html.Div(
+        [
+            html.Div(title, className="page-loading-skeleton-title"),
+            html.Div(className="page-loading-skeleton lg"),
+            html.Div(className="page-loading-skeleton md"),
+            html.Div(className="page-loading-skeleton sm"),
+        ],
+        className="page-loading-skeleton-card"
+    )
+
+
+def build_premium_loading_shell():
+    return dbc.Container(
+        fluid=True,
+        className="page-loading-shell",
+        children=[
+            html.Div(
+                [
+                    html.Div("PREMIUM DASHBOARD LOADING", className="page-loading-kicker"),
+                    html.Div("Đang đồng bộ dữ liệu và dựng giao diện điều hành", className="page-loading-title"),
+                    html.Div(
+                        "Hệ thống đang nạp KPI, biểu đồ, bộ lọc và dữ liệu nền. Bạn sẽ luôn thấy trạng thái loading ở phần trên mà không cần kéo màn hình xuống.",
+                        className="page-loading-subtitle"
+                    ),
+                    html.Div(
+                        [
+                            html.Span([fa_icon("fa-bolt", 12, "#ffffff"), html.Span("Warm-up nhanh", className="ms-1")], className="page-loading-pill"),
+                            html.Span([fa_icon("fa-chart-line", 12, "#ffffff"), html.Span("Đang dựng KPI", className="ms-1")], className="page-loading-pill"),
+                            html.Span([fa_icon("fa-layer-group", 12, "#ffffff"), html.Span("Multi-page lazy render", className="ms-1")], className="page-loading-pill"),
+                        ],
+                        className="page-loading-pill-row"
+                    ),
+                ],
+                className="page-loading-hero"
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(_loading_metric_card("Tổng hợp KPI"), md=3),
+                    dbc.Col(_loading_metric_card("Snapshot dữ liệu"), md=3),
+                    dbc.Col(_loading_metric_card("Hiệu suất vận hành"), md=3),
+                    dbc.Col(_loading_metric_card("Đồng bộ bộ lọc"), md=3),
+                ],
+                className="g-3"
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div("Đang dựng biểu đồ điều hành", className="page-loading-skeleton-title"),
+                                html.Div(className="page-loading-skeleton md"),
+                                html.Div(
+                                    [
+                                        html.Div(className="page-loading-skeleton-bar bar h1"),
+                                        html.Div(className="page-loading-skeleton-bar bar h2"),
+                                        html.Div(className="page-loading-skeleton-bar bar h3"),
+                                        html.Div(className="page-loading-skeleton-bar bar h4"),
+                                        html.Div(className="page-loading-skeleton-bar bar h5"),
+                                        html.Div(className="page-loading-skeleton-bar bar h6"),
+                                        html.Div(className="page-loading-skeleton-bar bar h7"),
+                                        html.Div(className="page-loading-skeleton-bar bar h8"),
+                                    ],
+                                    className="page-loading-chart-mini"
+                                ),
+                            ],
+                            className="page-loading-chart-shell"
+                        ),
+                        md=8
+                    ),
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div("Đang tổng hợp insight nhanh", className="page-loading-skeleton-title"),
+                                html.Div(className="page-loading-skeleton full"),
+                                html.Div(className="page-loading-skeleton lg"),
+                                html.Div(className="page-loading-skeleton md"),
+                                html.Div(className="page-loading-skeleton full"),
+                                html.Div(className="page-loading-skeleton lg"),
+                                html.Div(className="page-loading-skeleton sm"),
+                            ],
+                            className="page-loading-chart-shell"
+                        ),
+                        md=4
+                    ),
+                ],
+                className="g-3 mt-1"
+            ),
+        ]
+    )
 
 app.layout = dbc.Container(
     fluid=True,
@@ -6128,7 +6464,7 @@ app.layout = dbc.Container(
             ]
         ),
 
-        dcc.Loading(html.Div(id="content"), type="default"),
+        html.Div(id="content", className="page-content-shell", children=build_premium_loading_shell()),
 
         dbc.Button(ICON_CHEV_L, id="prev-page", className="page-nav-btn page-nav-left", title="Trang trước", style=PAGE_NAV_LEFT_BASE),
         dbc.Button(ICON_CHEV_R, id="next-page", className="page-nav-btn page-nav-right", title="Trang sau", style=PAGE_NAV_RIGHT_BASE),
@@ -6183,24 +6519,32 @@ app.layout = dbc.Container(
     ]
 )
 
+def _build_active_page_layout(menu, page):
+    menu = menu or "home"
+    try:
+        p = int(page) if page is not None else (0 if menu == "home" else 1)
+    except Exception:
+        p = 0 if menu == "home" else 1
+
+    if menu == "home":
+        return home_page()
+
+    if menu in DASH_PREFIXES:
+        cfg = get_menu_config(menu)
+        if p == 2:
+            return page_2(menu, cfg["page2_title"], cfg["df"], "khu_vuc")
+        return page_1(menu, cfg["page1_title"])
+
+    return home_page()
+
+
 @app.callback(
     Output("content","children"),
     Input("menu","data"),
     Input("page","data")
 )
 def render(menu, page):
-    def wrap(children, show):
-        return html.Div(children, style={"display": "block" if show else "none"})
-    try:
-        p = int(page) if page is not None else 0
-    except Exception:
-        p = 0
-    children = [wrap(home_page(), menu == "home")]
-    for prefix in DASH_PREFIXES:
-        cfg = get_menu_config(prefix)
-        children.append(wrap(page_1(prefix, cfg["page1_title"]), menu == prefix and p == 1))
-        children.append(wrap(page_2(prefix, cfg["page2_title"], cfg["df"], "khu_vuc"), menu == prefix and p == 2))
-    return html.Div(children)
+    return _build_active_page_layout(menu, page)
 
 
 UPDATE_TS_COL_CANDIDATES = [
