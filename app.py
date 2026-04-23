@@ -2266,7 +2266,7 @@ PREMIUM_LOADING_CSS = """
   pointer-events:none !important;
 }
 ._dash-loading-callback::before{
-  content:"Đang tải dữ liệu dashboard\\AKPI, biểu đồ và bộ lọc đang được dựng ở phần trên cùng. Bạn không cần cuộn xuống để biết hệ thống vẫn đang tải.";
+  content:"Đang tải dữ liệu dashboard\\AKPI";
   white-space:pre-line;
   display:block;
   color:#ffffff;
@@ -6707,8 +6707,8 @@ def _collect_loaded_update_candidates() -> list[dict]:
         out.append({
             "priority": 2,
             "ts": _normalize_scalar_to_vn_ts(core_ts),
-            "source_label": "Metadata workbook",
-            "source_note": "docProps/core.xml",
+            "source_label": "cơ sở dữ liệu Tập Đoàn",
+            "source_note": "SQL/n8n",
             "trust_label": "GitHub-safe",
         })
 
