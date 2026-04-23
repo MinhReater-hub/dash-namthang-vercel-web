@@ -5,6 +5,18 @@
     "regions": ["*"],
     "display_name": "Tài khoản DEV"
   },
+  "banlanhdao": {
+    "password": "123",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Tài khoản Ban Lãnh Đạo"
+  },
+  "admin": {
+    "password": "123",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Tài khoản DEV"
+  },
   "rachgia": {
     "password": "123",
     "role": "region",

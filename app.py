@@ -6,6 +6,8 @@ from io import BytesIO
 import base64
 import math
 import copy
+import zipfile
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pandas as pd
@@ -1882,6 +1884,201 @@ AI_CHAT_CSS = """
 @media (max-width: 576px){
   .ai-bubble{ max-width: calc(100% - 46px); }
   .ai-output-shell{ min-height: 280px; }
+}
+"""
+
+PREMIUM_DATA_STATUS_CSS = """
+.data-status-card{
+  background: linear-gradient(135deg, rgba(15,23,42,0.98) 0%, rgba(20,83,45,0.97) 58%, rgba(22,163,74,0.96) 100%);
+  border: 1px solid rgba(34,197,94,0.22) !important;
+  border-radius: 26px !important;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 22px 50px rgba(15,23,42,0.18), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.data-status-card::after{
+  content:"";
+  position:absolute;
+  right:-34px;
+  top:-34px;
+  width:160px;
+  height:160px;
+  border-radius:50%;
+  background: rgba(255,255,255,0.08);
+}
+.data-status-inner{
+  position:relative;
+  z-index:1;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  flex-wrap:wrap;
+}
+.data-status-kicker{
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:1px;
+  color:rgba(255,255,255,0.78);
+  text-transform:uppercase;
+  margin-bottom:10px;
+}
+.data-status-pill-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:10px;
+}
+.data-status-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:7px 11px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:900;
+  color:#ffffff;
+  background:rgba(255,255,255,0.12);
+  border:1px solid rgba(255,255,255,0.18);
+  white-space:nowrap;
+}
+.data-status-pill.soft{
+  background:rgba(255,255,255,0.08);
+}
+.data-status-main{
+  font-size:28px;
+  font-weight:900;
+  line-height:1.08;
+  letter-spacing:.2px;
+  color:#ffffff;
+}
+.data-status-caption{
+  font-size:13px;
+  line-height:1.6;
+  color:rgba(255,255,255,0.86);
+  margin-top:8px;
+  max-width:780px;
+}
+.data-status-cta{
+  border-radius:18px !important;
+  padding:12px 16px !important;
+  font-weight:900 !important;
+  border:1px solid rgba(255,255,255,0.18) !important;
+  background:rgba(255,255,255,0.14) !important;
+  color:#ffffff !important;
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  box-shadow:0 18px 34px rgba(15,23,42,0.16);
+}
+.data-status-cta:hover{
+  transform:translateY(-1px);
+  background:rgba(255,255,255,0.20) !important;
+  color:#ffffff !important;
+}
+@media (max-width: 768px){
+  .data-status-main{ font-size:22px; }
+  .data-status-cta{ width:100%; justify-content:center; }
+}
+"""
+
+AI_LAUNCHER_CSS = """
+.ai-launcher-btn{
+  position:fixed !important;
+  right:18px !important;
+  bottom:88px !important;
+  z-index:1039 !important;
+  display:inline-flex !important;
+  align-items:center !important;
+  gap:12px !important;
+  padding:8px 16px 8px 8px !important;
+  border-radius:999px !important;
+  border:1px solid rgba(34,197,94,0.26) !important;
+  background:linear-gradient(135deg,#0f172a 0%, #14532d 58%, #16a34a 100%) !important;
+  color:#ffffff !important;
+  box-shadow:0 18px 38px rgba(15,23,42,0.24), inset 0 1px 0 rgba(255,255,255,0.05);
+  transform:translateZ(0);
+  overflow:hidden;
+}
+.ai-launcher-btn::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.00) 48%, rgba(255,255,255,0.04) 100%);
+  pointer-events:none;
+}
+.ai-launcher-btn:hover{
+  transform:translateY(-2px) !important;
+  color:#ffffff !important;
+  box-shadow:0 22px 42px rgba(15,23,42,0.30), 0 0 30px rgba(34,197,94,0.18);
+}
+.ai-launcher-btn:focus,
+.ai-launcher-btn:active{
+  color:#ffffff !important;
+  box-shadow:0 22px 42px rgba(15,23,42,0.30), 0 0 0 3px rgba(34,197,94,0.18) !important;
+}
+.ai-launcher-orb{
+  width:48px;
+  height:48px;
+  border-radius:50%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(255,255,255,0.14);
+  border:1px solid rgba(255,255,255,0.18);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.08);
+  position:relative;
+  z-index:1;
+}
+.ai-launcher-copy{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  line-height:1.08;
+  position:relative;
+  z-index:1;
+}
+.ai-launcher-title{
+  font-size:13px;
+  font-weight:900;
+  color:#ffffff;
+  letter-spacing:.2px;
+}
+.ai-launcher-sub{
+  font-size:11px;
+  color:rgba(255,255,255,0.82);
+  margin-top:4px;
+  white-space:nowrap;
+}
+.ai-premium-offcanvas.offcanvas-end{
+  box-shadow:-22px 0 48px rgba(15,23,42,0.18);
+}
+.ai-premium-offcanvas .offcanvas-header{
+  background:linear-gradient(135deg,#0f172a 0%, #14532d 58%, #16a34a 100%);
+  color:#ffffff;
+  border-bottom:1px solid rgba(255,255,255,0.08);
+}
+.ai-premium-offcanvas .offcanvas-title{
+  color:#ffffff !important;
+}
+.ai-premium-offcanvas .btn-close{
+  filter:invert(1) grayscale(100%) brightness(200%);
+  opacity:.95;
+}
+.ai-premium-offcanvas .offcanvas-body{
+  background:linear-gradient(180deg,#f7fbff 0%, #ecfdf5 100%);
+  padding:18px;
+}
+@media (max-width: 576px){
+  .ai-launcher-btn{
+    right:12px !important;
+    bottom:84px !important;
+    width:60px;
+    height:60px;
+    padding:6px !important;
+    justify-content:center;
+  }
+  .ai-launcher-copy{ display:none; }
+  .ai-launcher-orb{ width:48px; height:48px; }
 }
 """
 
@@ -5664,7 +5861,7 @@ b{
 
 app.index_string = app.index_string.replace(
     "</head>",
-    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
+    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
 )
 
 ZOOM_TARGETS = [
@@ -5761,27 +5958,33 @@ app.layout = dbc.Container(
         dbc.Row([
             dbc.Col(
                 dbc.Card(
-                    dbc.CardBody([
-                        html.Div("DỮ LIỆU CẬP NHẬT LÚC", style={"fontWeight": "700", "opacity": 0.85}),
-                        dbc.Row([
-                            dbc.Col(html.Div(id="data-updated-at", style={"fontSize": "18px", "fontWeight": "800"})),
-                            dbc.Col(
-                                dbc.Button([ICON_DL, html.Span(" Tải Excel")], id="btn-download-excel", color="secondary",
-                                           outline=True, className="float-end"),
-                                width="auto"
-                            )
-                        ], className="g-2 align-items-center")
-                    ]),
-                    style={
-                        "backgroundColor": CARD_LIGHT_BG,
-                        "border": f"1.5px solid {GREEN_BORDER}",
-                        "boxShadow": f"0 8px 18px {GREEN_SHADOW}",
-                        "borderRadius": EXEC_RADIUS
-                    }
+                    dbc.CardBody(
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Div("TRẠNG THÁI DỮ LIỆU", className="data-status-kicker"),
+                                        html.Div(id="data-updated-at")
+                                    ],
+                                    style={"flex": "1 1 auto", "minWidth": 0}
+                                ),
+                                dbc.Button(
+                                    [ICON_DL, html.Span(" Tải Excel", className="ms-1")],
+                                    id="btn-download-excel",
+                                    color="light",
+                                    className="data-status-cta"
+                                )
+                            ],
+                            className="data-status-inner"
+                        ),
+                        style={"padding": "18px 20px"}
+                    ),
+                    className="data-status-card"
                 ),
-                md=6
+                md=12,
+                lg=8
             )
-        ], className="mb-2"),
+        ], className="mb-3"),
 
         dbc.Offcanvas(
             id="sidebar",
@@ -5857,7 +6060,8 @@ app.layout = dbc.Container(
             is_open=False,
             placement="end",
             scrollable=True,
-            style={"backgroundColor": "#f7fbff", "color": TEXT_LIGHT_UI, "width": "470px", "borderLeft": f"1.5px solid {GREEN_BORDER}"},
+            style={"backgroundColor": "#f7fbff", "color": TEXT_LIGHT_UI, "width": "500px", "borderLeft": f"1.5px solid {GREEN_BORDER}"},
+            className="ai-premium-offcanvas",
             children=[
                 html.Div(
                     [
@@ -5930,12 +6134,20 @@ app.layout = dbc.Container(
         dbc.Button(ICON_CHEV_R, id="next-page", className="page-nav-btn page-nav-right", title="Trang sau", style=PAGE_NAV_RIGHT_BASE),
 
         dbc.Button(
-            ICON_BOT,
+            [
+                html.Span(fa_icon("fa-robot", 18, "#ffffff"), className="ai-launcher-orb"),
+                html.Span(
+                    [
+                        html.Span("AI Copilot", className="ai-launcher-title"),
+                        html.Span("Phân tích ngay trên dashboard", className="ai-launcher-sub"),
+                    ],
+                    className="ai-launcher-copy"
+                )
+            ],
             id="open-ai",
-            color="info",
-            className="position-fixed end-0 me-4",
-            style={"bottom": "88px", "borderRadius": "999px", "width": "56px", "height": "56px",
-                   "boxShadow": "0 0 22px rgba(0,255,255,0.25)", "fontSize": "20px"}
+            color="success",
+            className="ai-launcher-btn",
+            title="Mở AI Copilot"
         ),
 
         dbc.Modal(
@@ -5991,17 +6203,263 @@ def render(menu, page):
     return html.Div(children)
 
 
+UPDATE_TS_COL_CANDIDATES = [
+    "updated_at", "updatedat", "updated at", "last_updated", "last updated", "last_update",
+    "refresh_at", "refreshat", "refreshed_at", "refreshedat", "modified_at", "modifiedat",
+    "ngay_cap_nhat", "ngay cap nhat", "thoi_gian_cap_nhat", "thoi gian cap nhat",
+    "created_at", "createdat", "created at", "ngay_tao", "ngay tao", "timestamp"
+]
+LAST_UPDATED_CACHE = {"fingerprint": None, "payload": None}
+
+
+def _normalize_scalar_to_vn_ts(value, assume_tz_if_naive: str = VN_TZ):
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
+            for unit in ("s", "ms"):
+                try:
+                    ts_num = pd.to_datetime(value, errors="coerce", unit=unit, utc=True)
+                    if not pd.isna(ts_num):
+                        return ts_num.tz_convert(VN_TZ)
+                except Exception:
+                    continue
+        ts = pd.to_datetime(value, errors="coerce")
+        if ts is None or pd.isna(ts):
+            return None
+        ts = pd.Timestamp(ts)
+        if ts.tzinfo is not None:
+            return ts.tz_convert(VN_TZ)
+        return ts.tz_localize(assume_tz_if_naive)
+    except Exception:
+        try:
+            ts = pd.to_datetime(value, errors="coerce", utc=True)
+            if ts is None or pd.isna(ts):
+                return None
+            return pd.Timestamp(ts).tz_convert(VN_TZ)
+        except Exception:
+            return None
+
+
+def _normalize_series_to_vn_ts(series_like: pd.Series, assume_tz_if_naive: str = VN_TZ) -> pd.Series:
+    raw = pd.Series(series_like)
+    try:
+        s = pd.to_datetime(raw, errors="coerce")
+    except Exception:
+        s = pd.Series([pd.NaT] * len(raw), index=raw.index)
+    if getattr(s, "notna", lambda: pd.Series(dtype=bool))().sum() == 0 and pd.api.types.is_numeric_dtype(raw):
+        for unit in ("s", "ms"):
+            try:
+                s_num = pd.to_datetime(raw, errors="coerce", unit=unit, utc=True)
+                if s_num.notna().sum() > 0:
+                    return s_num.dt.tz_convert(VN_TZ)
+            except Exception:
+                continue
+    try:
+        if getattr(s.dt, "tz", None) is not None:
+            return s.dt.tz_convert(VN_TZ)
+        return s.dt.tz_localize(assume_tz_if_naive)
+    except Exception:
+        try:
+            s = pd.to_datetime(raw, errors="coerce", utc=True)
+            return s.dt.tz_convert(VN_TZ)
+        except Exception:
+            return pd.to_datetime(raw, errors="coerce")
+
+
+def _is_reasonable_update_ts(ts) -> bool:
+    ts_vn = _normalize_scalar_to_vn_ts(ts)
+    if ts_vn is None:
+        return False
+    try:
+        now_vn = pd.Timestamp.now(tz=VN_TZ)
+        lower_bound = pd.Timestamp("2021-01-01", tz=VN_TZ)
+        return lower_bound <= ts_vn <= now_vn + pd.Timedelta(days=2)
+    except Exception:
+        return False
+
+
+def _excel_file_fingerprint(path: Path | None):
+    if path is None:
+        return None
+    try:
+        st = path.stat()
+        return (str(path.resolve()), int(st.st_size), int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))))
+    except Exception:
+        return str(path)
+
+
+def _read_excel_core_modified_ts(path: Path | None):
+    if path is None:
+        return None
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if "docProps/core.xml" not in zf.namelist():
+                return None
+            root = ET.fromstring(zf.read("docProps/core.xml"))
+            for tag_name in ("modified", "created"):
+                node = root.find(f".//{{http://purl.org/dc/terms/}}{tag_name}")
+                if node is not None and node.text:
+                    ts = pd.to_datetime(node.text, errors="coerce", utc=True)
+                    if ts is not None and not pd.isna(ts):
+                        return ts.tz_convert(VN_TZ)
+    except Exception:
+        return None
+    return None
+
+
+def _latest_data_period_label() -> str | None:
+    candidates = []
+    for dff in DASH_DATASETS:
+        try:
+            if isinstance(dff, pd.DataFrame) and not dff.empty and "thang_nam_vn" in dff.columns:
+                ts = pd.to_datetime(dff["thang_nam_vn"], errors="coerce").dropna().max()
+                if ts is not None and not pd.isna(ts):
+                    candidates.append(pd.Timestamp(ts))
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    return max(candidates).strftime("%m/%Y")
+
+
+def _collect_loaded_update_candidates() -> list[dict]:
+    out = []
+    frame_candidates = [
+        ("Doanh thu khu vực", df_dt),
+        ("Loại hình", df_lh),
+        ("Hợp đồng", df_hd),
+        ("Nhân viên", df_emp),
+        ("Tài xế", df_drv),
+        ("Tiếp thị", df_mkt),
+        ("Biên bản", df_bb),
+        ("Xe trực thuộc", df_xdt),
+        ("Xe phân quyền", df_xpq),
+    ]
+    for frame_label, dff in frame_candidates:
+        try:
+            if not isinstance(dff, pd.DataFrame) or dff.empty:
+                continue
+            col = find_col(dff, UPDATE_TS_COL_CANDIDATES)
+            if not col or col not in dff.columns:
+                continue
+            s = _normalize_series_to_vn_ts(dff[col]).dropna()
+            if s.empty:
+                continue
+            ts = s.max()
+            if _is_reasonable_update_ts(ts):
+                out.append({
+                    "priority": 1,
+                    "ts": _normalize_scalar_to_vn_ts(ts),
+                    "source_label": "Timestamp trong dữ liệu",
+                    "source_note": f"{frame_label}.{col}",
+                    "trust_label": "Tin cậy cao",
+                })
+        except Exception:
+            continue
+
+    core_ts = _read_excel_core_modified_ts(EXCEL_FILE)
+    if _is_reasonable_update_ts(core_ts):
+        out.append({
+            "priority": 2,
+            "ts": _normalize_scalar_to_vn_ts(core_ts),
+            "source_label": "Metadata workbook",
+            "source_note": "docProps/core.xml",
+            "trust_label": "GitHub-safe",
+        })
+
+    if EXCEL_FILE is not None:
+        try:
+            file_ts = pd.to_datetime(EXCEL_FILE.stat().st_mtime, unit="s", utc=True).tz_convert(VN_TZ)
+            if _is_reasonable_update_ts(file_ts):
+                out.append({
+                    "priority": 3,
+                    "ts": _normalize_scalar_to_vn_ts(file_ts),
+                    "source_label": "Thời gian file",
+                    "source_note": EXCEL_FILE.name,
+                    "trust_label": "Fallback",
+                })
+        except Exception:
+            pass
+
+    out = [x for x in out if x.get("ts") is not None]
+    out.sort(key=lambda item: (int(item.get("priority", 99)), -int(item["ts"].value)))
+    return out
+
+
+def get_dashboard_update_display_payload() -> dict:
+    fingerprint = _excel_file_fingerprint(EXCEL_FILE)
+    if LAST_UPDATED_CACHE.get("fingerprint") == fingerprint and LAST_UPDATED_CACHE.get("payload") is not None:
+        return copy.deepcopy(LAST_UPDATED_CACHE["payload"])
+
+    latest_period = _latest_data_period_label()
+    candidates = _collect_loaded_update_candidates()
+
+    if candidates:
+        best = candidates[0]
+        caption_parts = []
+        if latest_period:
+            caption_parts.append(f"Kỳ dữ liệu mới nhất: {latest_period}")
+        if best.get("source_note"):
+            caption_parts.append(f"Nguồn hiển thị: {best['source_label']} ({best['source_note']})")
+        payload = {
+            "headline": best["ts"].strftime("%d/%m/%Y %H:%M:%S (VN)"),
+            "caption": " • ".join(caption_parts) if caption_parts else best["source_label"],
+            "source_label": best["source_label"],
+            "trust_label": best.get("trust_label", "Ổn định"),
+            "status": "ok",
+        }
+    elif latest_period:
+        payload = {
+            "headline": f"Đến kỳ {latest_period}",
+            "caption": "Không thấy timestamp chi tiết đáng tin cậy trong file Excel, hệ thống tự chuyển sang hiển thị kỳ dữ liệu mới nhất để tránh sai ngày sau khi deploy/GitHub.",
+            "source_label": "Kỳ dữ liệu",
+            "trust_label": "An toàn hiển thị",
+            "status": "fallback",
+        }
+    else:
+        payload = {
+            "headline": "Không đọc được thời gian cập nhật",
+            "caption": DATA_LOAD_ERROR or "Chưa xác định được file Excel hoặc metadata thời gian.",
+            "source_label": "Không xác định",
+            "trust_label": "Cần kiểm tra",
+            "status": "error",
+        }
+
+    LAST_UPDATED_CACHE["fingerprint"] = fingerprint
+    LAST_UPDATED_CACHE["payload"] = copy.deepcopy(payload)
+    return payload
+
+
 @app.callback(
     Output("data-updated-at", "children"),
     Input("refresh-meta", "n_intervals")
 )
 def show_last_updated(_):
-    try:
-        ts = EXCEL_FILE.stat().st_mtime
-        dt_local = pd.to_datetime(ts, unit="s", utc=True).tz_convert(VN_TZ)
-        return dt_local.strftime("%d/%m/%Y %H:%M:%S (VN)")
-    except Exception:
-        return "Không đọc được thời gian cập nhật"
+    info = get_dashboard_update_display_payload()
+    state = str(info.get("status", "ok"))
+    if state == "error":
+        state_icon = "fa-circle-exclamation"
+        source_icon = "fa-triangle-exclamation"
+    elif state == "fallback":
+        state_icon = "fa-shield-halved"
+        source_icon = "fa-database"
+    else:
+        state_icon = "fa-circle-check"
+        source_icon = "fa-database"
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Span([fa_icon(state_icon, 11, "#ffffff"), html.Span(info.get("trust_label", "Ổn định"), className="ms-1")], className="data-status-pill"),
+                    html.Span([fa_icon(source_icon, 11, "#ffffff"), html.Span(info.get("source_label", "Nguồn dữ liệu"), className="ms-1")], className="data-status-pill soft"),
+                ],
+                className="data-status-pill-row"
+            ),
+            html.Div(info.get("headline", "Không đọc được thời gian cập nhật"), className="data-status-main"),
+            html.Div(info.get("caption", ""), className="data-status-caption"),
+        ]
+    )
 
 @app.callback(
     Output("download-excel", "data"),
