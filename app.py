@@ -6709,7 +6709,7 @@ def _collect_loaded_update_candidates() -> list[dict]:
             "ts": _normalize_scalar_to_vn_ts(core_ts),
             "source_label": "cơ sở dữ liệu Tập Đoàn",
             "source_note": "SQL/n8n",
-            "trust_label": "GitHub-safe",
+            "trust_label": "Cập nhật: Nguyễn Hữu Minh",
         })
 
     if EXCEL_FILE is not None:
