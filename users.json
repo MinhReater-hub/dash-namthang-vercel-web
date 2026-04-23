@@ -11,11 +11,11 @@
     "regions": ["*"],
     "display_name": "Tài khoản Ban Lãnh Đạo"
   },
-  "admin": {
+  "it": {
     "password": "123",
     "role": "admin",
     "regions": ["*"],
-    "display_name": "Tài khoản DEV"
+    "display_name": "Tài khoản IT"
   },
   "rachgia": {
     "password": "123",
