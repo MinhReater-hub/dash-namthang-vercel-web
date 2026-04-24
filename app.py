@@ -4929,14 +4929,14 @@ def _build_fleet_seat_filter(prefix: str, page_key: str):
 
 def home_page():
     hero = executive_header(
-        "NAM THANG GROUP • EXECUTIVE OVERVIEW",
+        "NAM THANG GROUP • TỔNG QUAN",
         "Trang tổng quan dashboard. Menu phân cấp theo cụm nghiệp vụ: Doanh thu, Nhân sự, Kinh doanh và Phương tiện.",
         right_children=html.Div(id="home-summary", className="exec-chip-row")
     )
 
     quick_nav = executive_section_panel(
         "Bản đồ điều hành theo cụm nghiệp vụ",
-        "Dashboard 4 khối điều hành. Mỗi module bên dưới đều giữ chuẩn 2 page để theo dõi tổng tập đoàn và drill-down khu vực.",
+        "Dashboard 4 khối điều hành. Mỗi tiêu chuẩn đều giữ 2 page để theo dõi tổng tập đoàn và phân tích sâu vào khu vực.",
         build_home_quick_nav(),
         right_children=[
             filter_panel_chip("4 khối nghiệp vụ", fa_icon("fa-sitemap", 12, GREEN_PRIMARY)),
@@ -4997,13 +4997,13 @@ def home_page():
         className="g-3"
     )
     filters = executive_section_panel(
-        "Control dock điều hành",
-        "Bộ lọc control dock: đồng bộ cho toàn bộ KPI, biểu đồ và bảng snapshot.",
+        "Bộ lọc phân cấp",
+        "Bộ lọc phân cấp: đồng bộ cho toàn bộ KPI, biểu đồ và bảng phân tích.",
         filter_row,
         right_children=[
-            filter_panel_chip("Scope control", fa_icon("fa-crosshairs", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Kiểm soát phạm vi", fa_icon("fa-crosshairs", 12, GREEN_PRIMARY)),
             filter_panel_chip("Đồng bộ toàn trang", fa_icon("fa-arrows-rotate", 12, GREEN_PRIMARY)),
-            filter_panel_chip("Multi-select linh hoạt", fa_icon("fa-sliders", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Xác nhận đa nhiệm linh hoạt", fa_icon("fa-sliders", 12, GREEN_PRIMARY)),
         ],
         class_name="mb-3 executive-control-dock"
     )
@@ -5038,8 +5038,8 @@ def home_page():
     table = dbc.Row([
         dbc.Col(
             make_table_card(
-                "Monthly Snapshot",
-                "Tổng hợp nhanh theo tháng để leadership theo dõi doanh thu, số cuốc, hiệu suất và khu vực dẫn đầu.",
+                "Bảng chi tiết • đa biến",
+                "Tổng hợp nhanh theo tháng để ban lãnh đạo theo dõi doanh thu, số cuốc, hiệu suất và khu vực dẫn đầu.",
                 dash_table.DataTable(
                     id="home-table",
                     columns=[
@@ -5050,8 +5050,13 @@ def home_page():
                         {"name": "Khu vực dẫn đầu", "id": "top_region"},
                     ],
                     page_size=12,
-                    style_header={"backgroundColor": "#f2f4f7", "color": "#111827", "fontWeight": "700"},
-                    style_cell={"backgroundColor": "#ffffff", "color": "#111827", "textAlign": "center"},
+                    sort_action="native",
+                    filter_action="native",
+                    fixed_rows={"headers": True},
+                    style_table={"overflowX": "auto", "overflowY": "auto", "maxHeight": "560px", "borderRadius": "18px", "border": "1px solid #dbe7f3"},
+                    style_header={"backgroundColor": "#0f172a", "color": "#ffffff", "fontWeight": "900", "textAlign": "center", "padding": "12px 10px", "whiteSpace": "normal", "height": "auto", "lineHeight": "1.25", "fontSize": "12px"},
+                    style_cell={"backgroundColor": "#ffffff", "color": "#0f172a", "textAlign": "center", "padding": "11px 10px", "whiteSpace": "normal", "height": "auto", "lineHeight": "1.35", "fontSize": "13px", "fontWeight": "650", "border": "1px solid #e5edf5"},
+                    style_data_conditional=[{"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"}],
                 )
             ),
             md=12
@@ -5066,219 +5071,304 @@ def _detail_table_columns(prefix: str):
     df_src = cfg.get("df", pd.DataFrame()) if isinstance(cfg, dict) else pd.DataFrame()
     available = set(df_src.columns) if isinstance(df_src, pd.DataFrame) else set()
 
-    if prefix == "mkt":
-        preferred = [
-            ("thang_label", "Tháng"),
-            ("khu_vuc", "Khu vực"),
-            ("tong_phai_chi", "Tiền phải chi"),
-            ("so_diem_tiep_thi", "Số điểm tiếp thị"),
-            ("chi_phi_binh_quan_moi_diem", "Chi phí / điểm"),
-            ("so_ho_so_hoa_hong", "Số hồ sơ hoa hồng"),
-            ("tong_da_chi_du", "Tổng đã chi đủ"),
-            ("tong_chua_chi_du", "Tổng chưa chi đủ"),
-            ("tong_khong_chi", "Tổng không chi"),
-            ("so_ho_so_da_chi_du", "HS đã chi đủ"),
-            ("so_ho_so_chua_chi_du", "HS chưa chi đủ"),
-            ("so_ho_so_khong_chi", "HS không chi"),
-            ("chi_phi_binh_quan_moi_ho_so", "Chi phí / hồ sơ"),
-            ("so_diem_moi_ky_hd", "Điểm mới / kỳ HĐ"),
-            ("so_loai_hinh_kd", "Số loại hình KD"),
-        ]
-        cols = [{"name": label, "id": col} for col, label in preferred if col in available]
+    label_map = {
+        "thang_nam": "Tháng",
+        "thang_nam_vn": "Tháng dữ liệu",
+        "thang_label": "Tháng",
+        "nam": "Năm",
+        "khu_vuc": "Khu vực",
+        "tong_doanh_thu": "Tổng doanh thu",
+        "tong_so_cuoc": "Tổng số cuốc",
+        "avg_per_trip": "TB / cuốc",
+        "avg_per_trip_fmt": "TB / cuốc",
+        "top_region": "Khu vực dẫn đầu",
+        "loai_hinh_std": "Loại hình hợp tác",
+        "loaihinh_hoptac": "Loại hình hợp tác",
+        "loai_hinh": "Loại hình",
+        "loai_hop_dong_std": "Loại hợp đồng",
+        "loai_hopdong": "Loại hợp đồng",
+        "loai_hop_dong": "Loại hợp đồng",
+        "bo_phan": "Bộ phận",
+        "so_luong_nhan_su": "Số lượng nhân sự",
+        "so_vao_lam": "Vào làm",
+        "so_nghi_viec": "Nghỉ việc",
+        "net_flow": "Biến động thuần",
+        "so_duoi_1_nam": "Dưới 1 năm",
+        "so_tu_1_den_3_nam": "Từ 1 đến 3 năm",
+        "so_tren_3_nam": "Trên 3 năm",
+        "headcount_dau_ky": "Nhân sự đầu kỳ",
+        "so_giu_on_dinh": "Giữ ổn định",
+        "bien_dong_thuan": "Biến động thuần",
+        "ty_le_tang": "Tỷ lệ tăng",
+        "ty_le_giam": "Tỷ lệ giảm",
+        "ty_le_giu_chan": "Tỷ lệ giữ chân",
+        "chi_phi": "Chi phí",
+        "tong_phai_chi": "Tổng phải chi",
+        "so_diem_tiep_thi": "Số điểm tiếp thị",
+        "chi_phi_binh_quan_moi_diem": "Chi phí bình quân / điểm",
+        "so_ho_so_hoa_hong": "Số hồ sơ hoa hồng",
+        "tong_da_chi_du": "Tổng đã chi đủ",
+        "tong_chua_chi_du": "Tổng chưa chi đủ",
+        "tong_khong_chi": "Tổng không chi",
+        "so_ho_so_da_chi_du": "Hồ sơ đã chi đủ",
+        "so_ho_so_chua_chi_du": "Hồ sơ chưa chi đủ",
+        "so_ho_so_khong_chi": "Hồ sơ không chi",
+        "chi_phi_binh_quan_moi_ho_so": "Chi phí bình quân / hồ sơ",
+        "so_diem_moi_ky_hd": "Điểm mới / kỳ HĐ",
+        "so_loai_hinh_kd": "Số loại hình KD",
+        "tong_tien_de_xuat": "Tổng tiền đề xuất",
+        "so_tien_thu_duoc": "Số tiền thu được",
+        "so_tien_da_xu_ly": "Số tiền đã xử lý",
+        "so_tien_con_no": "Số tiền còn nợ",
+        "so_bien_ban": "Số biên bản",
+        "so_bien_ban_da_xu_ly": "Biên bản đã xử lý",
+        "so_bien_ban_thu_hoan_tat": "Biên bản thu hoàn tất",
+        "loai_xe": "Loại xe",
+        "nhom_nhien_lieu": "Nhóm nhiên liệu",
+        "so_luong_xe": "Số lượng xe",
+        "tong_so_cho": "Tổng số chỗ",
+        "so_cho_binh_quan_xe": "Số chỗ bình quân / xe",
+        "so_cho_loc": "Số chỗ",
+        "nhan_so_cho": "Nhãn số chỗ",
+        "so_bien_kiem_soat": "Số biển kiểm soát",
+        "so_so_tai": "Số sổ tài",
+        "metric_fmt": "Giá trị",
+        "metric": "Giá trị số",
+        "label": "Nhãn",
+        "pct": "Tỷ trọng",
+        "pct_fmt": "Tỷ trọng",
+        "value_fmt": "Giá trị",
+    }
+
+    def _vn_label(col):
+        col = str(col)
+        if col in label_map:
+            return label_map[col]
+        cleaned = col.replace("_fmt", "").replace("_std", "")
+        words = cleaned.split("_")
+        replacements = {
+            "thang": "Tháng", "nam": "Năm", "khu": "Khu", "vuc": "vực",
+            "tong": "Tổng", "doanh": "doanh", "thu": "thu", "cuoc": "cuốc",
+            "so": "Số", "luong": "lượng", "nhan": "nhân", "su": "sự",
+            "tai": "tài", "xe": "xe", "hop": "hợp", "dong": "đồng",
+            "loai": "loại", "hinh": "hình", "chi": "chi", "phi": "phí",
+            "binh": "bình", "quan": "quân", "diem": "điểm", "tiep": "tiếp", "thi": "thị",
+            "tien": "tiền", "de": "đề", "xuat": "xuất", "xu": "xử", "ly": "lý",
+            "con": "còn", "no": "nợ", "bien": "biên", "ban": "bản",
+            "phan": "phân", "quyen": "quyền", "truc": "trực", "thuoc": "thuộc",
+            "nhien": "nhiên", "lieu": "liệu", "kiem": "kiểm", "soat": "soát",
+            "giu": "giữ", "chan": "chân", "tang": "tăng", "giam": "giảm",
+            "duoi": "dưới", "tren": "trên", "tu": "từ", "den": "đến",
+        }
+        return " ".join(replacements.get(w, w) for w in words).strip().capitalize()
+
+    def _cols(preferred):
+        return [{"name": _vn_label(col), "id": col} for col in preferred if col in available]
+
+    common = ["thang_label", "nam", "khu_vuc"]
+    if prefix == "dt":
+        cols = _cols(common + ["tong_doanh_thu", "tong_so_cuoc"])
         if cols:
             return cols
-
+    if prefix == "lh":
+        cols = _cols(common + ["loai_hinh_std", "loaihinh_hoptac", "tong_doanh_thu", "tong_so_cuoc"])
+        if cols:
+            return cols
+    if prefix == "hd":
+        cols = _cols(common + ["loai_hop_dong_std", "loai_hopdong", "tong_doanh_thu", "tong_so_cuoc"])
+        if cols:
+            return cols
+    if prefix in HR_MENU_PREFIXES:
+        preferred = [
+            "thang_nam", "khu_vuc", "bo_phan",
+            "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "net_flow",
+            "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam",
+            "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan",
+            "ty_le_tang", "ty_le_giam", "ty_le_giu_chan",
+        ]
+        cols = [{"name": _vn_label(col), "id": col} for col in preferred if (col in available or col == "net_flow")]
+        if cols:
+            return cols
+    if prefix == "mkt":
+        preferred = [
+            "thang_label", "nam", "khu_vuc", "tong_phai_chi", "so_diem_tiep_thi",
+            "chi_phi_binh_quan_moi_diem", "so_ho_so_hoa_hong",
+            "tong_da_chi_du", "tong_chua_chi_du", "tong_khong_chi",
+            "so_ho_so_da_chi_du", "so_ho_so_chua_chi_du", "so_ho_so_khong_chi",
+            "chi_phi_binh_quan_moi_ho_so", "so_diem_moi_ky_hd", "so_loai_hinh_kd",
+        ]
+        cols = _cols(preferred)
+        if cols:
+            return cols
+    if prefix == "bb":
+        preferred = [
+            "thang_nam", "khu_vuc", "so_bien_ban",
+            "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+            "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+        ]
+        cols = _cols(preferred)
+        if cols:
+            return cols
     if prefix in {"xdt", "xpq"}:
         preferred = [
-            ("khu_vuc", "Khu vực"),
-            ("loai_xe", "Loại xe"),
-            ("so_luong_xe", "Số lượng xe"),
-            ("nhom_nhien_lieu", "Nhiên liệu"),
-            ("so_bien_kiem_soat", "Số BKS"),
-            ("so_so_tai", "Số số tài"),
+            "khu_vuc", "loai_xe", "nhom_nhien_lieu", "so_luong_xe",
+            "so_bien_kiem_soat", "so_so_tai",
         ]
-        cols = [{"name": label, "id": col} for col, label in preferred if col in available]
+        cols = _cols(preferred)
         if cols:
             return cols
 
     fallback = []
-    for col in (list(df_src.columns)[:12] if isinstance(df_src, pd.DataFrame) else []):
-        fallback.append({"name": str(col).replace("_", " ").title(), "id": col})
+    for col in (list(df_src.columns)[:14] if isinstance(df_src, pd.DataFrame) else []):
+        fallback.append({"name": _vn_label(col), "id": col})
     return fallback
 
 
 def _detail_table_props(prefix: str):
-    base = {
-        "sort_action": "native",
-        "style_table": {"overflowX": "auto", "maxWidth": "100%"},
+    cols = _detail_table_columns(prefix)
+    text_cols = {
+        "khu_vuc", "loai_xe", "nhom_nhien_lieu", "bo_phan", "loai_hinh_std",
+        "loaihinh_hoptac", "loai_hop_dong_std", "loai_hopdong", "top_region",
     }
-    if prefix == "mkt":
-        cols = _detail_table_columns(prefix)
-        tooltip_header = {c["id"]: c["name"] for c in cols}
-        base.update({
-            "columns": cols,
-            "tooltip_header": tooltip_header,
-            "tooltip_delay": 0,
-            "tooltip_duration": None,
-            "fixed_rows": {"headers": True},
-            "style_table": {"overflowX": "auto", "maxWidth": "100%", "minWidth": "100%"},
-            "style_cell_conditional": [
-                {
-                    "if": {"column_id": "khu_vuc"},
-                    "minWidth": "180px", "width": "180px", "maxWidth": "240px",
-                    "textAlign": "left",
-                },
-                {
-                    "if": {"column_id": "tong_phai_chi"},
-                    "minWidth": "130px", "width": "130px", "maxWidth": "150px",
-                },
-                {
-                    "if": {"column_id": "so_diem_tiep_thi"},
-                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
-                },
-                {
-                    "if": {"column_id": "chi_phi_binh_quan_moi_diem"},
-                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
-                },
-                {
-                    "if": {"column_id": "so_ho_so_hoa_hong"},
-                    "minWidth": "120px", "width": "120px", "maxWidth": "130px",
-                },
-                {
-                    "if": {"column_id": "tong_da_chi_du"},
-                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
-                },
-                {
-                    "if": {"column_id": "tong_chua_chi_du"},
-                    "minWidth": "130px", "width": "130px", "maxWidth": "145px",
-                },
-                {
-                    "if": {"column_id": "tong_khong_chi"},
-                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
-                },
-                {
-                    "if": {"column_id": "so_ho_so_da_chi_du"},
-                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
-                },
-                {
-                    "if": {"column_id": "so_ho_so_chua_chi_du"},
-                    "minWidth": "115px", "width": "115px", "maxWidth": "125px",
-                },
-                {
-                    "if": {"column_id": "so_ho_so_khong_chi"},
-                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
-                },
-                {
-                    "if": {"column_id": "chi_phi_binh_quan_moi_ho_so"},
-                    "minWidth": "120px", "width": "120px", "maxWidth": "135px",
-                },
-                {
-                    "if": {"column_id": "so_diem_moi_ky_hd"},
-                    "minWidth": "115px", "width": "115px", "maxWidth": "125px",
-                },
-                {
-                    "if": {"column_id": "so_loai_hinh_kd"},
-                    "minWidth": "105px", "width": "105px", "maxWidth": "115px",
-                },
-            ],
-            "style_data_conditional": [
-                {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"},
-            ],
-        })
-    if prefix in {"xdt", "xpq"}:
-        cols = _detail_table_columns(prefix)
-        tooltip_header = {c["id"]: c["name"] for c in cols}
-        base.update({
-            "columns": cols,
-            "tooltip_header": tooltip_header,
-            "tooltip_delay": 0,
-            "tooltip_duration": None,
-            "fixed_rows": {"headers": True},
-            "style_table": {"overflowX": "auto", "maxWidth": "100%", "minWidth": "100%"},
-            "style_cell_conditional": [
-                {
-                    "if": {"column_id": "khu_vuc"},
-                    "minWidth": "160px", "width": "160px", "maxWidth": "220px",
-                    "textAlign": "left",
-                },
-                {
-                    "if": {"column_id": "loai_xe"},
-                    "minWidth": "160px", "width": "160px", "maxWidth": "220px",
-                    "textAlign": "left",
-                },
-                {
-                    "if": {"column_id": "nhom_nhien_lieu"},
-                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
-                },
-                {
-                    "if": {"column_id": "so_luong_xe"},
-                    "minWidth": "110px", "width": "110px", "maxWidth": "120px",
-                },
+    wide_cols = {
+        "khu_vuc", "bo_phan", "loai_xe", "loai_hinh_std", "loaihinh_hoptac",
+        "loai_hop_dong_std", "loai_hopdong", "top_region",
+    }
+    money_cols = {
+        "tong_doanh_thu", "tong_phai_chi", "chi_phi_binh_quan_moi_diem",
+        "tong_da_chi_du", "tong_chua_chi_du", "tong_khong_chi",
+        "chi_phi_binh_quan_moi_ho_so", "tong_tien_de_xuat",
+        "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+    }
 
-            ],
-            "style_data_conditional": [
-                {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"},
-            ],
+    style_cell_conditional = []
+    for col in [c["id"] for c in cols if c.get("id") in text_cols]:
+        style_cell_conditional.append({
+            "if": {"column_id": col},
+            "textAlign": "left",
+            "minWidth": "170px" if col in wide_cols else "130px",
+            "width": "190px" if col in wide_cols else "140px",
+            "maxWidth": "260px" if col in wide_cols else "190px",
         })
-    return base
+    for col in [c["id"] for c in cols if c.get("id") in money_cols]:
+        style_cell_conditional.append({
+            "if": {"column_id": col},
+            "textAlign": "right",
+            "minWidth": "138px",
+            "width": "150px",
+            "maxWidth": "180px",
+            "fontVariantNumeric": "tabular-nums",
+        })
+    for col in [c["id"] for c in cols if c.get("id") in {"thang_nam", "thang_label", "nam"}]:
+        style_cell_conditional.append({
+            "if": {"column_id": col},
+            "minWidth": "92px",
+            "width": "104px",
+            "maxWidth": "118px",
+            "fontWeight": "800",
+        })
+
+    tooltip_header = {c["id"]: c["name"] for c in cols}
+    return {
+        "columns": cols,
+        "tooltip_header": tooltip_header,
+        "tooltip_delay": 0,
+        "tooltip_duration": None,
+        "sort_action": "native",
+        "filter_action": "native",
+        "fixed_rows": {"headers": True},
+        "style_table": {
+            "overflowX": "auto",
+            "overflowY": "auto",
+            "maxWidth": "100%",
+            "minWidth": "100%",
+            "maxHeight": "560px",
+            "borderRadius": "18px",
+            "border": "1px solid #dbe7f3",
+            "boxShadow": "0 16px 34px rgba(15,23,42,0.07)",
+        },
+        "style_cell_conditional": style_cell_conditional,
+        "style_data_conditional": [
+            {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc"},
+            {"if": {"state": "selected"}, "backgroundColor": "#dcfce7", "border": "1px solid #22c55e"},
+            {"if": {"state": "active"}, "backgroundColor": "#ecfdf5", "border": "1px solid #22c55e"},
+        ],
+        "css": [
+            {"selector": ".dash-spreadsheet-container", "rule": "border-radius:18px; overflow:hidden;"},
+            {"selector": ".dash-spreadsheet-inner table", "rule": "border-collapse:separate !important; border-spacing:0;"},
+            {"selector": "th", "rule": "letter-spacing:.2px;"},
+            {"selector": "td", "rule": "transition: background-color .16s ease;"},
+        ],
+    }
 
 
 def _detail_table_theme_styles(theme: str, prefix: str):
     if theme == "light":
-        style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}
-        style_header = {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"}
+        style_cell = {
+            "backgroundColor": "#ffffff",
+            "color": "#0f172a",
+            "textAlign": "center",
+            "padding": "11px 10px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.35",
+            "fontSize": "13px",
+            "fontWeight": "650",
+            "fontFamily": FONT_UI_FAMILY,
+            "border": "1px solid #e5edf5",
+            "minWidth": "108px",
+            "width": "124px",
+            "maxWidth": "210px",
+        }
+        style_header = {
+            "backgroundColor": "#0f172a",
+            "color": "#ffffff",
+            "fontWeight": "900",
+            "textAlign": "center",
+            "padding": "12px 10px",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "lineHeight": "1.25",
+            "fontSize": "12px",
+            "fontFamily": FONT_UI_FAMILY,
+            "border": "1px solid #1e293b",
+            "position": "sticky",
+            "top": 0,
+            "zIndex": 2,
+        }
     else:
-        style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}
-        style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
-
-    if prefix == "mkt":
-        style_cell.update({
-            "padding": "10px 8px",
+        style_cell = {
+            "backgroundColor": DARK_BG,
+            "color": "white",
+            "textAlign": "center",
+            "padding": "11px 10px",
             "whiteSpace": "normal",
             "height": "auto",
             "lineHeight": "1.35",
             "fontSize": "13px",
-            "minWidth": "100px",
-            "width": "110px",
-            "maxWidth": "150px",
-            "border": "1px solid #e5e7eb" if theme == "light" else "1px solid #334155",
-        })
-        style_header.update({
-            "padding": "10px 8px",
+            "fontWeight": "650",
+            "fontFamily": FONT_UI_FAMILY,
+            "border": "1px solid #334155",
+            "minWidth": "108px",
+            "width": "124px",
+            "maxWidth": "210px",
+        }
+        style_header = {
+            "backgroundColor": "#020617",
+            "color": "white",
+            "fontWeight": "900",
+            "textAlign": "center",
+            "padding": "12px 10px",
             "whiteSpace": "normal",
             "height": "auto",
             "lineHeight": "1.25",
-            "textAlign": "center",
             "fontSize": "12px",
-            "border": "1px solid #d1d5db" if theme == "light" else "1px solid #475569",
+            "fontFamily": FONT_UI_FAMILY,
+            "border": "1px solid #334155",
             "position": "sticky",
             "top": 0,
             "zIndex": 2,
-        })
-    if prefix in {"xdt", "xpq"}:
-        style_cell.update({
-            "padding": "10px 8px",
-            "whiteSpace": "normal",
-            "height": "auto",
-            "lineHeight": "1.35",
-            "fontSize": "13px",
-            "minWidth": "96px",
-            "width": "110px",
-            "maxWidth": "180px",
-            "border": "1px solid #e5e7eb" if theme == "light" else "1px solid #334155",
-        })
-        style_header.update({
-            "padding": "10px 8px",
-            "whiteSpace": "normal",
-            "height": "auto",
-            "lineHeight": "1.25",
-            "textAlign": "center",
-            "fontSize": "12px",
-            "border": "1px solid #d1d5db" if theme == "light" else "1px solid #475569",
-            "position": "sticky",
-            "top": 0,
-            "zIndex": 2,
-        })
+        }
     return style_cell, style_header
 
 
@@ -5478,10 +5568,10 @@ def page_1(prefix, title=None):
 
     filters_panel = executive_section_panel(
         "Điều kiện lọc trang 1",
-        f"Chế độ tổng hợp toàn tập đoàn cho menu {cfg['menu_label']}. Bộ lọc được thiết kế theo phong cách executive, đồng bộ tức thời với KPI và biểu đồ.",
+        f"Chế độ tổng hợp toàn tập đoàn cho menu {cfg['menu_label']}. Bộ lọc phân cấp, đồng bộ tức thời với KPI và biểu đồ.",
         filter_row,
         right_children=[
-            filter_panel_chip("Page 1 • Executive summary", fa_icon("fa-gauge-high", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Page 1 • Tổng quan", fa_icon("fa-gauge-high", 12, GREEN_PRIMARY)),
             filter_panel_chip("Zoom / export sẵn sàng", fa_icon("fa-magnifying-glass-chart", 12, GREEN_PRIMARY)),
         ],
         class_name="mb-3 executive-control-dock"
@@ -5636,8 +5726,8 @@ def page_2(prefix, title=None, df=None, dim="khu_vuc"):
         f"Phân tích theo khu vực cho menu {cfg['menu_label']}. Dùng bộ lọc để so sánh địa bàn, kỳ báo cáo và nhóm nghiệp vụ trên cùng một layout executive.",
         filter_row,
         right_children=[
-            filter_panel_chip("Page 2 • Regional lens", fa_icon("fa-map", 12, GREEN_PRIMARY)),
-            filter_panel_chip("Compare by area", fa_icon("fa-code-compare", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Page 2 • Khu vực", fa_icon("fa-map", 12, GREEN_PRIMARY)),
+            filter_panel_chip("So sánh đa tầng", fa_icon("fa-code-compare", 12, GREEN_PRIMARY)),
         ],
         class_name="mb-3 executive-control-dock"
     )
@@ -5661,14 +5751,14 @@ def page_2(prefix, title=None, df=None, dim="khu_vuc"):
         dbc.Row([
             dbc.Col(
                 make_table_card(
-                    "Detail Data",
+                    "Dữ liệu chi tiết",
                     "Bảng dữ liệu sau lọc để đối chiếu nhanh với biểu đồ.",
                     dash_table.DataTable(
                         id=f"{prefix}-table",
                         page_action=("none" if prefix in ["lh", "hd"] else "native"),
                         page_size=12,
-                        style_header={"backgroundColor":"#f2f4f7","color":"#111827","fontWeight":"700"},
-                        style_cell={"backgroundColor":"#ffffff","color":"#111827","textAlign":"center"},
+                        style_header=_detail_table_theme_styles("light", prefix)[1],
+                        style_cell=_detail_table_theme_styles("light", prefix)[0],
                         **_detail_table_props(prefix)
                     )
                 ),
@@ -5762,7 +5852,8 @@ def render_ai_thread(history):
         return ai_empty_state()
 
     bubbles = []
-    for item in history[-6:]:
+    recent_history = list(history[-6:])[::-1]
+    for idx, item in enumerate(recent_history):
         ts_text = format_ai_time(item.get("ts"))
         source = item.get("source", "typed")
         question = item.get("q", "")
@@ -5800,7 +5891,7 @@ def render_ai_thread(history):
             )
         )
 
-        bot_badges = [ai_badge("Đã phân tích", "accent")]
+        bot_badges = [ai_badge("Mới nhất" if idx == 0 else "Đã phân tích", "accent")]
         for tag in context_tags_list:
             bot_badges.append(ai_badge(tag, "soft"))
 
@@ -5823,7 +5914,7 @@ def render_ai_thread(history):
                         className="ai-bubble"
                     )
                 ],
-                className="ai-row bot"
+                className=("ai-row bot latest" if idx == 0 else "ai-row bot")
             )
         )
 
@@ -6103,9 +6194,222 @@ b{
 }
 """
 
+
+PREMIUM_DETAIL_TABLE_CSS = """
+.executive-table-card{
+  background: linear-gradient(180deg,#ffffff 0%,#f8fbff 100%) !important;
+  border: 1px solid #dbe7f3 !important;
+  border-radius: 26px !important;
+  box-shadow: 0 22px 46px rgba(15,23,42,0.08) !important;
+}
+.executive-table-card .dash-table-container{
+  border-radius: 18px;
+  overflow: hidden;
+}
+.executive-table-card .dash-spreadsheet-container,
+.executive-table-card .dash-spreadsheet-inner{
+  border-radius: 18px !important;
+  overflow: hidden !important;
+}
+.executive-table-card .dash-filter input{
+  border-radius: 10px !important;
+  border: 1px solid #cbd5e1 !important;
+  padding: 6px 8px !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
+  background: #ffffff !important;
+}
+.executive-table-card th{
+  box-shadow: inset 0 -3px 0 rgba(34,197,94,0.85);
+}
+.executive-table-card td{
+  vertical-align: middle !important;
+}
+.executive-table-card .dash-cell-value{
+  line-height: 1.35 !important;
+}
+.executive-table-card .previous-next-container button,
+.executive-table-card .page-number{
+  border-radius: 12px !important;
+  font-weight: 800 !important;
+}
+"""
+
+AI_COPILOT_PRO_DOCK_CSS = """
+.ai-answer-dock{
+  margin-top: 14px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: linear-gradient(180deg,rgba(247,251,255,0.98) 0%, rgba(247,251,255,0.94) 100%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid #dbeafe;
+  border-radius: 26px;
+  padding: 12px;
+  box-shadow: 0 18px 36px rgba(15,23,42,0.10);
+}
+.ai-answer-dock-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px;
+}
+.ai-answer-title{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:.5px;
+  color:#0f172a;
+  text-transform:uppercase;
+}
+.ai-answer-live{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:#dcfce7;
+  color:#166534;
+  border:1px solid #bbf7d0;
+  font-size:11px;
+  font-weight:900;
+  white-space:nowrap;
+}
+.ai-output-shell{
+  margin-top: 0 !important;
+  min-height: 260px !important;
+  max-height: 42vh;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  border-radius: 22px !important;
+}
+.ai-output-shell::-webkit-scrollbar{ width: 8px; }
+.ai-output-shell::-webkit-scrollbar-thumb{
+  background: rgba(22,163,74,0.42);
+  border-radius: 999px;
+}
+.ai-row.bot.latest .ai-bubble{
+  border-color:#22c55e;
+  box-shadow:0 20px 40px rgba(34,197,94,0.12), 0 0 0 1px rgba(34,197,94,0.12) inset;
+}
+.ai-row.bot.latest .ai-role::after{
+  content:"MỚI NHẤT";
+  margin-left:8px;
+  padding:3px 7px;
+  border-radius:999px;
+  background:#dcfce7;
+  color:#166534;
+  font-size:9px;
+  font-weight:900;
+  vertical-align:middle;
+}
+@media (max-width: 576px){
+  .ai-answer-dock{ position: relative; top:auto; }
+  .ai-output-shell{ max-height: 48vh; }
+}
+"""
+
+DEVELOPER_CREDIT_CSS = """
+.developer-credit-card{
+  position: relative;
+  overflow: hidden;
+  margin-top: 18px;
+  text-align: center;
+  padding: 14px 14px 13px;
+  border-radius: 22px;
+  border: 1px solid rgba(34,197,94,0.24);
+  background: linear-gradient(145deg,#ffffff 0%, #f0fdf4 52%, #ecfdf5 100%);
+  box-shadow: 0 18px 34px rgba(15,23,42,0.10), inset 0 1px 0 rgba(255,255,255,0.95);
+  flex-shrink: 0;
+}
+.developer-credit-card::before{
+  content:"";
+  position:absolute;
+  inset:0 0 auto 0;
+  height:5px;
+  background:linear-gradient(90deg,#16a34a 0%, #22c55e 55%, #86efac 100%);
+}
+.developer-credit-card::after{
+  content:"";
+  position:absolute;
+  right:-34px;
+  top:-34px;
+  width:98px;
+  height:98px;
+  border-radius:50%;
+  background:rgba(34,197,94,0.10);
+}
+.developer-credit-kicker{
+  position:relative;
+  z-index:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  color:#166534;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.7px;
+  text-transform:uppercase;
+  margin-bottom:4px;
+}
+.developer-credit-name{
+  position:relative;
+  z-index:1;
+  color:#0f172a;
+  font-size:14px;
+  font-weight:900;
+  line-height:1.18;
+  margin-bottom:10px;
+}
+.developer-credit-sql{
+  position:relative;
+  z-index:1;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:5px 9px;
+  border-radius:999px;
+  border:1px solid #bbf7d0;
+  background:#dcfce7;
+  color:#166534;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.4px;
+  text-transform:uppercase;
+  margin-bottom:8px;
+}
+.developer-credit-chip-row{
+  position:relative;
+  z-index:1;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.developer-credit-chip{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:7px 10px;
+  border-radius:14px;
+  background:rgba(255,255,255,0.86);
+  border:1px solid #d1fae5;
+  color:#334155;
+  font-size:12px;
+  font-weight:800;
+  box-shadow:0 8px 16px rgba(15,23,42,0.04);
+}
+"""
+
 app.index_string = app.index_string.replace(
     "</head>",
-    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{PREMIUM_LOADING_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}</style></head>"
+    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{AI_COPILOT_PRO_DOCK_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{PREMIUM_LOADING_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}\n{PREMIUM_DETAIL_TABLE_CSS}\n{DEVELOPER_CREDIT_CSS}</style></head>"
 )
 
 ZOOM_TARGETS = [
@@ -6127,8 +6431,8 @@ def executive_page_header(title: str, subtitle: str, right_id: str | None = None
 
 def page_title_block(title: str, subtitle: str):
     return executive_header(title, subtitle, right_children=[
-        summary_pill("Executive Mode", fa_icon("fa-gauge-high", 12, "#ffffff")),
-        summary_pill("Light UI", fa_icon("fa-sun", 12, "#ffffff"))
+        summary_pill("Chế độ điều hành", fa_icon("fa-gauge-high", 12, "#ffffff")),
+        summary_pill("Người dùng", fa_icon("fa-sun", 12, "#ffffff"))
     ])
 
 
@@ -6362,28 +6666,18 @@ app.layout = dbc.Container(
                     ),
                     html.Div(
                         [
-                            "Intelligence Developer Nguyen Huu Minh",
-                            html.Br(),
-                            "SQL Data:",
-                            html.Br(),
-                            "Mai Nhat Truong",
-                            html.Br(),
-                            "Danh The Trung",
+                            html.Div([fa_icon("fa-code", 11, "#166534"), html.Span("Intelligence Developer")], className="developer-credit-kicker"),
+                            html.Div("Nguyen Huu Minh", className="developer-credit-name"),
+                            html.Div([fa_icon("fa-database", 10, "#166534"), html.Span("SQL Data")], className="developer-credit-sql"),
+                            html.Div(
+                                [
+                                    html.Div([fa_icon("fa-circle-check", 10, GREEN_PRIMARY), html.Span("Mai Nhat Truong")], className="developer-credit-chip"),
+                                    html.Div([fa_icon("fa-circle-check", 10, GREEN_PRIMARY), html.Span("Danh The Trung")], className="developer-credit-chip"),
+                                ],
+                                className="developer-credit-chip-row"
+                            ),
                         ],
-                        style={
-                            "marginTop": "18px",
-                            "textAlign": "center",
-                            "opacity": 0.9,
-                            "fontSize": "14px",
-                            "fontWeight": "600",
-                            "whiteSpace": "pre-line",
-                            "backgroundColor": "rgba(255,255,255,0.92)",
-                            "padding": "10px 12px",
-                            "borderRadius": "16px",
-                            "border": "1px solid #e2e8f0",
-                            "boxShadow": EXEC_SHADOW_SOFT,
-                            "flexShrink": 0,
-                        },
+                        className="developer-credit-card",
                     ),
                 ],
                 style={"minHeight": "100%", "display": "flex", "flexDirection": "column", "paddingBottom": "8px"}
@@ -6422,13 +6716,26 @@ app.layout = dbc.Container(
                     [
                         html.Div(
                             [
+                                html.Div([fa_icon("fa-message", 12, GREEN_PRIMARY), html.Span("Câu trả lời mới nhất")], className="ai-answer-title"),
+                                html.Div([html.Span(className="exec-filter-live-dot"), html.Span("Luôn hiển thị trên cùng")], className="ai-answer-live"),
+                            ],
+                            className="ai-answer-dock-head"
+                        ),
+                        dcc.Loading(html.Div(ai_empty_state(), id="ai-output", className="ai-output-shell"), type="default")
+                    ],
+                    className="ai-answer-dock"
+                ),
+                html.Div(
+                    [
+                        html.Div(
+                            [
                                 html.Div(
                                     [
                                         html.Div("Vùng soạn câu hỏi", className="ai-compose-title"),
                                         html.Div("Bạn có thể nhập 1 câu hoặc nhiều câu. AI sẽ tự bám theo context của menu, page và filter hiện tại.", className="ai-compose-caption"),
                                     ]
                                 ),
-                                html.Div([fa_icon("fa-sparkles", 12, GREEN_PRIMARY), html.Span("Executive mode", className="ms-1")], className="ai-compose-badge")
+                                html.Div([fa_icon("fa-sparkles", 12, GREEN_PRIMARY), html.Span("Chế độ điều hành", className="ms-1")], className="ai-compose-badge")
                             ],
                             className="ai-compose-head"
                         ),
@@ -6459,8 +6766,7 @@ app.layout = dbc.Container(
                     ],
                     className="ai-suggestion-shell"
                 ),
-                html.Div("Hội thoại gần nhất", className="ai-thread-note"),
-                dcc.Loading(html.Div(ai_empty_state(), id="ai-output", className="ai-output-shell"), type="default")
+                html.Div("Gợi ý sẽ tự điền vào ô soạn và câu trả lời luôn xuất hiện ở khung trên cùng.", className="ai-thread-note")
             ]
         ),
 
@@ -6981,7 +7287,7 @@ def toggle_theme(n, theme):
 )
 def update_top_title(menu, page):
     if menu == "home":
-        return "HOME  •  EXECUTIVE OVERVIEW"
+        return "HOME  •  TRANG CHÍNH"
     cfg = get_menu_config(menu)
     group_label = next((g["label"] for g in MENU_GROUPS if g["key"] == cfg.get("group")), "Dashboard")
     return f"{group_label.upper()}  •  {cfg['menu_label'].upper()}  •  PAGE {page}"
@@ -7522,7 +7828,7 @@ def update_home(year_val, months, regions, theme):
             ),
             secondary_y=True
         )
-        home_title_text = f"Overview doanh thu & số cuốc theo tháng<br>{year_txt} • {month_txt} • {region_txt}"
+        home_title_text = f"Doanh thu & số cuốc theo tháng<br>{year_txt} • {month_txt} • {region_txt}"
         fig_home_main.update_layout(
             title=dict(
                 text=home_title_text,
@@ -7700,12 +8006,7 @@ def update_home(year_val, months, regions, theme):
         home_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
         home_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
 
-    if theme == "light":
-        style_cell = {"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center", "padding": "8px"}
-        style_header = {"backgroundColor": "#f2f4f7", "color": "black", "fontWeight": "700"}
-    else:
-        style_cell = {"backgroundColor": DARK_BG, "color": "white", "textAlign": "center", "padding": "8px"}
-        style_header = {"backgroundColor": "#222", "color": "white", "fontWeight": "700"}
+    style_cell, style_header = _detail_table_theme_styles(theme, "home")
 
     return (
         summary_children,
@@ -9153,9 +9454,7 @@ def _hr_pie_drill_rows(region_snapshot: pd.DataFrame, prefix: str) -> list:
 
 
 def _hr_style_table(theme: str):
-    if theme == "light":
-        return ({"backgroundColor": LIGHT_BG, "color": "black", "textAlign": "center"}, {"backgroundColor": "#f2f2f2", "color": "black", "fontWeight": "700"})
-    return ({"backgroundColor": DARK_BG, "color": "white", "textAlign": "center"}, {"backgroundColor": "#222", "color": "white", "fontWeight": "700"})
+    return _detail_table_theme_styles(theme, "emp")
 
 
 def hr_callbacks(prefix: str):
@@ -9327,7 +9626,14 @@ def hr_callbacks(prefix: str):
         kpi2 = _hr_make_kpi_card(fmt_vn(join_count), f"{join_label} • Snapshot {latest_label if latest_label else ''}", f"Tỷ lệ vào làm {fmt_pct((join_count / headcount * 100.0) if headcount > 0 else 0.0, 1)}", "positive", _hr_build_kpi_lines(region_snapshot, "so_vao_lam"))
         kpi3 = _hr_make_kpi_card(fmt_vn(leave_count), (f"{leave_label} • Giữ chân {fmt_pct(safe_number(snapshot.get('ty_le_giu_chan', pd.Series(dtype=float)).mean()), 1)}" if prefix == "drv" else f"{leave_label} • Biến động thuần {signed_diff_text(join_count - leave_count)}"), (f"Giữ chân {fmt_pct(safe_number(snapshot.get('ty_le_giu_chan', pd.Series(dtype=float)).mean()), 1)}" if prefix == "drv" else f"Tỷ lệ nghỉ việc {fmt_pct((leave_count / max(prev_headcount, 1) * 100.0) if prev_headcount > 0 else 0.0, 1)}"), ("positive" if prefix == "drv" else _hr_delta_class(join_count - leave_count)), (_hr_build_kpi_lines(_hr_driver_region_retention(region_snapshot), "ty_le_giu_chan", mode="pct") if prefix == "drv" else _hr_build_kpi_lines(region_snapshot, "so_nghi_viec")))
 
-        fig_pie_store = pack_fig_store(fig_pie, rows=_hr_pie_drill_rows(region_snapshot, prefix), meta={"chart": "pie", "metric_label": pie_title, "series_field": "label"})
+        kpi1_store = pack_kpi_store(metric_label, fmt_vn(headcount), subtitle, _hr_kpi_zoom_rows(region_snapshot, "so_luong_nhan_su"))
+        kpi2_store = pack_kpi_store(join_label, fmt_vn(join_count), subtitle, _hr_kpi_zoom_rows(region_snapshot, "so_vao_lam"))
+        kpi3_store = pack_kpi_store(
+            leave_label,
+            fmt_vn(leave_count),
+            subtitle,
+            (_hr_kpi_zoom_rows(_hr_driver_region_retention(region_snapshot), "ty_le_giu_chan", focus_mode="pct") if prefix == "drv" else _hr_kpi_zoom_rows(region_snapshot, "so_nghi_viec"))
+        )
 
         style_cell, style_header = _hr_style_table(theme)
         if dff.empty or gm.empty:
