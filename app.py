@@ -213,6 +213,50 @@ def find_col(df: pd.DataFrame, candidates):
         key = str(cand).strip().lower()
         if key in norm:
             return norm[key]
+
+    # Fallback chuẩn hoá tiếng Việt/Unicode để bắt các cột có dấu, có khoảng trắng,
+    # dấu gạch dưới hoặc ký tự đặc biệt khác nhau giữa các file Excel thật.
+    try:
+        norm2 = {norm_text(c): c for c in cols}
+        compact = {re.sub(r"[^a-z0-9]+", "", norm_text(c)): c for c in cols}
+        for cand in candidates:
+            key2 = norm_text(cand)
+            if key2 in norm2:
+                return norm2[key2]
+            key3 = re.sub(r"[^a-z0-9]+", "", key2)
+            if key3 in compact:
+                return compact[key3]
+    except Exception:
+        pass
+    return None
+
+def find_col_fuzzy(df: pd.DataFrame, candidates):
+    """Find a column with accent, whitespace, underscore and case tolerant matching."""
+    direct = find_col(df, candidates)
+    if direct is not None:
+        return direct
+    try:
+        norm_candidates = [norm_text(c) for c in candidates if str(c).strip()]
+        col_norm = {norm_text(c): c for c in list(df.columns)}
+        for cand in norm_candidates:
+            if cand in col_norm:
+                return col_norm[cand]
+        compact_candidates = [c.replace(" ", "") for c in norm_candidates if c]
+        compact_cols = {norm_text(c).replace(" ", ""): c for c in list(df.columns)}
+        for cand in compact_candidates:
+            if cand in compact_cols:
+                return compact_cols[cand]
+        for c in list(df.columns):
+            cn = norm_text(c)
+            ccompact = cn.replace(" ", "")
+            for cand in norm_candidates:
+                if not cand:
+                    continue
+                cand_compact = cand.replace(" ", "")
+                if cand in cn or cn in cand or cand_compact in ccompact or ccompact in cand_compact:
+                    return c
+    except Exception:
+        return None
     return None
 
 def norm_text(s: str) -> str:
@@ -273,7 +317,97 @@ def map_to_canon(series: pd.Series, mapping: dict) -> pd.Series:
 # =========================
 # DATA
 # =========================
-EXCEL_FILE = _resolve_first_existing_path([
+def _score_excel_workbook_for_dashboard(path: Path) -> int:
+    """
+    Score an Excel workbook by sheet names so deployments do not go blank when
+    the exported file name/path changes. This only selects an existing real file;
+    it never creates or synthesizes data.
+    """
+    try:
+        if path is None or not path.exists() or path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
+            return -1
+        book = pd.ExcelFile(path)
+        compact_names = {_sheet_name_key(x) if "_sheet_name_key" in globals() else re.sub(r"[^a-z0-9]+", "", norm_text(x)) for x in book.sheet_names}
+        score = 0
+        core = {
+            "doanhthuthangkhuvuc": 90,
+            "doanhthulhkvthang": 70,
+            "hopdongkvthang": 60,
+        }
+        vehicle = {
+            "phuongtien": 45,
+            "quanlyphuongtien": 55,
+            "danhsachphuongtien": 55,
+            "danhsachxe": 55,
+            "quanlyxe": 55,
+            "xetructhuoc": 70,
+            "xephanquyen": 70,
+            "xecongty": 65,
+            "xethuongquyen": 65,
+            "xehoptac": 60,
+            "xedoitac": 60,
+            "xetragop": 60,
+            "xedien": 55,
+            "xexang": 55,
+            "fleet": 55,
+            "vehicle": 55,
+            "vehicles": 55,
+        }
+        for key, pts in core.items():
+            if key in compact_names:
+                score += pts
+        for token, pts in vehicle.items():
+            if any(token in name or name in token for name in compact_names):
+                score += pts
+        # Prefer the conventional report name when scores are tied.
+        if "bao_cao_doanh_thu_tong_hop" in path.name.lower():
+            score += 20
+        return score
+    except Exception:
+        return -1
+
+
+def _resolve_dashboard_excel_file(candidates) -> Path | None:
+    # 1) Keep original exact-path behavior first.
+    exact = _resolve_first_existing_path(candidates)
+    if exact is not None:
+        return exact
+
+    # 2) Advanced real-file discovery: search common deployment folders for an
+    # existing workbook that actually contains the dashboard sheets.
+    search_roots = []
+    for raw in [".", "output", "data", "assets", "/mnt/data"]:
+        try:
+            root = Path(raw)
+            if root.exists() and root.is_dir():
+                search_roots.append(root)
+        except Exception:
+            continue
+
+    discovered = []
+    seen = set()
+    for root in search_roots:
+        try:
+            for fp in root.rglob("*.xls*"):
+                try:
+                    rp = fp.resolve()
+                    if str(rp) in seen:
+                        continue
+                    seen.add(str(rp))
+                    score = _score_excel_workbook_for_dashboard(rp)
+                    if score > 0:
+                        discovered.append((score, rp.stat().st_mtime, rp))
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    if not discovered:
+        return None
+    discovered.sort(key=lambda x: (-x[0], -x[1], str(x[2])))
+    return discovered[0][2]
+
+
+EXCEL_FILE = _resolve_dashboard_excel_file([
     "output/bao_cao_doanh_thu_tong_hop.xlsx",
     "/mnt/data/bao_cao_doanh_thu_tong_hop.xlsx",
     "bao_cao_doanh_thu_tong_hop.xlsx",
@@ -362,6 +496,13 @@ def canon_region_name(x):
 for df in [df_dt, df_lh, df_hd]:
     if "khu_vuc" in df.columns:
         df["khu_vuc"] = df["khu_vuc"].apply(canon_region_name)
+
+# Preserve full-period core sheets for the Phuong tien bridge.
+# Revenue/business menus still use the real-data cutoff below, but fleet menus have
+# no year/month UI and must not be wiped out by the global current-month cutoff.
+df_dt_all_periods = df_dt.copy()
+df_lh_all_periods = df_lh.copy()
+df_hd_all_periods = df_hd.copy()
 
 # Hide future months immediately after loading the core sheets so proxy/fallback
 # datasets cannot inherit not-yet-real periods from the revenue base.
@@ -529,17 +670,34 @@ def filter_regions_for_current_user(regions) -> list[str]:
     scope_set = {str(x) for x in scope}
     return [r for r in values if str(r) in scope_set]
 
+REGION_SCOPE_DF_CACHE = {}
+
+def _region_scope_cache_key(scope):
+    if scope is None:
+        return None
+    return tuple(sorted(str(x) for x in scope))
+
 def apply_region_scope_to_df(dff: pd.DataFrame) -> pd.DataFrame:
-    if dff is None:
+    if dff is None or not isinstance(dff, pd.DataFrame):
         return pd.DataFrame()
-    out = dff.copy()
     scope = current_user_region_scope()
-    if "khu_vuc" not in out.columns or scope is None:
-        return out
-    scope_set = {str(x) for x in scope}
-    if not scope_set:
-        return out.iloc[0:0].copy()
-    return out[out["khu_vuc"].astype(str).isin(scope_set)].copy()
+    cache_key = (id(dff), len(dff), tuple(map(str, dff.columns)), _region_scope_cache_key(scope))
+    cached = REGION_SCOPE_DF_CACHE.get(cache_key)
+    if isinstance(cached, pd.DataFrame):
+        return cached.copy()
+
+    out = dff.copy()
+    if "khu_vuc" in out.columns and scope is not None:
+        scope_set = {str(x) for x in scope}
+        if not scope_set:
+            out = out.iloc[0:0].copy()
+        else:
+            out = out[out["khu_vuc"].astype(str).isin(scope_set)].copy()
+
+    if len(REGION_SCOPE_DF_CACHE) > 128:
+        REGION_SCOPE_DF_CACHE.clear()
+    REGION_SCOPE_DF_CACHE[cache_key] = out.copy()
+    return out.copy()
 
 def _is_safe_next_path(next_path: str | None) -> bool:
     if next_path is None:
@@ -670,6 +828,40 @@ LOGIN_PAGE_TEMPLATE = """
     .hint strong{
       color:#0f172a;
     }
+    .login-build-signature{
+      position:fixed;
+      right:18px;
+      bottom:14px;
+      z-index:5;
+      text-align:right;
+      color:rgba(255,255,255,0.82);
+      font-size:11px;
+      line-height:1.45;
+      letter-spacing:.25px;
+      text-shadow:0 6px 18px rgba(15,23,42,0.36);
+      user-select:none;
+    }
+    .login-build-signature strong{
+      display:block;
+      color:#ffffff;
+      font-size:12px;
+      font-weight:900;
+      letter-spacing:.35px;
+    }
+    .login-build-signature span{
+      display:block;
+      font-weight:700;
+      opacity:.92;
+    }
+    @media (max-width: 576px){
+      .login-build-signature{
+        left:18px;
+        right:18px;
+        bottom:10px;
+        text-align:center;
+        font-size:10px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -696,29 +888,189 @@ LOGIN_PAGE_TEMPLATE = """
       {% endif %}
     </form>
   </div>
+  <div class="login-build-signature">
+    <strong>Dashboard engineered by Nguyen Huu Minh</strong>
+    <span>Full-stack Dash Architecture • RBAC Matrix • DataOps Pipeline • Production Observability</span>
+  </div>
 </body>
 </html>
 """
 try:
-    _excel_sheet_names = set(EXCEL_BOOK.sheet_names) if EXCEL_BOOK is not None else set()
+    _excel_sheet_name_list = list(EXCEL_BOOK.sheet_names) if EXCEL_BOOK is not None else []
+    _excel_sheet_names = set(_excel_sheet_name_list)
 except Exception:
+    _excel_sheet_name_list = []
     _excel_sheet_names = set()
 
 _OPTIONAL_SHEET_CACHE = {}
+_OPTIONAL_SHEET_SAMPLE_CACHE = {}
 
-def _read_optional_sheet(candidates):
+def _sheet_name_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", norm_text(value or ""))
+
+def _sheet_compact_name(value) -> str:
+    return _sheet_name_key(value)
+
+def _parse_optional_sheet_cached(sheet_name: str, sample_only: bool = False):
+    if EXCEL_BOOK is None or sheet_name not in _excel_sheet_names:
+        return None
+    cache = _OPTIONAL_SHEET_SAMPLE_CACHE if sample_only else _OPTIONAL_SHEET_CACHE
+    cache_key = str(sheet_name)
+    if cache_key not in cache:
+        if sample_only:
+            cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name, nrows=12)
+        else:
+            cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name)
+    cached = cache.get(cache_key)
+    return cached.copy() if isinstance(cached, pd.DataFrame) else cached
+
+_OPTIONAL_SHEET_ALIAS_COMPACT = {
+    "xdt": [
+        "xdt", "xe dt", "xe_dt", "phuong tien xdt",
+        "phuong tien xe truc thuoc", "xe truc thuoc", "truc thuoc",
+        "xe cong ty", "xe thuoc cong ty", "xe so huu", "so huu",
+        "phuong tien xe dien", "xe dien", "dien",
+        "owned fleet", "owned vehicle", "company vehicle", "fleet owned", "vehicle owned",
+    ],
+    "xpq": [
+        "xpq", "xe pq", "xe_pq", "phuong tien xpq",
+        "phuong tien xe phan quyen", "xe phan quyen", "phan quyen",
+        "uy quyen", "thuong quyen", "nhuong quyen", "xe hop tac", "hop tac",
+        "xe doi tac", "doi tac", "xe tra gop", "tra gop",
+        "phuong tien xe xang", "xe xang", "xang",
+        "delegated fleet", "delegated vehicle", "franchise fleet", "partner vehicle",
+    ],
+}
+_OPTIONAL_SHEET_ALIAS_COMPACT = {
+    k: [_sheet_compact_name(v) for v in vals if _sheet_compact_name(v)]
+    for k, vals in _OPTIONAL_SHEET_ALIAS_COMPACT.items()
+}
+
+def _vehicle_sample_score(sample_df: pd.DataFrame | None) -> int:
+    if sample_df is None or not isinstance(sample_df, pd.DataFrame) or sample_df.empty:
+        return 0
+    cols = [norm_text(c) for c in sample_df.columns]
+    probes = [
+        "bien kiem soat", "bien so", "bks", "license plate", "plate",
+        "so tai", "ma tai", "vehicle no", "taxi no",
+        "loai xe", "dong xe", "model", "nhan hieu", "hang xe",
+        "so cho", "cho ngoi", "suc chua", "seat",
+        "nhien lieu", "fuel", "dien xang",
+        "khu vuc", "chi nhanh", "don vi", "region",
+        "nhom xe", "phan loai xe", "hinh thuc so huu", "hinh thuc quan ly",
+    ]
+    score = 0
+    for probe in probes:
+        if any(probe in c or c in probe for c in cols):
+            score += 1
+    return score
+
+def _vehicle_sample_has_usable_columns(sample_df: pd.DataFrame | None) -> bool:
+    return _vehicle_sample_score(sample_df) >= 2
+
+def _read_optional_sheet(candidates, menu_key: str | None = None):
+    if EXCEL_BOOK is None:
+        return None
+    candidates = candidates if isinstance(candidates, list) else ([candidates] if candidates else [])
+    if not candidates and menu_key not in _OPTIONAL_SHEET_ALIAS_COMPACT:
+        return None
+    try:
+        sheet_names = list(_excel_sheet_name_list or EXCEL_BOOK.sheet_names)
+        exact_map = {str(x).strip(): x for x in sheet_names}
+        norm_map = {_sheet_compact_name(x): x for x in sheet_names}
+
+        for sheet_name in candidates:
+            candidate = str(sheet_name).strip()
+            if candidate and candidate in exact_map:
+                return _parse_optional_sheet_cached(exact_map[candidate])
+
+        for sheet_name in candidates:
+            candidate_key = _sheet_compact_name(sheet_name)
+            actual_sheet = norm_map.get(candidate_key)
+            if actual_sheet:
+                return _parse_optional_sheet_cached(actual_sheet)
+
+        scored = []
+        for real_name in sheet_names:
+            compact = _sheet_compact_name(real_name)
+            if not compact:
+                continue
+            best_score = 0
+            for idx, candidate in enumerate(candidates):
+                ckey = _sheet_compact_name(candidate)
+                if len(ckey) < 5:
+                    continue
+                if ckey in compact or compact in ckey:
+                    best_score = max(best_score, 70 - idx)
+            if best_score > 0:
+                scored.append((best_score, real_name))
+        if scored:
+            scored = sorted(scored, key=lambda x: (-x[0], sheet_names.index(x[1])))
+            return _parse_optional_sheet_cached(scored[0][1])
+
+        if menu_key in _OPTIONAL_SHEET_ALIAS_COMPACT:
+            aliases = list(_OPTIONAL_SHEET_ALIAS_COMPACT.get(menu_key, []))
+            aliases.extend([_sheet_compact_name(x) for x in candidates if _sheet_compact_name(x)])
+            scored = []
+            for real_name in sheet_names:
+                compact = _sheet_compact_name(real_name)
+                if not compact:
+                    continue
+                best_score = 0
+                for idx, alias in enumerate(aliases):
+                    if len(alias) < 2:
+                        continue
+                    if alias in compact:
+                        best_score = max(best_score, 120 - idx)
+                if best_score > 0:
+                    sample = _parse_optional_sheet_cached(real_name, sample_only=True)
+                    best_score += min(_vehicle_sample_score(sample), 12)
+                    scored.append((best_score, real_name))
+            if scored:
+                scored = sorted(scored, key=lambda x: (-x[0], sheet_names.index(x[1])))
+                return _parse_optional_sheet_cached(scored[0][1])
+    except Exception as e:
+        try:
+            DATA_LOAD_ERRORS.append(f"optional_sheet:{menu_key or 'generic'}: {e}")
+        except Exception:
+            pass
+        return None
+    return None
+
+def _discover_vehicle_generic_sheet() -> pd.DataFrame | None:
     if EXCEL_BOOK is None:
         return None
     try:
-        for sheet_name in candidates:
-            if sheet_name in _excel_sheet_names:
-                if sheet_name not in _OPTIONAL_SHEET_CACHE:
-                    _OPTIONAL_SHEET_CACHE[sheet_name] = EXCEL_BOOK.parse(sheet_name=sheet_name)
-                cached = _OPTIONAL_SHEET_CACHE.get(sheet_name)
-                return cached.copy() if isinstance(cached, pd.DataFrame) else cached
-    except Exception:
+        sheet_names = list(_excel_sheet_name_list or EXCEL_BOOK.sheet_names)
+        vehicle_name_tokens = [
+            "phuongtien", "quanlyphuongtien", "danhsachphuongtien", "tonghopphuongtien",
+            "danhsachxe", "quanlyxe", "phuongtienkvthang", "xekvthang",
+            "vehicle", "vehicles", "fleet", "carlist",
+        ]
+        scored = []
+        for real_name in sheet_names:
+            compact = _sheet_compact_name(real_name)
+            name_score = 0
+            for idx, token in enumerate(vehicle_name_tokens):
+                token_key = _sheet_compact_name(token)
+                if token_key and token_key in compact:
+                    name_score = max(name_score, 100 - idx)
+            if compact in {"xe", "car", "cars", "fleet"}:
+                name_score = max(name_score, 80)
+            sample = _parse_optional_sheet_cached(real_name, sample_only=True)
+            col_score = _vehicle_sample_score(sample)
+            if name_score > 0 or col_score >= 4:
+                scored.append((name_score + min(col_score, 16) * 8, real_name))
+        if not scored:
+            return None
+        scored = sorted(scored, key=lambda x: (-x[0], sheet_names.index(x[1])))
+        return _parse_optional_sheet_cached(scored[0][1])
+    except Exception as e:
+        try:
+            DATA_LOAD_ERRORS.append(f"vehicle_generic_discovery: {e}")
+        except Exception:
+            pass
         return None
-    return None
 
 def _prepare_optional_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
     if raw_df is None or raw_df.empty:
@@ -758,38 +1110,305 @@ def _prepare_optional_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
 
 
 def _parse_vehicle_seat_series(series_like: pd.Series) -> pd.Series:
-    s = series_like.astype(str).str.extract(r"(\d+)")[0]
+    s = pd.Series(series_like).astype(str).str.extract(r"(\d+)")[0]
     return pd.to_numeric(s, errors="coerce").fillna(0)
 
 
-def _prepare_vehicle_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
+def _parse_vehicle_month_series(series_like) -> pd.Series:
+    raw = pd.Series(series_like)
+    try:
+        parsed = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    except Exception:
+        parsed = pd.Series([pd.NaT] * len(raw), index=raw.index)
+    try:
+        numeric_raw = pd.to_numeric(raw, errors="coerce")
+        if numeric_raw.notna().any():
+            excel_serial = pd.to_datetime(numeric_raw, errors="coerce", unit="D", origin="1899-12-30")
+            serial_ok = excel_serial.dt.year.between(2021, int(_now_vn_naive().year) + 1, inclusive="both")
+            parsed_year = pd.to_datetime(parsed, errors="coerce").dt.year
+            parsed_bad = parsed.isna() | parsed_year.lt(2021) | parsed_year.gt(int(_now_vn_naive().year) + 1)
+            parsed = parsed.mask(parsed_bad & serial_ok, excel_serial)
+    except Exception:
+        pass
+    try:
+        return pd.to_datetime(parsed, errors="coerce").dt.to_period("M").dt.to_timestamp()
+    except Exception:
+        return pd.Series([pd.NaT] * len(raw), index=raw.index)
+
+
+def _vehicle_text_value_mask(series_like, aliases: list[str]) -> pd.Series:
+    s = pd.Series(series_like).fillna("").astype(str).map(lambda x: _sheet_compact_name(x))
+    aliases = [_sheet_compact_name(a) for a in aliases if _sheet_compact_name(a)]
+    if not aliases:
+        return pd.Series([False] * len(s), index=s.index)
+    mask = pd.Series([False] * len(s), index=s.index)
+    for alias in aliases:
+        if alias:
+            mask = mask | s.str.contains(re.escape(alias), na=False)
+    return mask
+
+
+
+VEHICLE_SCOPE_COLUMN_CANDIDATES = [
+    "nhom_phuong_tien", "nhom phuong tien", "nhom_xe", "nhom xe",
+    "loai_so_huu", "loai so huu", "hinh_thuc_so_huu", "hinh thuc so huu",
+    "hinh_thuc_quan_ly", "hinh thuc quan ly", "loai_quan_ly", "loai quan ly",
+    "phan_loai_xe", "phan loai xe", "loai_hinh_xe", "loai hinh xe",
+    "nguon_xe", "nguon xe", "hinh_thuc_khai_thac", "hinh thuc khai thac",
+    "loai_khai_thac", "loai khai thac", "nhom_nhien_lieu", "nhom nhien lieu",
+    "nhien_lieu", "nhien lieu", "loai_nhien_lieu", "loai nhien lieu",
+    "dien_xang", "dien xang", "fuel", "fuel_type", "energy_type",
+    "loai_xe", "loai xe", "loai_phuong_tien", "loai phuong tien",
+    "dong_xe", "dong xe", "ten_loai_xe", "ten loai xe", "model",
+    "ownership", "owner_type", "fleet_type", "vehicle_group", "vehicle_type_group",
+]
+
+
+def _vehicle_scope_candidate_columns(raw_df: pd.DataFrame) -> list[str]:
+    if raw_df is None or raw_df.empty:
+        return []
+    cols = []
+    for cand in VEHICLE_SCOPE_COLUMN_CANDIDATES:
+        col = find_col_fuzzy(raw_df, [cand])
+        if col is not None and col in raw_df.columns and col not in cols:
+            cols.append(col)
+    name_markers = [
+        "nhom", "loai", "phan loai", "so huu", "quan ly", "nguon", "khai thac",
+        "nhien lieu", "dien xang", "fuel", "energy", "ownership", "fleet", "vehicle",
+    ]
+    for col in raw_df.columns:
+        cn = norm_text(col)
+        if any(marker in cn for marker in name_markers) and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _vehicle_aliases_for_menu(menu_key: str | None) -> list[str]:
+    if menu_key == "xdt":
+        return [
+            "xdt", "xe dt", "xe truc thuoc", "truc thuoc", "xe cong ty", "cong ty",
+            "thuoc cong ty", "so huu", "tai san", "xe so huu", "xe dien", "dien",
+            "owned", "company", "company vehicle", "owned fleet", "owned vehicle",
+        ]
+    if menu_key == "xpq":
+        return [
+            "xpq", "xe pq", "xe phan quyen", "phan quyen", "uy quyen", "u y quyen",
+            "thuong quyen", "nhuong quyen", "hop tac", "doi tac", "tra gop",
+            "xe xang", "xang", "delegated", "franchise", "partner",
+        ]
+    return []
+
+
+def _vehicle_scope_mask_any_column(raw_df: pd.DataFrame, menu_key: str | None):
+    if raw_df is None or raw_df.empty or menu_key not in {"xdt", "xpq"}:
+        return None
+    aliases = _vehicle_aliases_for_menu(menu_key)
+    if not aliases:
+        return None
+    mask = pd.Series(False, index=raw_df.index)
+    matched_any_column = False
+    for col in _vehicle_scope_candidate_columns(raw_df):
+        try:
+            col_mask = _vehicle_text_value_mask(raw_df[col], aliases)
+            if bool(col_mask.any()):
+                mask = mask | col_mask
+                matched_any_column = True
+        except Exception:
+            continue
+    return mask if matched_any_column and bool(mask.any()) else None
+
+
+
+
+def _vehicle_wide_count_column(raw_df: pd.DataFrame, menu_key: str | None):
+    """Detect real wide-format count columns such as 'Xe trực thuộc' or 'Số xe phân quyền'."""
+    if raw_df is None or raw_df.empty or menu_key not in {"xdt", "xpq"}:
+        return None
+    aliases = [_sheet_compact_name(x) for x in _vehicle_aliases_for_menu(menu_key) if _sheet_compact_name(x)]
+    if not aliases:
+        return None
+    blocked = [
+        "tien", "doanhthu", "chiphi", "dongia", "tyle", "tile", "phantram", "pct", "percent",
+        "socho", "tongsocho", "seat", "seats", "succhua", "bienso", "bienkiemsoat", "bks",
+        "sotai", "matai", "ngay", "date", "thangnam", "thang", "nam", "year",
+    ]
+    count_markers = ["soluong", "sl", "soxe", "tongxe", "count", "quantity", "vehiclecount", "fleetcount", "xe"]
+    best_col = None
+    best_score = -1
+    for col in raw_df.columns:
+        ckey = _sheet_compact_name(col)
+        if not ckey:
+            continue
+        if not any(alias in ckey for alias in aliases):
+            continue
+        if any(bad in ckey for bad in blocked):
+            continue
+        numeric = pd.to_numeric(raw_df[col], errors="coerce")
+        numeric_n = int(numeric.notna().sum())
+        if numeric_n <= 0:
+            continue
+        score = numeric_n
+        if float(numeric.fillna(0).abs().sum()) > 0:
+            score += 100
+        if any(marker in ckey for marker in count_markers):
+            score += 25
+        if score > best_score:
+            best_score = score
+            best_col = col
+    return best_col
+
+
+def _extract_vehicle_wide_category_df(raw_df: pd.DataFrame, menu_key: str | None) -> pd.DataFrame:
+    """Convert a real summary sheet with XDT/XPQ columns into the standard vehicle input frame."""
+    if raw_df is None or raw_df.empty or menu_key not in {"xdt", "xpq"}:
+        return pd.DataFrame()
+    count_col = _vehicle_wide_count_column(raw_df, menu_key)
+    if count_col is None:
+        return pd.DataFrame()
+
+    month_col = find_col_fuzzy(raw_df, [
+        "thang_nam", "tháng năm", "thang/nam", "tháng/năm", "thang nam", "tháng", "thang",
+        "month", "month_date", "period", "ky_bao_cao", "kỳ báo cáo", "ngay_du_lieu", "ngày dữ liệu",
+        "ngay_bao_cao", "ngày báo cáo", "report_date", "ngay_cap_nhat", "ngày cập nhật",
+    ])
+    year_col = find_col_fuzzy(raw_df, ["nam", "năm", "year", "report_year", "nam_bao_cao", "năm báo cáo"])
+    region_col = find_col_fuzzy(raw_df, [
+        "khu_vuc", "khu vực", "khu vuc", "region", "kv", "area", "ten_khu_vuc", "tên khu vực",
+        "chi_nhanh", "chi nhánh", "chi nhanh", "don_vi", "đơn vị", "don vi", "tram", "trạm", "tuyen", "tuyến",
+    ])
+    type_col = find_col_fuzzy(raw_df, [
+        "loai_xe", "loại xe", "loai xe", "dong_xe", "dòng xe", "dong xe", "model",
+        "nhan_hieu", "nhãn hiệu", "hang_xe", "hãng xe", "ten_loai_xe", "tên loại xe",
+    ])
+    fuel_col = find_col_fuzzy(raw_df, ["nhien_lieu", "nhiên liệu", "loai_nhien_lieu", "loại nhiên liệu", "fuel", "fuel_type"])
+    seat_col = find_col_fuzzy(raw_df, ["so_cho", "số chỗ", "so cho", "seat", "seats", "seat_count", "suc_chua", "sức chứa"])
+
+    out = pd.DataFrame(index=raw_df.index)
+    if month_col is not None:
+        try:
+            month_num = pd.to_numeric(raw_df[month_col], errors="coerce")
+            year_num = pd.to_numeric(raw_df[year_col], errors="coerce") if year_col is not None else pd.Series(np.nan, index=raw_df.index)
+            numeric_month_ok = month_num.between(1, 12, inclusive="both") & year_num.between(2020, int(_now_vn_naive().year) + 1, inclusive="both")
+            rebuilt = pd.to_datetime(dict(year=year_num.fillna(_now_vn_naive().year).astype(int), month=month_num.fillna(1).astype(int), day=1), errors="coerce")
+            out["thang_nam"] = raw_df[month_col]
+            out.loc[numeric_month_ok, "thang_nam"] = rebuilt.loc[numeric_month_ok]
+        except Exception:
+            out["thang_nam"] = raw_df[month_col]
+    elif year_col is not None:
+        try:
+            y = pd.to_numeric(raw_df[year_col], errors="coerce").fillna(_now_vn_naive().year).astype(int)
+            out["thang_nam"] = pd.to_datetime(dict(year=y, month=1, day=1), errors="coerce")
+        except Exception:
+            out["thang_nam"] = _current_vn_month_start()
+    else:
+        out["thang_nam"] = _current_vn_month_start()
+
+    out["khu_vuc"] = raw_df[region_col] if region_col else "Tổng hợp"
+    out["loai_xe"] = raw_df[type_col] if type_col else ("Tổng xe trực thuộc" if menu_key == "xdt" else "Tổng xe phân quyền")
+    out["nhom_nhien_lieu"] = raw_df[fuel_col] if fuel_col else "Chưa rõ nhiên liệu"
+    out["so_luong_xe"] = pd.to_numeric(raw_df[count_col], errors="coerce").fillna(0)
+    if seat_col:
+        out["so_cho"] = raw_df[seat_col]
+    out = out[pd.to_numeric(out["so_luong_xe"], errors="coerce").fillna(0).abs() > 0].copy()
+    try:
+        VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"wide:{count_col}")
+    except Exception:
+        pass
+    return out
+
+def _filter_vehicle_scope_by_menu(dff: pd.DataFrame, menu_key: str | None) -> pd.DataFrame:
+    if menu_key not in {"xdt", "xpq"} or dff is None or dff.empty:
+        return dff
+    mask = _vehicle_scope_mask_any_column(dff, menu_key)
+    if mask is not None and bool(mask.any()):
+        return dff.loc[mask].copy()
+    return dff
+
+def _series_numeric_or_presence(series_like, default_value=0) -> pd.Series:
+    s = pd.Series(series_like)
+    numeric = pd.to_numeric(s, errors="coerce")
+    if len(s) > 0 and numeric.notna().sum() >= max(1, int(len(s) * 0.65)):
+        return numeric.fillna(0)
+    present = s.fillna("").astype(str).str.strip().ne("")
+    return present.astype(float).where(present, float(default_value))
+
+
+def _prepare_vehicle_menu_df(raw_df: pd.DataFrame | None, menu_key: str | None = None) -> pd.DataFrame:
     if raw_df is None or raw_df.empty:
         return _empty_dashboard_df("dt")
     dff = raw_df.copy()
+    dff = _filter_vehicle_scope_by_menu(dff, menu_key)
+    if dff.empty:
+        return _empty_dashboard_df("dt")
 
-    month_col = find_col(dff, [
-        "thang_nam", "thang/nam", "thang nam", "thang", "month", "month_date", "period",
-        "updatedat", "updated_at", "ngay_cap_nhat", "ngay cap nhat", "createdat", "created_at", "ngay_tao", "ngay tao"
+    month_col = find_col_fuzzy(dff, [
+        "thang_nam", "tháng năm", "thang/nam", "tháng/năm", "thang nam", "tháng", "thang",
+        "month", "month_date", "period", "ky_bao_cao", "kỳ báo cáo", "ngay_du_lieu", "ngày dữ liệu",
+        "ngay_bao_cao", "ngày báo cáo", "report_date",
+        "updatedat", "updated_at", "ngay_cap_nhat", "ngày cập nhật", "ngay cap nhat",
+        "createdat", "created_at", "ngay_tao", "ngày tạo", "ngay tao",
     ])
+    year_col = find_col_fuzzy(dff, ["nam", "năm", "year", "report_year", "nam_bao_cao", "năm báo cáo"])
     if month_col is not None:
-        dff["thang_nam"] = pd.to_datetime(dff[month_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+        parsed_months = _parse_vehicle_month_series(dff[month_col])
+        try:
+            month_num = pd.to_numeric(dff[month_col], errors="coerce")
+            year_num = pd.to_numeric(dff[year_col], errors="coerce") if year_col is not None else pd.Series(np.nan, index=dff.index)
+            numeric_month_ok = month_num.between(1, 12, inclusive="both") & year_num.between(2020, int(_now_vn_naive().year) + 1, inclusive="both")
+            parsed_year = pd.to_datetime(parsed_months, errors="coerce").dt.year
+            parsed_bad = parsed_months.isna() | parsed_year.lt(2020) | parsed_year.gt(int(_now_vn_naive().year) + 1)
+            rebuilt = pd.to_datetime(dict(year=year_num.fillna(_now_vn_naive().year).astype(int), month=month_num.fillna(1).astype(int), day=1), errors="coerce")
+            parsed_months = parsed_months.mask(numeric_month_ok & parsed_bad, rebuilt)
+        except Exception:
+            pass
+        dff["thang_nam"] = parsed_months.where(parsed_months.notna(), _current_vn_month_start())
     else:
-        dff["thang_nam"] = pd.Timestamp.today().to_period("M").to_timestamp()
+        dff["thang_nam"] = _current_vn_month_start()
 
     dff["thang_nam"] = pd.to_datetime(dff["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
     dff = dff[dff["thang_nam"].notna()].copy()
     if dff.empty:
         return _empty_dashboard_df("dt")
 
-    region_col = find_col(dff, ["khu_vuc", "khu vuc", "region", "kv", "area"])
-    type_col = find_col(dff, ["loai_xe", "loai xe", "dong_xe", "dong xe", "model"])
-    fuel_col = find_col(dff, ["nhom_nhien_lieu", "nhom nhien lieu", "dien_xang", "dien xang", "fuel", "fuel_type"])
+    region_col = find_col_fuzzy(dff, [
+        "khu_vuc", "khu vực", "khu vuc", "region", "kv", "area", "ten_khu_vuc", "tên khu vực",
+        "chi_nhanh", "chi nhánh", "chi nhanh", "don_vi", "đơn vị", "don vi", "tram", "trạm", "tuyen", "tuyến",
+    ])
+    type_col = find_col_fuzzy(dff, [
+        "loai_xe", "loại xe", "loai xe", "loai_phuong_tien", "loại phương tiện", "loai phuong tien",
+        "dong_xe", "dòng xe", "dong xe", "model", "vehicle_model",
+        "nhan_hieu", "nhãn hiệu", "nhan hieu", "hang_xe", "hãng xe", "hang xe", "ten_loai_xe", "tên loại xe",
+    ])
+    fuel_col = find_col_fuzzy(dff, [
+        "nhom_nhien_lieu", "nhóm nhiên liệu", "nhom nhien lieu", "nhien_lieu", "nhiên liệu", "nhien lieu",
+        "loai_nhien_lieu", "loại nhiên liệu", "loai nhien lieu",
+        "dien_xang", "điện xăng", "dien xang", "fuel", "fuel_type", "energy_type",
+    ])
 
-    count_col = find_col(dff, ["so_luong_xe", "so_xe", "tong_so_cuoc", "so_luong", "count"])
-    seat_total_col = find_col(dff, ["tong_so_cho", "tong so cho", "so_cho_tong", "tong_cho"])
-    seat_avg_col = find_col(dff, ["so_cho_binh_quan_xe", "so cho binh quan xe", "avg_seat_per_vehicle"])
-    plate_count_col = find_col(dff, ["so_bien_kiem_soat", "so bien kiem soat", "so_bks", "count_plate"])
-    sotai_count_col = find_col(dff, ["so_so_tai", "so so tai", "so_tai_distinct", "count_so_tai"])
+    count_col = find_col_fuzzy(dff, [
+        "so_luong_xe", "số lượng xe", "so luong xe", "so_xe", "số xe", "so xe",
+        "tong_so_cuoc", "so_luong", "số lượng", "soluong", "quantity", "count", "sl",
+    ])
+    seat_total_col = find_col_fuzzy(dff, [
+        "tong_so_cho", "tổng số chỗ", "tong so cho", "so_cho_tong", "số chỗ tổng", "so cho tong",
+        "tong_cho", "tổng chỗ", "tong cho", "total_seats",
+    ])
+    seat_avg_col = find_col_fuzzy(dff, [
+        "so_cho_binh_quan_xe", "số chỗ bình quân xe", "so cho binh quan xe", "avg_seat_per_vehicle", "avg_seats",
+    ])
+    seat_value_col = find_col_fuzzy(dff, [
+        "so_cho", "số chỗ", "so cho", "socho", "cho_ngoi", "chỗ ngồi", "cho ngoi",
+        "seat", "seats", "seat_count", "suc_chua", "sức chứa",
+    ])
+    plate_count_col = find_col_fuzzy(dff, [
+        "so_bien_kiem_soat", "số biển kiểm soát", "so bien kiem soat",
+        "bien_kiem_soat", "biển kiểm soát", "bien_so", "biển số",
+        "so_bks", "bks", "count_plate", "license_plate", "plate", "plate_count", "bien_so_count",
+    ])
+    sotai_count_col = find_col_fuzzy(dff, [
+        "so_so_tai", "số số tài", "so so tai", "so_tai", "số tài", "so tai",
+        "ma_tai", "mã tài", "ma tai", "so_tai_distinct", "count_so_tai", "vehicle_no", "taxi_no", "so_tai_count",
+    ])
 
     dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
     dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
@@ -803,24 +1422,30 @@ def _prepare_vehicle_menu_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
     dff.loc[dff["nhom_nhien_lieu"].eq(""), "nhom_nhien_lieu"] = "Chưa rõ nhiên liệu"
 
     if count_col:
-        dff["so_luong_xe"] = pd.to_numeric(dff[count_col], errors="coerce").fillna(0)
+        count_series = pd.to_numeric(dff[count_col], errors="coerce")
+        dff["so_luong_xe"] = count_series.where(count_series > 0, np.nan).fillna(1)
+    elif plate_count_col:
+        dff["so_luong_xe"] = _series_numeric_or_presence(dff[plate_count_col], default_value=1).replace(0, 1)
+    elif sotai_count_col:
+        dff["so_luong_xe"] = _series_numeric_or_presence(dff[sotai_count_col], default_value=1).replace(0, 1)
     else:
         dff["so_luong_xe"] = 1
 
     if seat_total_col:
         dff["tong_so_cho"] = pd.to_numeric(dff[seat_total_col], errors="coerce").fillna(0)
-    elif "so_cho" in dff.columns:
-        dff["tong_so_cho"] = _parse_vehicle_seat_series(dff["so_cho"])
+    elif seat_value_col:
+        seats_each = _parse_vehicle_seat_series(dff[seat_value_col])
+        dff["tong_so_cho"] = seats_each * pd.to_numeric(dff["so_luong_xe"], errors="coerce").fillna(1)
     else:
         dff["tong_so_cho"] = 0
 
     if plate_count_col:
-        dff["so_bien_kiem_soat"] = pd.to_numeric(dff[plate_count_col], errors="coerce").fillna(0)
+        dff["so_bien_kiem_soat"] = _series_numeric_or_presence(dff[plate_count_col], default_value=0)
     else:
         dff["so_bien_kiem_soat"] = dff["so_luong_xe"]
 
     if sotai_count_col:
-        dff["so_so_tai"] = pd.to_numeric(dff[sotai_count_col], errors="coerce").fillna(0)
+        dff["so_so_tai"] = _series_numeric_or_presence(dff[sotai_count_col], default_value=0)
     else:
         dff["so_so_tai"] = dff["so_luong_xe"]
 
@@ -1125,6 +1750,9 @@ _PROXY_BASE = _proxy_source_df()
 def _build_proxy_menu_dataset(menu_key: str) -> pd.DataFrame:
     # Strict real-data mode: never synthesize values unless explicitly enabled.
     # Set DASH_ALLOW_SYNTHETIC_PROXY_DATA=1 only for demo/testing environments.
+    # Riêng Phương tiện luôn dùng dữ liệu thật, không tạo proxy/ảo.
+    if str(menu_key) in {"xdt", "xpq"}:
+        return _empty_dashboard_df("dt")
     if not ALLOW_SYNTHETIC_PROXY_DATA:
         return _empty_dashboard_df("dt")
     if _PROXY_BASE.empty:
@@ -1179,9 +1807,473 @@ OPTIONAL_MENU_SHEET_CANDIDATES = {
     "drv": ["NhanSu_TaiXe_KV_Thang", "QuanLyTaiXe_KV_Thang", "TaiXe_KV_Thang"],
     "mkt": ["KinhDoanh_DiemTiepThi_KV_Thang", "DiemTiepThi_KV_Thang", "TiepThi_KV_Thang"],
     "bb": ["KinhDoanh_BienBan_KV_Thang", "BienBan_KV_Thang"],
-    "xdt": ["PhuongTien_XeTrucThuoc_KV_Thang", "XeTrucThuoc_KV_Thang"],
-    "xpq": ["PhuongTien_XePhanQuyen_KV_Thang", "XePhanQuyen_KV_Thang"],
+    "xdt": [
+        "PhuongTien_XeTrucThuoc_KV_Thang", "XeTrucThuoc_KV_Thang",
+        "PhuongTien_Xe_TrucThuoc_KV_Thang", "Xe_TrucThuoc_KV_Thang",
+        "PhuongTien_XeTrucThuoc", "XeTrucThuoc", "Xe_Truc_Thuoc", "Xe trực thuộc",
+        "PhuongTien_TrucThuoc_KV_Thang", "PhuongTien_TrucThuoc", "TrucThuoc",
+        "XeCongTy_KV_Thang", "Xe_CongTy_KV_Thang", "XeCongTy", "Xe_Cong_Ty", "Xe công ty",
+        "XeThuocCongTy_KV_Thang", "XeThuocCongTy", "Xe thuộc công ty",
+        "XeSoHuu_KV_Thang", "Xe_SoHuu_KV_Thang", "XeSoHuu", "Xe_So_Huu", "Xe sở hữu",
+        "PhuongTien_XeDien_KV_Thang", "XeDien_KV_Thang", "PhuongTien_XeDien", "XeDien", "Xe_Dien", "Xe điện",
+        "XDT", "XeDT", "Xe_DT", "OwnedFleet_KV_Thang", "OwnedFleet", "CompanyVehicle",
+    ],
+    "xpq": [
+        "PhuongTien_XePhanQuyen_KV_Thang", "XePhanQuyen_KV_Thang",
+        "PhuongTien_Xe_PhanQuyen_KV_Thang", "Xe_PhanQuyen_KV_Thang",
+        "PhuongTien_XePhanQuyen", "XePhanQuyen", "Xe_Phan_Quyen", "Xe phân quyền",
+        "PhuongTien_PhanQuyen_KV_Thang", "PhuongTien_PhanQuyen", "PhanQuyen",
+        "XeThuongQuyen_KV_Thang", "Xe_ThuongQuyen_KV_Thang", "XeThuongQuyen", "Xe thương quyền",
+        "XeNhuongQuyen_KV_Thang", "XeNhuongQuyen", "Xe nhượng quyền",
+        "XeHopTac_KV_Thang", "Xe_HopTac_KV_Thang", "XeHopTac", "Xe hợp tác",
+        "XeDoiTac_KV_Thang", "XeDoiTac", "Xe đối tác",
+        "XeTraGop_KV_Thang", "XeTraGop", "Xe trả góp",
+        "PhuongTien_XeXang_KV_Thang", "XeXang_KV_Thang", "PhuongTien_XeXang", "XeXang", "Xe_Xang", "Xe xăng",
+        "XPQ", "XePQ", "Xe_PQ", "DelegatedFleet_KV_Thang", "DelegatedFleet", "FranchiseFleet", "PartnerVehicle",
+    ],
 }
+
+OPTIONAL_MENU_GENERIC_VEHICLE_SHEET_CANDIDATES = [
+    "PhuongTien_KV_Thang", "QuanLyPhuongTien_KV_Thang", "PhuongTien_Thang_KhuVuc",
+    "Xe_KV_Thang", "QuanLyXe_KV_Thang", "DanhSachXe_KV_Thang",
+    "PhuongTien", "Phương tiện", "QuanLyPhuongTien", "Quản lý phương tiện",
+    "DanhSachPhuongTien", "DanhSach_PhuongTien", "Danh sách phương tiện",
+    "DanhSachXe", "Danh_Sach_Xe", "Danh sách xe",
+    "TongHopPhuongTien", "TongHop_PhuongTien", "Tổng hợp phương tiện",
+    "QuanLyXe", "Quản lý xe", "Xe", "Vehicle", "Vehicles", "Fleet",
+]
+
+
+VEHICLE_LOAD_DIAGNOSTICS = {"xdt": [], "xpq": []}
+
+def _vehicle_group_filter_mask(raw_df: pd.DataFrame, menu_key: str):
+    if raw_df is None or raw_df.empty:
+        return None
+    if menu_key == "xdt":
+        patterns = [
+            "xe truc thuoc", "truc thuoc", "xdt", "xe dt",
+            "xe cong ty", "cong ty", "thuoc cong ty",
+            "so huu", "tai san",
+            "xe dien", "dien", "electric", "ev",
+            "owned", "company", "company vehicle", "owned fleet",
+        ]
+        blocked_patterns = [
+            "xe phan quyen", "phan quyen", "xpq", "xe pq", "thuong quyen",
+            "nhuong quyen", "hop tac", "doi tac", "tra gop", "xe xang", "xang",
+            "delegated", "franchise", "partner",
+        ]
+    elif menu_key == "xpq":
+        patterns = [
+            "xe phan quyen", "phan quyen", "xpq", "xe pq",
+            "uy quyen", "u y quyen", "thuong quyen", "nhuong quyen",
+            "hop tac", "doi tac", "tra gop",
+            "xe xang", "xang", "gasoline", "petrol",
+            "delegated", "franchise", "partner",
+        ]
+        blocked_patterns = [
+            "xe truc thuoc", "truc thuoc", "xdt", "xe dt", "xe cong ty",
+            "thuoc cong ty", "so huu", "tai san", "xe dien", "dien", "owned",
+        ]
+    else:
+        return None
+
+    explicit_candidates = [
+        "nhom_phuong_tien", "nhóm phương tiện", "nhom phuong tien",
+        "nhom_xe", "nhóm xe", "nhom xe",
+        "loai_so_huu", "loại sở hữu", "loai so huu",
+        "hinh_thuc_so_huu", "hình thức sở hữu", "hinh thuc so huu",
+        "hinh_thuc_quan_ly", "hình thức quản lý", "hinh thuc quan ly",
+        "loai_quan_ly", "loại quản lý", "loai quan ly",
+        "phan_loai_xe", "phân loại xe", "phan loai xe",
+        "loai_hinh_xe", "loại hình xe", "loai hinh xe",
+        "nguon_xe", "nguồn xe", "nguon xe",
+        "hinh_thuc_khai_thac", "hình thức khai thác", "hinh thuc khai thac",
+        "loai_khai_thac", "loại khai thác", "loai khai thac",
+        "nhom_nhien_lieu", "nhóm nhiên liệu", "nhom nhien lieu",
+        "loai_nhien_lieu", "loại nhiên liệu", "loai nhien lieu",
+        "nhien_lieu", "nhiên liệu", "nhien lieu",
+        "dien_xang", "điện xăng", "dien xang",
+        "fuel", "fuel_type", "energy_type", "dong_co", "động cơ", "dong co",
+        "ownership", "owner_type", "fleet_type", "vehicle_group", "vehicle_type_group",
+    ]
+
+    cols = []
+    for cand in explicit_candidates:
+        col = find_col_fuzzy(raw_df, [cand])
+        if col and col in raw_df.columns and col not in cols:
+            cols.append(col)
+
+    # Last-resort scan for real classification columns with custom names.
+    for col in raw_df.columns:
+        if col in cols:
+            continue
+        try:
+            s_col = raw_df[col]
+            if not (pd.api.types.is_object_dtype(s_col) or pd.api.types.is_string_dtype(s_col) or pd.api.types.is_categorical_dtype(s_col)):
+                continue
+            n = norm_text(col)
+            non_null = s_col.dropna()
+            unique_ratio = non_null.astype(str).nunique(dropna=True) / max(1, len(non_null)) if len(non_null) else 1
+            if unique_ratio <= 0.85 or any(token in n for token in ["loai", "nhom", "phan", "hinh thuc", "nguon", "nhien lieu", "fuel", "dien", "xang"]):
+                cols.append(col)
+        except Exception:
+            continue
+
+    if not cols:
+        return None
+
+    s = raw_df[cols].astype(str).agg(" ".join, axis=1).map(norm_text)
+    mask = pd.Series(False, index=raw_df.index)
+    for pattern in patterns:
+        pat = norm_text(pattern)
+        if pat:
+            mask = mask | s.str.contains(re.escape(pat), na=False)
+    blocked = pd.Series(False, index=raw_df.index)
+    for pattern in blocked_patterns:
+        pat = norm_text(pattern)
+        if pat:
+            blocked = blocked | s.str.contains(re.escape(pat), na=False)
+    mask = mask & ~blocked
+    return mask if bool(mask.any()) else None
+
+def _read_vehicle_source_sheet(menu_key: str):
+    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []), menu_key=menu_key)
+    if isinstance(raw, pd.DataFrame) and not raw.empty:
+        return raw
+
+    generic = _read_optional_sheet(OPTIONAL_MENU_GENERIC_VEHICLE_SHEET_CANDIDATES)
+    if not isinstance(generic, pd.DataFrame) or generic.empty:
+        generic = _discover_vehicle_generic_sheet()
+    if not isinstance(generic, pd.DataFrame) or generic.empty:
+        return raw
+
+    wide = _extract_vehicle_wide_category_df(generic, menu_key)
+    if isinstance(wide, pd.DataFrame) and not wide.empty:
+        return wide
+
+    mask = _vehicle_group_filter_mask(generic, menu_key)
+    if mask is None:
+        try:
+            DATA_LOAD_ERRORS.append(
+                f"PhuongTien/{menu_key}: tìm thấy sheet phương tiện tổng nhưng không thấy cột phân loại xe trực thuộc/phân quyền hoặc cột tổng {menu_key.upper()}."
+            )
+            VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append("generic_found_no_scope_or_wide_column")
+        except Exception:
+            pass
+        return raw
+    filtered = generic.loc[mask].copy()
+    if not filtered.empty:
+        try:
+            VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"row_scope:{len(filtered)}")
+        except Exception:
+            pass
+        return filtered
+    return raw
+
+
+def _read_vehicle_any_real_sheet(menu_key: str):
+    """Scan every workbook sheet for real fleet data. No synthetic/proxy values."""
+    if EXCEL_BOOK is None or menu_key not in {"xdt", "xpq"}:
+        return None
+    try:
+        sheet_names = list(_excel_sheet_name_list or EXCEL_BOOK.sheet_names)
+    except Exception:
+        return None
+    aliases = [_sheet_compact_name(x) for x in _vehicle_aliases_for_menu(menu_key) if _sheet_compact_name(x)]
+    generic_tokens = ["phuongtien", "quanlyphuongtien", "danhsachphuongtien", "tonghopphuongtien", "danhsachxe", "quanlyxe", "xe", "vehicle", "fleet", "asset", "taisan", "taxi", "qlpt"]
+    scored = []
+    for sheet_name in sheet_names:
+        try:
+            sample = _parse_optional_sheet_cached(sheet_name, sample_only=True)
+        except Exception:
+            sample = None
+        if sample is None or not isinstance(sample, pd.DataFrame) or sample.empty:
+            continue
+        compact = _sheet_compact_name(sheet_name)
+        name_score = 0
+        if any(alias and alias in compact for alias in aliases):
+            name_score += 140
+        if any(_sheet_compact_name(tok) in compact for tok in generic_tokens if _sheet_compact_name(tok)):
+            name_score += 70
+        if compact in {"xdt", "xedt", "xedien", "xetructhuoc", "xecongty"} and menu_key == "xdt":
+            name_score += 160
+        if compact in {"xpq", "xepq", "xexang", "xephanquyen", "xethuongquyen"} and menu_key == "xpq":
+            name_score += 160
+        col_score = _vehicle_sample_score(sample) * 14
+        value_score = 0
+        try:
+            if _vehicle_wide_count_column(sample, menu_key) is not None:
+                value_score += 120
+        except Exception:
+            pass
+        try:
+            sample_mask = _vehicle_group_filter_mask(sample, menu_key)
+            if sample_mask is not None and bool(sample_mask.any()):
+                value_score += 120
+        except Exception:
+            pass
+        try:
+            text_cols = [c for c in sample.columns if pd.api.types.is_object_dtype(sample[c]) or pd.api.types.is_string_dtype(sample[c])]
+            if text_cols:
+                joined = sample[text_cols].astype(str).agg(" ".join, axis=1).map(_sheet_compact_name)
+                if any(bool(joined.str.contains(re.escape(alias), na=False).any()) for alias in aliases if alias):
+                    value_score += 90
+        except Exception:
+            pass
+        total_score = name_score + col_score + value_score
+        if total_score >= 80 and (name_score >= 70 or col_score >= 42 or value_score >= 90):
+            scored.append((total_score, name_score, value_score, col_score, sheet_name))
+    scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3], sheet_names.index(x[4]) if x[4] in sheet_names else 9999))
+    for total_score, name_score, value_score, col_score, sheet_name in scored:
+        try:
+            full = _parse_optional_sheet_cached(sheet_name)
+        except Exception:
+            continue
+        if full is None or not isinstance(full, pd.DataFrame) or full.empty:
+            continue
+        wide = _extract_vehicle_wide_category_df(full, menu_key)
+        if isinstance(wide, pd.DataFrame) and not wide.empty:
+            VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"auto_scan_wide:{sheet_name}")
+            return wide
+        try:
+            mask = _vehicle_group_filter_mask(full, menu_key)
+        except Exception:
+            mask = None
+        if mask is not None and bool(mask.any()):
+            filtered = full.loc[mask].copy()
+            if not filtered.empty:
+                VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"auto_scan_row:{sheet_name}:{len(filtered)}")
+                return filtered
+        if name_score >= 120 and _vehicle_sample_has_usable_columns(full):
+            VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"auto_scan_dedicated:{sheet_name}")
+            return full.copy()
+    return None
+
+
+def _build_vehicle_activity_bridge_from_lh(menu_key: str) -> pd.DataFrame:
+    """Last-resort real-data bridge from DoanhThu_LH_KV_Thang. No synthetic/random values."""
+    source_lh = globals().get("df_lh_all_periods", df_lh)
+    if source_lh is None or not isinstance(source_lh, pd.DataFrame) or source_lh.empty:
+        source_lh = df_lh
+    if menu_key not in {"xdt", "xpq"} or source_lh is None or not isinstance(source_lh, pd.DataFrame) or source_lh.empty:
+        return _empty_dashboard_df("dt")
+    src = source_lh.copy()
+    type_col = find_col_fuzzy(src, ["loaihinh_hoptac", "loai_hinh_hop_tac", "loại hình hợp tác", "loai hinh hop tac", "loai_hinh", "loại hình", "loaihinh", "loai hinh", "type", "loai", "nhom_xe", "nhóm xe"])
+    if type_col is None or type_col not in src.columns:
+        return _empty_dashboard_df("dt")
+    norm_type = src[type_col].astype(str).map(norm_text)
+    if menu_key == "xdt":
+        mask = norm_type.str.contains("xe cong ty|xe truc thuoc|truc thuoc|cong ty|xe dien|so huu", regex=True, na=False)
+        bridge_label = "Xe công ty / trực thuộc"
+    else:
+        mask = norm_type.str.contains("thuong quyen|tra gop|hop tac|phan quyen|nhuong quyen|doi tac|xe xang", regex=True, na=False)
+        bridge_label = "Xe thương quyền / phân quyền"
+    src = src.loc[mask].copy()
+    if src.empty:
+        return _empty_dashboard_df("dt")
+    if "thang_nam" not in src.columns:
+        mcol = find_col_fuzzy(src, ["thang_nam", "tháng năm", "thang", "tháng", "month", "period"])
+        src["thang_nam"] = _parse_vehicle_month_series(src[mcol]) if mcol else _current_vn_month_start()
+    src["thang_nam"] = pd.to_datetime(src["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    src["thang_nam_vn"] = pd.to_datetime(src.get("thang_nam_vn", src["thang_nam"]), errors="coerce").dt.to_period("M").dt.to_timestamp()
+    src["thang_label"] = src["thang_nam_vn"].dt.strftime("%m/%Y")
+    src["nam"] = src["thang_nam_vn"].dt.year
+    if "khu_vuc" not in src.columns:
+        rcol = find_col_fuzzy(src, ["khu_vuc", "khu vực", "region", "kv", "area", "chi_nhanh", "chi nhánh", "don_vi", "đơn vị"])
+        src["khu_vuc"] = src[rcol] if rcol else "Tổng hợp"
+    src["khu_vuc"] = src["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+    rev_col = find_col_fuzzy(src, ["tong_doanh_thu", "tổng doanh thu", "doanh_thu", "doanh thu", "revenue", "amount"])
+    trip_col = find_col_fuzzy(src, ["tong_so_cuoc", "tổng số cuốc", "so_cuoc", "số cuốc", "cuoc", "trip", "trips", "count"])
+    src["tong_doanh_thu"] = pd.to_numeric(src[rev_col], errors="coerce").fillna(0) if rev_col else 0
+    src["tong_so_cuoc"] = pd.to_numeric(src[trip_col], errors="coerce").fillna(0) if trip_col else 0
+    src["loai_xe"] = src[type_col].fillna(bridge_label).astype(str).str.strip()
+    src.loc[src["loai_xe"].eq(""), "loai_xe"] = bridge_label
+    src["nhom_nhien_lieu"] = "Dữ liệu hoạt động thực tế"
+    g = src.groupby(["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "loai_xe", "nhom_nhien_lieu"], as_index=False).agg(tong_doanh_thu=("tong_doanh_thu", "sum"), tong_so_cuoc=("tong_so_cuoc", "sum"))
+    g["so_luong_xe"] = pd.to_numeric(g["tong_so_cuoc"], errors="coerce").fillna(0)
+    g["tong_so_cho"] = 0
+    g["so_cho_binh_quan_xe"] = 0
+    g["so_cho_loc"] = 0
+    g["nhan_so_cho"] = "Không áp dụng"
+    g["so_bien_kiem_soat"] = 0
+    g["so_so_tai"] = 0
+    g["du_lieu_nguon"] = "activity_from_lh"
+    g["ghi_chu_nguon"] = "Không có sheet đội xe; hiển thị dữ liệu thật từ DoanhThu_LH_KV_Thang theo loại hình xe."
+    g = g[pd.to_numeric(g["so_luong_xe"], errors="coerce").fillna(0) > 0].copy()
+    if not g.empty:
+        VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"activity_bridge_lh:{len(g)}")
+    ordered_cols = ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "loai_xe", "nhom_nhien_lieu", "so_luong_xe", "tong_so_cho", "so_cho_binh_quan_xe", "so_cho_loc", "nhan_so_cho", "so_bien_kiem_soat", "so_so_tai", "tong_doanh_thu", "tong_so_cuoc", "du_lieu_nguon", "ghi_chu_nguon"]
+    return g[[c for c in ordered_cols if c in g.columns]].copy()
+
+
+def _first_present_column(dff: pd.DataFrame, candidates: list[str]):
+    try:
+        col = find_col_fuzzy(dff, candidates)
+        return col if col in dff.columns else None
+    except Exception:
+        return None
+
+
+def _normalize_activity_source_for_fleet(src: pd.DataFrame, menu_key: str, source_name: str, type_candidates: list[str]) -> pd.DataFrame:
+    """
+    Convert an existing real operational table into the fleet schema as a last-resort
+    visual bridge. It does not invent months, regions, revenue, trips or random values.
+    It only reuses rows already present in loaded Excel sheets.
+    """
+    if src is None or not isinstance(src, pd.DataFrame) or src.empty or menu_key not in {"xdt", "xpq"}:
+        return _empty_dashboard_df("dt")
+
+    dff = src.copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    month_col = _first_present_column(dff, [
+        "thang_nam", "tháng năm", "thang/nam", "tháng/năm", "thang nam", "tháng", "thang",
+        "month", "month_date", "period", "ky_bao_cao", "kỳ báo cáo", "ngay_du_lieu", "ngày dữ liệu",
+        "ngay_bao_cao", "ngày báo cáo", "report_date",
+    ])
+    if month_col is not None:
+        dff["thang_nam"] = _parse_vehicle_month_series(dff[month_col])
+    elif "thang_nam_vn" in dff.columns:
+        dff["thang_nam"] = _parse_vehicle_month_series(dff["thang_nam_vn"])
+    else:
+        return _empty_dashboard_df("dt")
+
+    dff["thang_nam"] = pd.to_datetime(dff["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff = dff[dff["thang_nam"].notna()].copy()
+    if dff.empty:
+        return _empty_dashboard_df("dt")
+
+    region_col = _first_present_column(dff, [
+        "khu_vuc", "khu vực", "khu vuc", "region", "kv", "area", "ten_khu_vuc", "tên khu vực",
+        "chi_nhanh", "chi nhánh", "chi nhanh", "don_vi", "đơn vị", "don vi", "tram", "trạm",
+    ])
+    dff["khu_vuc"] = dff[region_col] if region_col else "Tổng hợp"
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+
+    type_col = _first_present_column(dff, type_candidates)
+    menu_label = "Xe trực thuộc" if menu_key == "xdt" else "Xe phân quyền"
+    if type_col:
+        dff["loai_xe"] = dff[type_col].fillna("").astype(str).str.strip()
+        dff.loc[dff["loai_xe"].eq(""), "loai_xe"] = f"{menu_label} • dữ liệu hoạt động chưa phân loại"
+    else:
+        dff["loai_xe"] = f"{menu_label} • dữ liệu hoạt động chưa phân loại"
+
+    dff["nhom_nhien_lieu"] = f"Dữ liệu thật từ {source_name}"
+
+    rev_col = _first_present_column(dff, [
+        "tong_doanh_thu", "tổng doanh thu", "doanh_thu", "doanh thu", "revenue", "amount",
+        "tong_tien", "tổng tiền", "gia_tri", "giá trị", "value",
+    ])
+    trip_col = _first_present_column(dff, [
+        "tong_so_cuoc", "tổng số cuốc", "so_cuoc", "số cuốc", "cuoc", "cuốc", "trip", "trips",
+        "so_luong", "số lượng", "count", "quantity",
+    ])
+
+    dff["tong_doanh_thu"] = pd.to_numeric(dff[rev_col], errors="coerce").fillna(0) if rev_col else 0
+    trips = pd.to_numeric(dff[trip_col], errors="coerce").fillna(0) if trip_col else pd.Series(0, index=dff.index)
+
+    # Prefer true trip/count fields. If absent, count real source rows so the menu
+    # can still render a transparent "data points" bridge instead of a blank page.
+    has_real_count = bool(float(pd.to_numeric(trips, errors="coerce").fillna(0).sum()) > 0)
+    dff["_fleet_activity_metric"] = trips if has_real_count else 1
+
+    dff["thang_nam_vn"] = to_vn_datetime(dff["thang_nam"])
+    dff["thang_nam_vn"] = pd.to_datetime(dff["thang_nam_vn"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    dff["thang_label"] = dff["thang_nam_vn"].dt.strftime("%m/%Y")
+    dff["nam"] = dff["thang_nam_vn"].dt.year
+
+    g = dff.groupby(
+        ["thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc", "loai_xe", "nhom_nhien_lieu"],
+        as_index=False,
+    ).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        so_luong_xe=("_fleet_activity_metric", "sum"),
+    )
+
+    g = g[pd.to_numeric(g["so_luong_xe"], errors="coerce").fillna(0) > 0].copy()
+    if g.empty:
+        return _empty_dashboard_df("dt")
+
+    g["tong_so_cuoc"] = g["so_luong_xe"]
+    g["tong_so_cho"] = 0
+    g["so_cho_binh_quan_xe"] = 0
+    g["so_cho_loc"] = 0
+    g["nhan_so_cho"] = "Không áp dụng"
+    g["so_bien_kiem_soat"] = 0
+    g["so_so_tai"] = 0
+    g["du_lieu_nguon"] = "activity_bridge_real_unclassified"
+    g["ghi_chu_nguon"] = (
+        f"Không tìm thấy sheet/cột đội xe đủ chuẩn cho {menu_label}; "
+        f"menu đang hiển thị dữ liệu hoạt động thật từ {source_name}, không dùng dữ liệu ảo."
+    )
+    g["fleet_bridge_metric"] = "cuoc" if has_real_count else "dong_du_lieu"
+    try:
+        VEHICLE_LOAD_DIAGNOSTICS.setdefault(menu_key, []).append(f"activity_bridge_any:{source_name}:{len(g)}")
+    except Exception:
+        pass
+
+    ordered_cols = [
+        "thang_nam", "thang_nam_vn", "thang_label", "nam", "khu_vuc",
+        "loai_xe", "nhom_nhien_lieu", "so_luong_xe", "tong_so_cho",
+        "so_cho_binh_quan_xe", "so_cho_loc", "nhan_so_cho",
+        "so_bien_kiem_soat", "so_so_tai", "tong_doanh_thu", "tong_so_cuoc",
+        "du_lieu_nguon", "ghi_chu_nguon", "fleet_bridge_metric",
+    ]
+    return g[[c for c in ordered_cols if c in g.columns]].copy()
+
+
+def _build_vehicle_any_real_activity_bridge(menu_key: str) -> pd.DataFrame:
+    """
+    Highest-safety fallback for the two Phương tiện menus:
+    show real loaded operational data with explicit source labels rather than
+    blank menus or synthetic/proxy values.
+    """
+    candidate_sources = [
+        ("DoanhThu_LH_KV_Thang", globals().get("df_lh_all_periods", df_lh), [
+            "loaihinh_hoptac", "loai_hinh_hop_tac", "loại hình hợp tác", "loai hinh hop tac",
+            "loai_hinh_std", "loai_hinh", "loại hình", "loaihinh", "loai hinh", "type", "loai",
+        ]),
+        ("HopDong_KV_Thang", globals().get("df_hd_all_periods", df_hd), [
+            "loai_hopdong", "loai_hop_dong", "loại hợp đồng", "loai hop dong",
+            "loai_hop_dong_std", "loaihd", "loai_hd", "phan_loai", "nhom_hop_dong",
+        ]),
+        ("DoanhThu_Thang_KhuVuc", globals().get("df_dt_all_periods", df_dt), [
+            "nhom_phuong_tien", "nhóm phương tiện", "loai_xe", "loại xe", "loai_hinh", "loại hình",
+        ]),
+    ]
+    for source_name, source_df, type_candidates in candidate_sources:
+        bridge = _normalize_activity_source_for_fleet(source_df, menu_key, source_name, type_candidates)
+        if bridge is not None and not bridge.empty:
+            return bridge
+    return _empty_dashboard_df("dt")
+
+
+def _fleet_emergency_display_df(menu_key: str, current_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Return the best available real dataframe for a fleet menu without synthetic data.
+
+    This function is intentionally permissive: it is only used for xdt/xpq when
+    normal fleet data is empty after page filters/cutoffs. It reuses real rows
+    already loaded from the workbook and labels the source transparently.
+    """
+    if menu_key not in {"xdt", "xpq"}:
+        return _empty_dashboard_df("dt")
+    candidates = []
+    if isinstance(current_df, pd.DataFrame) and not current_df.empty:
+        candidates.append(current_df)
+    try:
+        candidates.append(_build_vehicle_activity_bridge_from_lh(menu_key))
+    except Exception:
+        pass
+    try:
+        candidates.append(_build_vehicle_any_real_activity_bridge(menu_key))
+    except Exception:
+        pass
+    for candidate in candidates:
+        if isinstance(candidate, pd.DataFrame) and not candidate.empty:
+            return candidate.copy()
+    return _empty_dashboard_df("dt")
+
 
 def _optional_or_proxy_menu_df(menu_key: str) -> pd.DataFrame:
     raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []))
@@ -1200,11 +2292,31 @@ def _optional_or_proxy_marketing_menu_df() -> pd.DataFrame:
 
 
 def _optional_or_proxy_vehicle_menu_df(menu_key: str) -> pd.DataFrame:
-    raw = _read_optional_sheet(OPTIONAL_MENU_SHEET_CANDIDATES.get(menu_key, []))
-    prepared = _prepare_vehicle_menu_df(raw)
-    if prepared is None or prepared.empty:
-        return _build_proxy_menu_dataset(menu_key)
-    return prepared
+    # Fleet menus are strict real-data only. No synthetic/proxy values are injected here.
+    # Load priority:
+    # 1) exact/dedicated vehicle sheets
+    # 2) generic vehicle sheets / universal sheet scan
+    # 3) classified real LH activity bridge
+    # 4) unclassified real operational bridge so the UI never goes blank when real data exists
+    raw = _read_vehicle_source_sheet(menu_key)
+    prepared = _prepare_vehicle_menu_df(raw, menu_key=menu_key)
+    if prepared is not None and not prepared.empty:
+        return prepared
+
+    raw = _read_vehicle_any_real_sheet(menu_key)
+    prepared = _prepare_vehicle_menu_df(raw, menu_key=menu_key)
+    if prepared is not None and not prepared.empty:
+        return prepared
+
+    bridge = _build_vehicle_activity_bridge_from_lh(menu_key)
+    if bridge is not None and not bridge.empty:
+        return bridge
+
+    bridge = _build_vehicle_any_real_activity_bridge(menu_key)
+    if bridge is not None and not bridge.empty:
+        return bridge
+
+    return _empty_dashboard_df("dt")
 
 
 df_emp = _optional_or_proxy_hr_menu_df("emp")
@@ -1217,10 +2329,73 @@ df_mkt = _optional_or_proxy_marketing_menu_df()
 df_bb = _optional_or_proxy_bienban_menu_df()
 df_xdt = _optional_or_proxy_vehicle_menu_df("xdt")
 df_xpq = _optional_or_proxy_vehicle_menu_df("xpq")
+try:
+    _xdt_total = pd.to_numeric(df_xdt.get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(df_xdt, pd.DataFrame) else 0
+    _xpq_total = pd.to_numeric(df_xpq.get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(df_xpq, pd.DataFrame) else 0
+    print(f"[FLEET LOAD] xdt_rows={len(df_xdt)} xdt_total={_xdt_total:.0f} xpq_rows={len(df_xpq)} xpq_total={_xpq_total:.0f}")
+    print(f"[FLEET LOAD] xdt_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xdt', [])[:4]} xpq_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xpq', [])[:4]}")
+except Exception:
+    pass
 
 # Final safety pass for every optional/proxy dataset. Any future month is hidden
 # from cards, charts, tables, filters and Excel export.
-_apply_real_data_cutoff_inplace_to_globals(["df_emp", "df_drv", "df_mkt", "df_bb", "df_xdt", "df_xpq"])
+# Do not apply the global current-month cutoff to fleet datasets. The two
+# Phuong tien menus have no year/month UI and should show the latest real fleet
+# period available in the workbook, even when that period is outside DEFAULT_YEAR.
+_apply_real_data_cutoff_inplace_to_globals(["df_emp", "df_drv", "df_mkt", "df_bb"])
+
+
+def _fleet_is_activity_bridge_df(dff: pd.DataFrame) -> bool:
+    try:
+        if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty or "du_lieu_nguon" not in dff.columns:
+            return False
+        src = dff["du_lieu_nguon"].astype(str)
+        return bool(src.eq("activity_from_lh").any() or src.str.contains("activity", case=False, na=False).any())
+    except Exception:
+        return False
+
+
+FLEET_ACTIVITY_BRIDGE = {
+    "xdt": _fleet_is_activity_bridge_df(df_xdt),
+    "xpq": _fleet_is_activity_bridge_df(df_xpq),
+}
+
+def _fleet_bridge_metric_kind(dff: pd.DataFrame) -> str:
+    try:
+        if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+            return "vehicle"
+        if "fleet_bridge_metric" in dff.columns:
+            vals = [str(x) for x in dff["fleet_bridge_metric"].dropna().astype(str).unique().tolist()]
+            if "dong_du_lieu" in vals:
+                return "dong_du_lieu"
+            if "cuoc" in vals:
+                return "cuoc"
+        if _fleet_is_activity_bridge_df(dff):
+            return "cuoc"
+    except Exception:
+        pass
+    return "vehicle"
+
+FLEET_BRIDGE_METRIC_KIND = {
+    "xdt": _fleet_bridge_metric_kind(df_xdt),
+    "xpq": _fleet_bridge_metric_kind(df_xpq),
+}
+
+def _fleet_metric_label(prefix: str) -> str:
+    kind = FLEET_BRIDGE_METRIC_KIND.get(prefix, "vehicle")
+    if kind == "dong_du_lieu":
+        return "Dòng dữ liệu hoạt động"
+    if kind == "cuoc":
+        return "Số cuốc phương tiện"
+    return "Số lượng xe"
+
+def _fleet_unit_label(prefix: str) -> str:
+    kind = FLEET_BRIDGE_METRIC_KIND.get(prefix, "vehicle")
+    if kind == "dong_du_lieu":
+        return "dòng"
+    if kind == "cuoc":
+        return "cuốc"
+    return "xe"
 
 def _build_vehicle_type_options(dff: pd.DataFrame):
     if dff is None or dff.empty or "loai_xe" not in dff.columns:
@@ -1377,6 +2552,22 @@ def get_scoped_hr_dept_options(prefix: str):
 
 HR_MENU_PREFIXES = ["emp", "drv"]
 FLEET_MENU_PREFIXES = ["xdt", "xpq"]
+
+def _is_fleet_menu(prefix) -> bool:
+    try:
+        return str(prefix) in FLEET_MENU_PREFIXES
+    except Exception:
+        return False
+
+def _resolve_year_filter_for_menu(menu: str, filt: dict | None = None, fallback_year=None):
+    # Phương tiện không có UI lọc năm, nên không tự áp DEFAULT_YEAR cho xdt/xpq.
+    if _is_fleet_menu(menu):
+        return None
+    filt = filt or {}
+    if "year" in filt:
+        return filt.get("year")
+    return fallback_year
+
 HR_DEPT_OPTIONS = {
     "emp": [{"label": x, "value": x} for x in sorted(df_emp.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()],
     "drv": [{"label": x, "value": x} for x in sorted(df_drv.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()],
@@ -3610,9 +4801,10 @@ def _zoom_table_styles(theme: str, dense: bool = False):
     return style_header, style_cell, style_table, wrapper_style
 
 
-def apply_common_filters(dff: pd.DataFrame, year_val=None, months=None, dims=None):
+def apply_common_filters(dff: pd.DataFrame, year_val=None, months=None, dims=None, real_cutoff: bool = True):
     out = apply_region_scope_to_df(dff)
-    out = _apply_real_data_cutoff(out)
+    if real_cutoff:
+        out = _apply_real_data_cutoff(out)
     if year_val is not None and "nam" in out.columns:
         out = out[out["nam"] == int(year_val)]
     if months and "thang_label" in out.columns:
@@ -3663,13 +4855,19 @@ def _apply_export_filters(menu: str, page: int, filt: dict) -> pd.DataFrame:
     key = menu
 
     filt = filt or {}
-    year_val = filt.get("year", DEFAULT_YEAR if "year" not in filt else None)
     months = (filt or {}).get("months", []) or []
     dims = (filt or {}).get("dims", []) or []
     type_filter = (filt or {}).get("type_filter", []) or []
     seat_filter = (filt or {}).get("seat_filter", []) or []
+    if _is_fleet_menu(menu):
+        year_val = None
+        months = []
+    else:
+        year_val = _resolve_year_filter_for_menu(menu, filt, DEFAULT_YEAR)
 
-    dff = apply_common_filters(base, year_val=year_val, months=months, dims=dims if page == 2 else None)
+    dff = apply_common_filters(base, year_val=year_val, months=months, dims=dims if page == 2 else None, real_cutoff=not _is_fleet_menu(menu))
+    if _is_fleet_menu(menu):
+        dff = _latest_fleet_snapshot_df(dff)
     if key == "lh" and type_filter and LH_COL in dff.columns:
         dff = dff[dff[LH_COL].astype(str).isin(type_filter)]
     if key == "hd" and type_filter and HD_COL in dff.columns:
@@ -4706,7 +5904,7 @@ MENU_CONFIG = {
         "value_col": "so_tien_thu_duoc",
         "metric_label": "Số tiền thu được",
         "secondary_col": "so_tien_da_xu_ly",
-        "secondary_label": "Số tiền đã hoàn tất xử lý",
+        "secondary_label": "Số tiền biên bản ghi nhận",
         "avg_label": "Số tiền còn nợ",
         "avg_mode": "per_secondary",
         "avg_divisor_label": "biên bản",
@@ -4723,14 +5921,15 @@ MENU_CONFIG = {
         "page2_title": "PHÂN TÍCH XE TRỰC THUỘC THEO KHU VỰC",
         "df": df_xdt,
         "value_col": "so_luong_xe",
-        "metric_label": "Số lượng xe",
-        "secondary_col": "so_bien_kiem_soat",
-        "secondary_label": "Khu vực có xe",
-        "avg_label": "Loại xe hoạt động",
+        "metric_label": _fleet_metric_label("xdt"),
+        "secondary_col": "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get("xdt") else "so_bien_kiem_soat",
+        "secondary_label": "Doanh thu phương tiện" if FLEET_ACTIVITY_BRIDGE.get("xdt") else "Khu vực có xe",
+        "avg_label": "Nhóm phương tiện hoạt động" if FLEET_ACTIVITY_BRIDGE.get("xdt") else "Loại xe hoạt động",
         "avg_mode": "per_secondary",
-        "avg_divisor_label": "xe",
-        "avg_numerator_col": "so_luong_xe",
+        "avg_divisor_label": _fleet_unit_label("xdt"),
+        "avg_numerator_col": "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get("xdt") else "so_luong_xe",
         "avg_denominator_col": "so_luong_xe",
+        "fleet_unit": _fleet_unit_label("xdt"),
         "icon": ICON_XDT,
         "type_filter_kind": "fleet",
         "dataset_keywords": ["xe truc thuoc", "xe trực thuộc", "xe dien", "xe điện", "loai xe"],
@@ -4744,14 +5943,15 @@ MENU_CONFIG = {
         "page2_title": "PHÂN TÍCH XE PHÂN QUYỀN THEO KHU VỰC",
         "df": df_xpq,
         "value_col": "so_luong_xe",
-        "metric_label": "Số lượng xe",
-        "secondary_col": "so_bien_kiem_soat",
-        "secondary_label": "Khu vực có xe",
-        "avg_label": "Loại xe hoạt động",
+        "metric_label": _fleet_metric_label("xpq"),
+        "secondary_col": "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get("xpq") else "so_bien_kiem_soat",
+        "secondary_label": "Doanh thu phương tiện" if FLEET_ACTIVITY_BRIDGE.get("xpq") else "Khu vực có xe",
+        "avg_label": "Nhóm phương tiện hoạt động" if FLEET_ACTIVITY_BRIDGE.get("xpq") else "Loại xe hoạt động",
         "avg_mode": "per_secondary",
-        "avg_divisor_label": "xe",
-        "avg_numerator_col": "so_luong_xe",
+        "avg_divisor_label": _fleet_unit_label("xpq"),
+        "avg_numerator_col": "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get("xpq") else "so_luong_xe",
         "avg_denominator_col": "so_luong_xe",
+        "fleet_unit": _fleet_unit_label("xpq"),
         "icon": ICON_XPQ,
         "type_filter_kind": "fleet",
         "dataset_keywords": ["xe phan quyen", "xe phân quyền", "xe xang", "xe xăng", "loai xe"],
@@ -5555,7 +6755,7 @@ def _detail_table_columns(prefix: str):
         "so_loai_hinh_kd": "Số loại hình KD",
         "tong_tien_de_xuat": "Tổng tiền đề xuất",
         "so_tien_thu_duoc": "Số tiền thu được",
-        "so_tien_da_xu_ly": "Số tiền đã xử lý",
+        "so_tien_da_xu_ly": "Số tiền biên bản ghi nhận",
         "so_tien_con_no": "Số tiền còn nợ",
         "so_bien_ban": "Số biên bản",
         "so_bien_ban_da_xu_ly": "Biên bản đã xử lý",
@@ -5825,6 +7025,32 @@ def _fleet_filter_text(dims=None, type_filter=None, seat_filter=None):
     return dims_show, tf_txt
 
 
+def _latest_fleet_snapshot_df(dff: pd.DataFrame) -> pd.DataFrame:
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return dff.copy() if isinstance(dff, pd.DataFrame) else pd.DataFrame()
+    if "thang_nam_vn" not in dff.columns:
+        return dff.copy()
+    months = _coerce_month_start(dff["thang_nam_vn"])
+    valid_months = months.dropna()
+    if valid_months.empty:
+        return dff.copy()
+    latest_month = valid_months.max()
+    out = dff.loc[months == latest_month].copy()
+    return out if not out.empty else dff.copy()
+
+
+def _fleet_snapshot_period_text(dff: pd.DataFrame) -> str:
+    try:
+        if dff is None or dff.empty or "thang_nam_vn" not in dff.columns:
+            return "Snapshot hiện tại"
+        months = _coerce_month_start(dff["thang_nam_vn"]).dropna()
+        if months.empty:
+            return "Snapshot hiện tại"
+        return f"Snapshot kỳ {pd.Timestamp(months.max()).strftime('%m/%Y')}"
+    except Exception:
+        return "Snapshot hiện tại"
+
+
 def _fleet_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
     cols = ["khu_vuc", "loai_xe", "nhom_nhien_lieu", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai"]
     if dff is None or dff.empty:
@@ -5886,7 +7112,7 @@ def _fleet_region_type_snapshot(dff: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
-def _fleet_kpi_lines_region(region_df: pd.DataFrame, max_lines: int = 4):
+def _fleet_kpi_lines_region(region_df: pd.DataFrame, max_lines: int = 4, unit: str = "xe"):
     if region_df is None or region_df.empty:
         return []
     lines = []
@@ -5894,13 +7120,13 @@ def _fleet_kpi_lines_region(region_df: pd.DataFrame, max_lines: int = 4):
         color = REGION_COLOR_MAP.get(str(r.get("khu_vuc", "Khác")), "#888")
         lines.append(_ellipsis_div([
             _swatch(color),
-            f"{r.get('khu_vuc', '')}: {r.get('xe_fmt', '0')} xe",
+            f"{r.get('khu_vuc', '')}: {r.get('xe_fmt', '0')} {unit}",
             html.Span(f" • {r.get('ty_trong_fmt', '0%')}", style={"opacity": 0.75}),
         ]))
     return lines
 
 
-def _fleet_kpi_lines_type(type_df: pd.DataFrame, max_lines: int = 4):
+def _fleet_kpi_lines_type(type_df: pd.DataFrame, max_lines: int = 4, unit: str = "xe"):
     if type_df is None or type_df.empty:
         return []
     lines = []
@@ -5909,7 +7135,7 @@ def _fleet_kpi_lines_type(type_df: pd.DataFrame, max_lines: int = 4):
         color = palette[i % len(palette)]
         lines.append(_ellipsis_div([
             _swatch(color),
-            f"{r.get('loai_xe', '')}: {r.get('xe_fmt', '0')} xe",
+            f"{r.get('loai_xe', '')}: {r.get('xe_fmt', '0')} {unit}",
             html.Span(f" • {r.get('ty_trong_fmt', '0%')}", style={"opacity": 0.75}),
         ]))
     return lines
@@ -7525,11 +8751,11 @@ app.layout = dbc.Container(
         dcc.Store(id="theme", data="light"),
 
         dcc.Store(id="filters-home", data={"year": DEFAULT_YEAR, "months": [], "dims": []}),
-        *[dcc.Store(id=f"filters-{p}-p1", data={"year": DEFAULT_YEAR, "months": []}) for p in DASH_PREFIXES],
-        *[dcc.Store(id=f"filters-{p}-p2", data={"year": DEFAULT_YEAR, "months": []}) for p in DASH_PREFIXES],
+        *[dcc.Store(id=f"filters-{p}-p1", data=({"year": None, "months": []} if p in FLEET_MENU_PREFIXES else {"year": DEFAULT_YEAR, "months": []})) for p in DASH_PREFIXES],
+        *[dcc.Store(id=f"filters-{p}-p2", data=({"year": None, "months": []} if p in FLEET_MENU_PREFIXES else {"year": DEFAULT_YEAR, "months": []})) for p in DASH_PREFIXES],
 
         dcc.Store(id="ai-chat-history", data=[]),
-        dcc.Interval(id="refresh-meta", interval=30 * 1000, n_intervals=0),
+        dcc.Interval(id="refresh-meta", interval=5 * 60 * 1000, n_intervals=0),
 
         dbc.Row([
             dbc.Col(
@@ -7835,6 +9061,18 @@ app.layout = dbc.Container(
     ]
 )
 
+PAGE_LAYOUT_CACHE = {}
+
+def _layout_scope_cache_key():
+    user = current_auth_user()
+    if not user:
+        return "anonymous"
+    return (
+        str(user.get("username", "")),
+        str(user.get("role", "")),
+        tuple(sorted(str(x) for x in (user.get("regions") or []))),
+    )
+
 def _build_active_page_layout(menu, page):
     menu = menu or "home"
     try:
@@ -7842,18 +9080,28 @@ def _build_active_page_layout(menu, page):
     except Exception:
         p = 0 if menu in ["home", "daily"] else 1
 
-    if menu == "home":
-        return home_page()
-    if menu == "daily":
-        return daily_latest_page()
+    cache_key = (str(menu), int(p), _layout_scope_cache_key())
+    cached_layout = PAGE_LAYOUT_CACHE.get(cache_key)
+    if cached_layout is not None:
+        return cached_layout
 
-    if menu in DASH_PREFIXES:
+    if menu == "home":
+        layout = home_page()
+    elif menu == "daily":
+        layout = daily_latest_page()
+    elif menu in DASH_PREFIXES:
         cfg = get_menu_config(menu)
         if p == 2:
-            return page_2(menu, cfg["page2_title"], cfg["df"], "khu_vuc")
-        return page_1(menu, cfg["page1_title"])
+            layout = page_2(menu, cfg["page2_title"], cfg["df"], "khu_vuc")
+        else:
+            layout = page_1(menu, cfg["page1_title"])
+    else:
+        layout = home_page()
 
-    return home_page()
+    if len(PAGE_LAYOUT_CACHE) > 48:
+        PAGE_LAYOUT_CACHE.clear()
+    PAGE_LAYOUT_CACHE[cache_key] = layout
+    return layout
 
 
 @app.callback(
@@ -8093,6 +9341,11 @@ def get_dashboard_update_display_payload() -> dict:
     LAST_UPDATED_CACHE["fingerprint"] = fingerprint
     LAST_UPDATED_CACHE["payload"] = copy.deepcopy(payload)
     return payload
+
+try:
+    get_dashboard_update_display_payload()
+except Exception:
+    pass
 
 
 @app.callback(
@@ -8606,7 +9859,7 @@ def _register_simple_menu_callbacks(prefix: str):
             prevent_initial_call=True
         )
         def _store_filters_p1_fleet(type_filter=None, seat_filter=None, _prefix=prefix):
-            payload = {"year": DEFAULT_YEAR, "months": []}
+            payload = {"year": None, "months": []}
             if type_filter:
                 payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
             if seat_filter:
@@ -8622,7 +9875,7 @@ def _register_simple_menu_callbacks(prefix: str):
         )
         def _store_filters_p2_fleet(dims, type_filter=None, seat_filter=None, _prefix=prefix):
             dims = dims if isinstance(dims, list) else ([dims] if dims else [])
-            payload = {"dims": dims, "year": DEFAULT_YEAR, "months": []}
+            payload = {"dims": dims, "year": None, "months": []}
             if type_filter:
                 payload["type_filter"] = type_filter if isinstance(type_filter, list) else [type_filter]
             if seat_filter:
@@ -9269,12 +10522,12 @@ def update_daily_latest(start_date, end_date, regions, theme):
 BB_METRIC_ORDER = ["so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]
 BB_METRIC_LABELS = {
     "so_tien_thu_duoc": "Số tiền thu được",
-    "so_tien_da_xu_ly": "Số tiền đã hoàn tất xử lý",
+    "so_tien_da_xu_ly": "Số tiền biên bản ghi nhận",
     "so_tien_con_no": "Số tiền còn nợ",
 }
 BB_METRIC_COLOR_MAP = {
     "Số tiền thu được": GREEN_PRIMARY,
-    "Số tiền đã hoàn tất xử lý": NAVY_PRIMARY,
+    "Số tiền biên bản ghi nhận": NAVY_PRIMARY,
     "Số tiền còn nợ": AMBER_PRIMARY,
 }
 
@@ -9328,6 +10581,7 @@ def callbacks(prefix: str):
     avg_divisor_label = cfg.get("avg_divisor_label", secondary_label.lower())
     avg_numerator_col = cfg.get("avg_numerator_col", value_col)
     avg_denominator_col = cfg.get("avg_denominator_col", secondary_col)
+    fleet_unit = cfg.get("fleet_unit", "xe")
     type_filter_kind = cfg.get("type_filter_kind")
 
     p1_filter_input = None
@@ -9432,7 +10686,7 @@ def callbacks(prefix: str):
             if p1_seat_filter_input is not None:
                 idx += 1
             menu, page = args[idx], args[idx + 1]
-            year_val = DEFAULT_YEAR
+            year_val = None
             months = []
         else:
             if p1_filter_input is not None:
@@ -9446,29 +10700,36 @@ def callbacks(prefix: str):
             raise PreventUpdate
 
         dff = apply_region_scope_to_df(df)
-        dff = _apply_real_data_cutoff(dff)
+        if type_filter_kind == "fleet":
+            dff = _latest_fleet_snapshot_df(dff)
+        else:
+            dff = _apply_real_data_cutoff(dff)
         if year_val is not None and "nam" in dff.columns:
             dff = dff[dff["nam"] == int(year_val)]
         if months and "thang_label" in dff.columns:
             dff = dff[dff["thang_label"].isin(months)]
         dff = _apply_type_filter(dff, type_filter)
         dff = _apply_fleet_seat_filter(dff, seat_filter)
+        if type_filter_kind == "fleet" and (dff is None or dff.empty):
+            dff = apply_region_scope_to_df(_fleet_emergency_display_df(prefix, df))
+            dff = _latest_fleet_snapshot_df(dff)
 
         if type_filter_kind == "fleet":
             _, tf_txt = _fleet_filter_text([], type_filter, seat_filter)
+            snapshot_txt = _fleet_snapshot_period_text(dff)
             region_df = _fleet_region_snapshot(dff)
             type_df = _fleet_type_snapshot(dff)
             region_type_df = _fleet_region_type_snapshot(dff)
             total = float(pd.to_numeric(region_df.get("so_luong_xe", 0), errors="coerce").fillna(0).sum()) if not region_df.empty else 0.0
             active_regions = int(region_df["khu_vuc"].nunique()) if not region_df.empty and "khu_vuc" in region_df.columns else 0
             type_count = int(type_df["loai_xe"].nunique()) if not type_df.empty and "loai_xe" in type_df.columns else 0
-            kpi_subtitle = f"Snapshot toàn đội xe{tf_txt}"
-            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6))
-            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • Snapshot hiện tại", _fleet_kpi_lines_region(region_df, max_lines=6))
-            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • Snapshot hiện tại", _fleet_kpi_lines_type(type_df, max_lines=6))
+            kpi_subtitle = f"{snapshot_txt}{tf_txt}"
+            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6, unit=fleet_unit))
+            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • {snapshot_txt}", _fleet_kpi_lines_region(region_df, max_lines=6, unit=fleet_unit))
+            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • {snapshot_txt}", _fleet_kpi_lines_type(type_df, max_lines=6, unit=fleet_unit))
             kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
-            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • Snapshot hiện tại", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
-            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • Snapshot hiện tại", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
+            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • {snapshot_txt}", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • {snapshot_txt}", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
 
             if dff.empty:
                 fig_kv = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
@@ -9515,7 +10776,7 @@ def callbacks(prefix: str):
                     "Xếp hạng: %{customdata[4]}<extra></extra>"
                 ),
             )
-            fig_kv = apply_exec_layout(fig_kv, theme=theme, title=f"Bản đồ phân bổ số lượng xe theo khu vực • Snapshot toàn tập đoàn{tf_txt}", top=210, x_title="Số lượng xe", y_title="Khu vực")
+            fig_kv = apply_exec_layout(fig_kv, theme=theme, title=f"Bản đồ phân bổ số lượng xe theo khu vực • {snapshot_txt}{tf_txt}", top=210, x_title="Số lượng xe", y_title="Khu vực")
             fig_kv.update_yaxes(categoryorder="array", categoryarray=g_region["khu_vuc"][::-1].tolist())
             fig_kv.update_layout(showlegend=False)
             if len(g_region) >= 2:
@@ -9524,7 +10785,7 @@ def callbacks(prefix: str):
             fig_kv_store = pack_fig_store(fig_kv, rows=g_region[["khu_vuc", "xe_fmt", "ty_trong_fmt", "bks_fmt"]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_region_bar", "metric_label": metric_label})
 
             g_type = type_df.copy()
-            fig_line = make_vn_donut(g_type, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe • Snapshot toàn tập đoàn{tf_txt}", max_slices=10, color_map=None, theme=theme)
+            fig_line = make_vn_donut(g_type, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe • {snapshot_txt}{tf_txt}", max_slices=10, color_map=None, theme=theme)
             fig_line_store = pack_fig_store(fig_line, rows=g_type[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_type_donut", "metric_label": metric_label})
 
             top_type = g_type.head(12).copy()
@@ -9545,7 +10806,7 @@ def callbacks(prefix: str):
                     "Hiện diện tại: %{customdata[2]} khu vực<extra></extra>"
                 ),
             )
-            fig_bar = apply_exec_layout(fig_bar, theme=theme, title=f"Top loại xe theo quy mô đội xe • Snapshot toàn tập đoàn{tf_txt}", top=210, x_title="Số lượng xe", y_title="Loại xe")
+            fig_bar = apply_exec_layout(fig_bar, theme=theme, title=f"Top loại xe theo quy mô đội xe • {snapshot_txt}{tf_txt}", top=210, x_title="Số lượng xe", y_title="Loại xe")
             fig_bar.update_yaxes(categoryorder="array", categoryarray=top_type["loai_xe"][::-1].tolist())
             fig_bar.update_layout(showlegend=False)
             fig_bar_store = pack_fig_store(fig_bar, rows=top_type[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_type_bar", "metric_label": metric_label})
@@ -9565,7 +10826,7 @@ def callbacks(prefix: str):
                 hovertemplate="Nhánh: %{label}<br>Số xe: %{customdata[0]}<extra></extra>",
                 marker=dict(cornerradius=8),
             )
-            fig_pie = apply_exec_layout(fig_pie, theme=theme, title=f"Bản đồ đội xe theo khu vực và loại xe • Snapshot toàn tập đoàn{tf_txt}", top=210)
+            fig_pie = apply_exec_layout(fig_pie, theme=theme, title=f"Bản đồ đội xe theo khu vực và loại xe • {snapshot_txt}{tf_txt}", top=210)
             fig_pie.update_layout(margin=dict(l=12, r=12, t=230, b=12))
             fig_pie_store = pack_fig_store(fig_pie, rows=treemap_source[["khu_vuc", "loai_xe", "xe_fmt"]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records"), meta={"chart": "fleet_treemap", "metric_label": metric_label})
 
@@ -9591,11 +10852,11 @@ def callbacks(prefix: str):
             payload3 = region_payload_value(dff, "so_tien_con_no", selected_regions=None, max_items=None)
 
             kpi1 = kpi_content(fmt_vn(collected_total), kpi_subtitle, region_value_lines_from_payload(payload1, max_lines=4))
-            kpi2 = kpi_content(fmt_vn(processed_total), f"{year_txt} • {mo_txt} • Giá trị đã xử lý", region_value_lines_from_payload(payload2, max_lines=4))
+            kpi2 = kpi_content(fmt_vn(processed_total), f"{year_txt} • {mo_txt} • Giá trị biên bản ghi nhận", region_value_lines_from_payload(payload2, max_lines=4))
             kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=4))
 
             kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi_subtitle, payload1)
-            kpi2_store = pack_kpi_store("Số tiền đã hoàn tất xử lý", fmt_vn(processed_total), f"{year_txt} • {mo_txt}", payload2)
+            kpi2_store = pack_kpi_store("Số tiền biên bản ghi nhận", fmt_vn(processed_total), f"{year_txt} • {mo_txt}", payload2)
             kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
 
             if dff.empty:
@@ -9915,7 +11176,7 @@ def callbacks(prefix: str):
             if p2_seat_filter_input is not None:
                 idx += 1
             menu, page = args[idx], args[idx + 1]
-            year_val = DEFAULT_YEAR
+            year_val = None
             months = []
         else:
             if p2_filter_input is not None:
@@ -9930,7 +11191,10 @@ def callbacks(prefix: str):
 
         dims = dim if isinstance(dim, list) else ([dim] if dim else [])
         dff = apply_region_scope_to_df(df)
-        dff = _apply_real_data_cutoff(dff)
+        if type_filter_kind == "fleet":
+            dff = _latest_fleet_snapshot_df(dff)
+        else:
+            dff = _apply_real_data_cutoff(dff)
         if dims and "khu_vuc" in dff.columns:
             dff = dff[dff["khu_vuc"].astype(str).isin([str(x) for x in dims])]
         if year_val is not None and "nam" in dff.columns:
@@ -9939,24 +11203,28 @@ def callbacks(prefix: str):
             dff = dff[dff["thang_label"].isin(months)]
         dff = _apply_type_filter(dff, type_filter)
         dff = _apply_fleet_seat_filter(dff, seat_filter)
+        if type_filter_kind == "fleet" and (dff is None or dff.empty):
+            dff = apply_region_scope_to_df(_fleet_emergency_display_df(prefix, df))
+            dff = _latest_fleet_snapshot_df(dff)
         dff = dff.sort_values("thang_nam_vn") if "thang_nam_vn" in dff.columns else dff
 
         if type_filter_kind == "fleet":
             dims_show, tf_txt = _fleet_filter_text(dims, type_filter, seat_filter)
+            snapshot_txt = _fleet_snapshot_period_text(dff)
             region_df = _fleet_region_snapshot(dff)
             type_df = _fleet_type_snapshot(dff)
             region_type_df = _fleet_region_type_snapshot(dff)
             total = float(pd.to_numeric(region_df.get("so_luong_xe", 0), errors="coerce").fillna(0).sum()) if not region_df.empty else 0.0
             active_regions = int(region_df["khu_vuc"].nunique()) if not region_df.empty and "khu_vuc" in region_df.columns else 0
             type_count = int(type_df["loai_xe"].nunique()) if not type_df.empty and "loai_xe" in type_df.columns else 0
-            kpi_subtitle = f"{dims_show}{tf_txt}"
-            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6))
-            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • {dims_show}", _fleet_kpi_lines_region(region_df, max_lines=6))
-            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • {dims_show}", _fleet_kpi_lines_type(type_df, max_lines=6))
+            kpi_subtitle = f"{dims_show} • {snapshot_txt}{tf_txt}"
+            kpi1 = kpi_content(fmt_vn(total), kpi_subtitle, _fleet_kpi_lines_region(region_df, max_lines=6, unit=fleet_unit))
+            kpi2 = kpi_content(fmt_vn(active_regions), f"{secondary_label} • {dims_show} • {snapshot_txt}", _fleet_kpi_lines_region(region_df, max_lines=6, unit=fleet_unit))
+            kpi3 = kpi_content(fmt_vn(type_count), f"{avg_label} • {dims_show} • {snapshot_txt}", _fleet_kpi_lines_type(type_df, max_lines=6, unit=fleet_unit))
             kpi1_store = pack_kpi_store(f"Tổng {metric_label}", fmt_vn(total), kpi_subtitle, region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
-            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • {dims_show}", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
-            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • {dims_show}", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
-            insight = f"{dims_show} • {fmt_vn(total)} xe • {active_regions} khu vực có xe • {type_count} loại xe hoạt động"
+            kpi2_store = pack_kpi_store(secondary_label, fmt_vn(active_regions), f"{secondary_label} • {dims_show} • {snapshot_txt}", region_df[[c for c in ["khu_vuc", "xe_fmt", "ty_trong_fmt"] if c in region_df.columns]].rename(columns={"xe_fmt": "metric_fmt"}).to_dict("records") if not region_df.empty else [])
+            kpi3_store = pack_kpi_store(avg_label, fmt_vn(type_count), f"{avg_label} • {dims_show} • {snapshot_txt}", type_df[[c for c in ["loai_xe", "xe_fmt", "ty_trong_fmt"] if c in type_df.columns]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records") if not type_df.empty else [])
+            insight = f"{dims_show} • {snapshot_txt} • {fmt_vn(total)} xe • {active_regions} khu vực có xe • {type_count} loại xe hoạt động"
 
             if dff.empty:
                 fig1 = empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
@@ -10004,7 +11272,7 @@ def callbacks(prefix: str):
                     "Xếp hạng: %{customdata[4]}<extra></extra>"
                 ),
             )
-            fig1 = apply_exec_layout(fig1, theme=theme, title=f"Số lượng xe theo khu vực • Snapshot điều hành<br>{dims_show}{tf_txt}", top=220, x_title="Số lượng xe", y_title="Khu vực")
+            fig1 = apply_exec_layout(fig1, theme=theme, title=f"Số lượng xe theo khu vực • {snapshot_txt}<br>{dims_show}{tf_txt}", top=220, x_title="Số lượng xe", y_title="Khu vực")
             fig1.update_yaxes(categoryorder="array", categoryarray=g_region["khu_vuc"][::-1].tolist())
             fig1.update_layout(showlegend=False)
             if len(g_region) >= 2:
@@ -10026,15 +11294,15 @@ def callbacks(prefix: str):
                 hovertemplate="Khu vực: %{x}<br>Loại xe: %{y}<br>Số xe: %{z:,.0f}<extra></extra>",
                 colorbar=dict(title="Số xe"),
             ))
-            fig2 = apply_exec_layout(fig2, theme=theme, title=f"Ma trận phân bổ xe theo khu vực và loại xe<br>{dims_show}{tf_txt}", top=220, x_title="Khu vực", y_title="Loại xe")
+            fig2 = apply_exec_layout(fig2, theme=theme, title=f"Ma trận phân bổ xe theo khu vực và loại xe<br>{dims_show} • {snapshot_txt}{tf_txt}", top=220, x_title="Khu vực", y_title="Loại xe")
             rows2 = [{"khu_vuc": str(r["khu_vuc"]), "loai_xe": str(r["loai_xe"]), "metric_fmt": r["xe_fmt"]} for _, r in region_type_df.iterrows()]
             fig2_store = pack_fig_store(fig2, rows=rows2, meta={"chart": "fleet_heatmap", "metric_label": metric_label})
 
             if type_count > 1:
-                fig3 = make_vn_donut(type_df, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe<br>{dims_show}{tf_txt}", max_slices=10, color_map=None, theme=theme)
+                fig3 = make_vn_donut(type_df, names="loai_xe", values="so_luong_xe", title=f"Cơ cấu số lượng xe theo loại xe<br>{dims_show} • {snapshot_txt}{tf_txt}", max_slices=10, color_map=None, theme=theme)
                 rows3 = type_df[["loai_xe", "xe_fmt", "ty_trong_fmt"]].rename(columns={"loai_xe": "label", "xe_fmt": "metric_fmt"}).to_dict("records")
             else:
-                fig3 = make_vn_donut(region_df, names="khu_vuc", values="so_luong_xe", title=f"Tỷ trọng số lượng xe theo khu vực<br>{dims_show}{tf_txt}", max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
+                fig3 = make_vn_donut(region_df, names="khu_vuc", values="so_luong_xe", title=f"Tỷ trọng số lượng xe theo khu vực<br>{dims_show} • {snapshot_txt}{tf_txt}", max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
                 rows3 = region_df[["khu_vuc", "xe_fmt", "ty_trong_fmt"]].rename(columns={"khu_vuc": "label", "xe_fmt": "metric_fmt"}).to_dict("records")
             fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "fleet_mix_donut", "metric_label": metric_label})
 
@@ -10071,7 +11339,7 @@ def callbacks(prefix: str):
             kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=6))
 
             kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi1_sub, payload1)
-            kpi2_store = pack_kpi_store("Số tiền đã hoàn tất xử lý", fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", payload2)
+            kpi2_store = pack_kpi_store("Số tiền biên bản ghi nhận", fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", payload2)
             kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
             insight = f"Thu được {fmt_vn(collected_total)} / Đã xử lý {fmt_vn(processed_total)} / Còn nợ {fmt_vn(debt_total)} – {dims_show}"
 
@@ -11777,6 +13045,8 @@ def answer_question(question: str, context: dict | None = None) -> str:
 
     ctx_filters = context.get("filters") or {}
     ctx_year = ctx_filters.get("year") or ctx_filters.get("year_p2")
+    if _is_fleet_menu(ds_key):
+        ctx_year = None
     ctx_months = ctx_filters.get("months") or ctx_filters.get("months_p2")
     ctx_regions = ctx_filters.get("dim") or ctx_filters.get("dims")
     if isinstance(ctx_regions, str):
