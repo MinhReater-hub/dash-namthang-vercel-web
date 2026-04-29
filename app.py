@@ -2791,6 +2791,7 @@ DASH_PREFIXES = ["dt", "lh", "hd", "emp", "drv", "mkt", "bb", "xdt", "xpq"]
 DASH_DATASETS = [df_dt, df_lh, df_hd, df_emp, df_drv, df_mkt, df_bb, df_xdt, df_xpq, df_daily_checker, df_daily_lh_checker, df_daily_hinhthuc_checker, df_daily_luong_checker, df_daily_socho_checker, df_daily_taixe_checker, df_daily_taixe_lh_checker, df_daily_taixe_hinhthuc_checker, df_daily_taixe_luong_checker, df_daily_taixe_socho_checker, df_daily_raw_checker]
 
 _all_months = pd.concat([dff["thang_nam_vn"] for dff in DASH_DATASETS], ignore_index=True)
+_all_months = pd.to_datetime(_all_months, errors="coerce")
 MONTH_OPTIONS_ALL = (
     _all_months.dropna()
               .drop_duplicates()
