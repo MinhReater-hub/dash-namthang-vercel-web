@@ -127,9 +127,6 @@ DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("
 DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
-<<<<<<< HEAD
-DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-=======
 # Chart zoom policy:
 # - KPI cards keep using lightweight rows.
 # - Chart cards must open the enlarged chart first; point/click drill-down appears only after the user clicks a data point.
@@ -137,7 +134,6 @@ DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE",
 #   so a production env value of 0 no longer degrades chart zoom into a table-only fallback.
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -5200,18 +5196,6 @@ def _limit_store_rows(rows, max_rows: int):
         return list(rows), False, total
     return rows, False, 0
 
-<<<<<<< HEAD
-def pack_fig_store(fig, rows=None, meta=None):
-    fig_dict = {}
-    if DASH_ZOOM_STORE_INCLUDE_FIGURE:
-        try:
-            fig_dict = fig.to_dict()
-        except Exception:
-            fig_dict = fig
-    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
-    meta_out = dict(meta or {})
-    meta_out["figure_included"] = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE)
-=======
 def _zoom_figure_to_store_dict(fig):
     """Serialize a Plotly figure for zoom without touching the displayed page chart.
 
@@ -5237,7 +5221,6 @@ def pack_fig_store(fig, rows=None, meta=None):
     meta_out = dict(meta or {})
     meta_out["figure_included"] = bool(fig_dict)
     meta_out["figure_policy"] = "chart_zoom_first" if fig_dict else "rows_only"
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
@@ -7171,17 +7154,6 @@ def _daily_driver_options():
 
 
 def _daily_default_start_date(min_d, max_d):
-<<<<<<< HEAD
-    try:
-        if max_d is None or pd.isna(max_d):
-            return min_d
-        start = pd.Timestamp(max_d).normalize() - pd.Timedelta(days=29)
-        if min_d is not None and not pd.isna(min_d):
-            start = max(start, pd.Timestamp(min_d).normalize())
-        return start
-    except Exception:
-        return min_d
-=======
     """Return a true 30-day opening window for the daily dashboard.
 
     Do not clamp the start date up to min_d. If the available bounds temporarily
@@ -7216,7 +7188,6 @@ def _daily_picker_min_date(min_d, default_start):
         except Exception:
             return None
     return min(candidates)
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
 
 def _first_non_empty_df(*frames):
@@ -7298,13 +7269,9 @@ def _daily_date_bounds():
     the control to a single day.
     """
     cutoff_day = _current_vn_day_start()
-<<<<<<< HEAD
-    for dff in [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]:
-=======
     frames = [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]
 
     def _collect(frame, explicit_only=True):
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
         try:
             if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
                 return []
@@ -7455,13 +7422,8 @@ def daily_latest_page():
     default_start = _daily_default_start_date(min_d, max_d)
     picker_min_d = _daily_picker_min_date(min_d, default_start)
     latest_iso = _date_iso(max_d)
-<<<<<<< HEAD
-    min_iso = _date_iso(min_d)
-    default_start_iso = _date_iso(_daily_default_start_date(min_d, max_d))
-=======
     min_iso = _date_iso(picker_min_d)
     default_start_iso = _date_iso(default_start)
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
     hero = executive_header(
         "DOANH THU CẬP NHẬT THEO NGÀY",
         "Theo dõi dữ liệu ngày: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
@@ -13773,27 +13735,6 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
         if not fig_dict:
-<<<<<<< HEAD
-            df_zoom = _zoom_prepare_df(pd.DataFrame(rows))
-            if not df_zoom.empty:
-                detail_children = _zoom_table_component(
-                    target,
-                    store,
-                    df_zoom,
-                    theme,
-                    title_prefix="BẢNG CHI TIẾT",
-                    subtitle_items=["Dữ liệu của biểu đồ", "Số liệu chi tiết"],
-                    dense=False,
-                    page_size=14,
-                )
-            else:
-                detail_children = _zoom_empty_panel("Không có dữ liệu chi tiết cho biểu đồ này.", theme)
-            return True, title, None, {}, {"display":"none"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
-
-        fig_dict = enhance_zoom_figure(fig_dict)
-        detail_children = _zoom_click_hint_panel(target, store, theme)
-        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
-=======
             # A chart card should never open as a data table. If the figure is missing
             # because an old deployment/env disabled figure storage, show a clear chart
             # placeholder and keep drill-down hidden until the user clicks a real point
@@ -13806,7 +13747,6 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         # Theo yêu cầu: lần click đầu vào chart chỉ phóng to đúng biểu đồ.
         # Bảng drill-down chỉ hiện sau khi người dùng click vào cột/điểm/lát trên biểu đồ zoom.
         return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
->>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
     raise PreventUpdate
 
