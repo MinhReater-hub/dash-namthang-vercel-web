@@ -21,6 +21,8 @@ from dash.exceptions import PreventUpdate
 import os
 import json
 import hmac
+import time
+from functools import wraps
 from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
 from werkzeug.security import check_password_hash
 
@@ -116,11 +118,16 @@ DASH_CACHE_DF_COPY_MODE = os.getenv("DASH_CACHE_DF_COPY_MODE", "shallow" if DASH
 DASH_GLOBAL_FILTER_CACHE = str(os.getenv("DASH_GLOBAL_FILTER_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_GLOBAL_FILTER_CACHE_MAX = int(os.getenv("DASH_GLOBAL_FILTER_CACHE_MAX", "768"))
 DASH_REGION_SCOPE_CACHE_MAX = int(os.getenv("DASH_REGION_SCOPE_CACHE_MAX", "384"))
-DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "1200"))
+DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "200"))
 DASH_FIGURE_STORE_MAX_ROWS = int(os.getenv("DASH_FIGURE_STORE_MAX_ROWS", str(DASH_ZOOM_STORE_MAX_ROWS)))
-DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "400"))
+DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "80"))
 DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX = int(os.getenv("DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX", "256"))
 DASH_LOG_BOOT_TIMING = str(os.getenv("DASH_LOG_BOOT_TIMING", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("DASH_LOG_BOOT_TIMING", "0"))).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
+DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -135,6 +142,33 @@ def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         pass
     return dff.copy()
+
+
+def _perf_log(label: str, started: float, extra: str = "") -> None:
+    if not (DASH_LOG_BOOT_TIMING or DASH_LOG_CALLBACK_TIMING):
+        return
+    try:
+        suffix = f" {extra}" if extra else ""
+        print(f"[DASH PERF] {label}: {time.perf_counter() - started:.3f}s{suffix}")
+    except Exception:
+        pass
+
+
+def timed_callback(label: str):
+    def _decorator(func):
+        @wraps(func)
+        def _wrapped(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                if DASH_LOG_CALLBACK_TIMING:
+                    _perf_log(f"callback:{label}", started)
+        return _wrapped
+    return _decorator
+
+
+_BOOT_STARTED = time.perf_counter()
 
 
 def _stable_list_key(values):
@@ -421,13 +455,22 @@ def _score_excel_workbook_for_dashboard(path: Path) -> int:
 
 
 def _resolve_dashboard_excel_file(candidates) -> Path | None:
+    env_file = os.getenv("DASH_EXCEL_FILE") or os.getenv("OUTPUT_EXCEL_FILE")
+    if env_file:
+        env_path = _resolve_first_existing_path([env_file])
+        if env_path is not None:
+            return env_path
+
     # 1) Keep original exact-path behavior first.
     exact = _resolve_first_existing_path(candidates)
     if exact is not None:
         return exact
 
-    # 2) Advanced real-file discovery: search common deployment folders for an
-    # existing workbook that actually contains the dashboard sheets.
+    # 2) Optional advanced discovery. This is expensive on serverless cold starts,
+    # so it is disabled by default for production/Vercel.
+    if not DASH_EXCEL_AUTO_DISCOVER:
+        return None
+
     search_roots = []
     for raw in [".", "output", "data", "assets", "/mnt/data"]:
         try:
@@ -481,9 +524,68 @@ def _empty_dashboard_df(kind: str) -> pd.DataFrame:
     return pd.DataFrame(columns=list(dict.fromkeys(base_cols)))
 
 
+def _cache_file_candidates(sheet_name: str) -> list[Path]:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(sheet_name)).strip("_")
+    names = [sheet_name, safe_name]
+    out = []
+    for name in names:
+        if not name:
+            continue
+        out.append(DASH_CACHE_DIR / f"{name}.parquet")
+        out.append(DASH_CACHE_DIR / f"{name}.feather")
+        out.append(DASH_CACHE_DIR / f"{name}.pkl")
+    seen = set()
+    unique = []
+    for item in out:
+        key = str(item)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _parse_cached_sheet(sheet_name: str) -> pd.DataFrame | None:
+    if not DASH_PREFER_PARQUET_CACHE:
+        return None
+    for fp in _cache_file_candidates(sheet_name):
+        try:
+            if not fp.exists():
+                continue
+            started = time.perf_counter()
+            suffix = fp.suffix.lower()
+            if suffix == ".parquet":
+                out = pd.read_parquet(fp)
+            elif suffix == ".feather":
+                out = pd.read_feather(fp)
+            elif suffix == ".pkl":
+                out = pd.read_pickle(fp)
+            else:
+                continue
+            if DASH_LOG_BOOT_TIMING:
+                _perf_log(f"read_cache:{sheet_name}", started, f"rows={len(out):,} file={fp}")
+            return out
+        except Exception as e:
+            DATA_LOAD_ERRORS.append(f"cache:{sheet_name}: {e}")
+    return None
+
+
+def _read_core_sheet(sheet_name: str, kind: str) -> pd.DataFrame:
+    if EXCEL_BOOK is not None:
+        return _parse_excel_sheet_or_empty(EXCEL_BOOK, sheet_name, kind)
+    cached = _parse_cached_sheet(sheet_name)
+    return cached if isinstance(cached, pd.DataFrame) else _empty_dashboard_df(kind)
+
+
 def _parse_excel_sheet_or_empty(book: pd.ExcelFile, sheet_name: str, kind: str) -> pd.DataFrame:
+    cached = _parse_cached_sheet(sheet_name)
+    if isinstance(cached, pd.DataFrame):
+        return cached
     try:
-        return book.parse(sheet_name=sheet_name)
+        started = time.perf_counter()
+        out = book.parse(sheet_name=sheet_name)
+        if DASH_LOG_BOOT_TIMING:
+            _perf_log(f"read_excel:{sheet_name}", started, f"rows={len(out):,}")
+        return out
     except Exception as e:
         DATA_LOAD_ERRORS.append(f"{sheet_name}: {e}")
         return _empty_dashboard_df(kind)
@@ -493,22 +595,26 @@ df_dt = _empty_dashboard_df("dt")
 df_lh = _empty_dashboard_df("lh")
 df_hd = _empty_dashboard_df("hd")
 
-if EXCEL_FILE is not None:
-    try:
+_core_started = time.perf_counter()
+try:
+    if EXCEL_FILE is not None:
         EXCEL_BOOK = pd.ExcelFile(EXCEL_FILE)
-        df_dt = _parse_excel_sheet_or_empty(EXCEL_BOOK, "DoanhThu_Thang_KhuVuc", "dt")
-        df_lh = _parse_excel_sheet_or_empty(EXCEL_BOOK, "DoanhThu_LH_KV_Thang", "lh")
-        df_hd = _parse_excel_sheet_or_empty(EXCEL_BOOK, "HopDong_KV_Thang", "hd")
-        if DATA_LOAD_ERRORS:
-            DATA_LOAD_ERROR = "Lỗi đọc một số sheet Excel: " + " | ".join(DATA_LOAD_ERRORS[:3])
-    except Exception as e:
-        EXCEL_BOOK = None
-        DATA_LOAD_ERROR = f"Lỗi mở file Excel: {e}"
-        df_dt = _empty_dashboard_df("dt")
-        df_lh = _empty_dashboard_df("lh")
-        df_hd = _empty_dashboard_df("hd")
-else:
-    DATA_LOAD_ERROR = "Không tìm thấy file Excel dữ liệu. Hãy kiểm tra lại đường dẫn 'bao_cao_doanh_thu_tong_hop.xlsx'."
+    df_dt = _read_core_sheet("DoanhThu_Thang_KhuVuc", "dt")
+    df_lh = _read_core_sheet("DoanhThu_LH_KV_Thang", "lh")
+    df_hd = _read_core_sheet("HopDong_KV_Thang", "hd")
+    if DATA_LOAD_ERRORS:
+        DATA_LOAD_ERROR = "Lỗi đọc một số sheet/cache: " + " | ".join(DATA_LOAD_ERRORS[:3])
+except Exception as e:
+    EXCEL_BOOK = None
+    DATA_LOAD_ERROR = f"Lỗi mở dữ liệu dashboard: {e}"
+    df_dt = _empty_dashboard_df("dt")
+    df_lh = _empty_dashboard_df("lh")
+    df_hd = _empty_dashboard_df("hd")
+
+if EXCEL_FILE is None and all(x.empty for x in [df_dt, df_lh, df_hd]):
+    DATA_LOAD_ERROR = "Không tìm thấy file Excel/cache dữ liệu. Hãy kiểm tra DASH_EXCEL_FILE hoặc DASH_CACHE_DIR."
+if DASH_LOG_BOOT_TIMING:
+    _perf_log("core_data_load", _core_started, f"excel={EXCEL_FILE} cache_dir={DASH_CACHE_DIR}")
 
 for df in [df_dt, df_lh, df_hd]:
     df["thang_nam"] = pd.to_datetime(df["thang_nam"]).dt.to_period("M").dt.to_timestamp()
@@ -968,15 +1074,22 @@ def _sheet_compact_name(value) -> str:
     return _sheet_name_key(value)
 
 def _parse_optional_sheet_cached(sheet_name: str, sample_only: bool = False):
-    if EXCEL_BOOK is None or sheet_name not in _excel_sheet_names:
-        return None
     cache = _OPTIONAL_SHEET_SAMPLE_CACHE if sample_only else _OPTIONAL_SHEET_CACHE
     cache_key = str(sheet_name)
     if cache_key not in cache:
-        if sample_only:
-            cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name, nrows=12)
+        cached_df = None if sample_only else _parse_cached_sheet(sheet_name)
+        if isinstance(cached_df, pd.DataFrame):
+            cache[cache_key] = cached_df
+        elif EXCEL_BOOK is not None and sheet_name in _excel_sheet_names:
+            started = time.perf_counter()
+            if sample_only:
+                cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name, nrows=12)
+            else:
+                cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name)
+            if DASH_LOG_BOOT_TIMING:
+                _perf_log(f"read_optional_excel:{sheet_name}", started, f"sample={sample_only} rows={len(cache[cache_key]) if isinstance(cache.get(cache_key), pd.DataFrame) else '-'}")
         else:
-            cache[cache_key] = EXCEL_BOOK.parse(sheet_name=sheet_name)
+            cache[cache_key] = None
     cached = cache.get(cache_key)
     return _return_df_cached(cached) if isinstance(cached, pd.DataFrame) else cached
 
@@ -1025,9 +1138,15 @@ def _vehicle_sample_has_usable_columns(sample_df: pd.DataFrame | None) -> bool:
     return _vehicle_sample_score(sample_df) >= 2
 
 def _read_optional_sheet(candidates, menu_key: str | None = None):
+    candidates = candidates if isinstance(candidates, list) else ([candidates] if candidates else [])
+    # Production fast path: try cache files by candidate sheet name before touching Excel.
+    if DASH_PREFER_PARQUET_CACHE and not menu_key:
+        for candidate in candidates:
+            cached_df = _parse_cached_sheet(str(candidate).strip())
+            if isinstance(cached_df, pd.DataFrame):
+                return _return_df_cached(cached_df)
     if EXCEL_BOOK is None:
         return None
-    candidates = candidates if isinstance(candidates, list) else ([candidates] if candidates else [])
     resolve_key = (tuple(str(x).strip() for x in candidates), str(menu_key or ""), tuple(map(str, _excel_sheet_name_list)))
     resolved_sheet_name = _OPTIONAL_SHEET_RESOLVE_CACHE.get(resolve_key, "__cache_miss__")
     if resolved_sheet_name != "__cache_miss__":
@@ -5072,12 +5191,15 @@ def _limit_store_rows(rows, max_rows: int):
     return rows, False, 0
 
 def pack_fig_store(fig, rows=None, meta=None):
-    try:
-        fig_dict = fig.to_dict()
-    except Exception:
-        fig_dict = fig
+    fig_dict = {}
+    if DASH_ZOOM_STORE_INCLUDE_FIGURE:
+        try:
+            fig_dict = fig.to_dict()
+        except Exception:
+            fig_dict = fig
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
+    meta_out["figure_included"] = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE)
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
@@ -7223,7 +7345,7 @@ def daily_latest_page():
     default_start_iso = _date_iso(_daily_default_start_date(min_d, max_d))
     hero = executive_header(
         "DOANH THU CẬP NHẬT THEO NGÀY",
-        "Theo dõi dữ liệu ngày từ dbo.doanhthungaychecker: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
+        "Theo dõi dữ liệu ngày: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
         right_children=html.Div(id="daily-summary", className="exec-chip-row")
     )
 
@@ -7358,6 +7480,21 @@ def _detail_table_columns(prefix: str):
         "tong_so_cuoc": "Tổng số cuốc",
         "avg_per_trip": "TB / cuốc",
         "avg_per_trip_fmt": "TB / cuốc",
+    "rev_ma7_fmt": "Doanh thu TB 7 ngày",
+    "daily_lh_label": "Loại hình hợp tác",
+    "hinhthuc_kinhdoanh": "Hình thức kinh doanh",
+    "loaihinh_hoptac": "Loại hình hợp tác",
+    "loai_luong": "Loại lương",
+    "so_cho": "Số chỗ",
+    "so_cho_num": "Số chỗ",
+    "thang": "Tháng",
+    "metric_label": "Chỉ tiêu",
+    "metric_key": "Mã chỉ tiêu",
+    "ty_trong_fmt": "Tỷ trọng",
+    "ty_trong_xe": "Tỷ trọng xe",
+    "xe_fmt": "Số lượng xe",
+    "bks_fmt": "Biển kiểm soát",
+    "so_tai_fmt": "Số tài",
         "top_region": "Khu vực dẫn đầu",
         "loai_hinh_std": "Loại hình hợp tác",
         "loaihinh_hoptac": "Loại hình hợp tác",
@@ -9663,7 +9800,11 @@ app.layout = dbc.Container(
             centered=True,
             style={"maxWidth": "98vw", "width": "98vw"},
             children=[
-                dbc.ModalHeader(dbc.ModalTitle(id="zoom-title", children="PHÓNG TO"), close_button=True),
+                dbc.ModalHeader(
+                    dbc.ModalTitle(id="zoom-title", children="PHÓNG TO", style={"fontWeight":"950", "letterSpacing":"0.02em"}),
+                    close_button=True,
+                    style={"background":"linear-gradient(135deg,#0f172a 0%,#14532d 65%,#16a34a 100%)", "color":"#ffffff", "borderBottom":"0", "padding":"14px 18px"}
+                ),
                 dbc.ModalBody(
                     dcc.Loading(type="default", children=html.Div([
                         html.Div(id="zoom-kpi-render", style={"width": "100%", "maxWidth": "100%"}),
@@ -9676,7 +9817,7 @@ app.layout = dbc.Container(
                         html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
                         html.Div(id="zoom-detail", style={"display": "none", "width": "100%", "maxWidth": "100%", "overflowX": "hidden"})
                     ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"})),
-                    style={"padding": "10px", "overflowX": "hidden"}
+                    style={"padding": "14px", "overflowX": "hidden", "backgroundColor": "#f8fafc"}
                 )
             ],
         ),
@@ -10664,6 +10805,7 @@ def _delta_class(v):
     Input("home-region", "value"),
     Input("theme", "data"),
 )
+@timed_callback("home")
 def update_home(year_val, months, regions, theme):
     regions = regions if isinstance(regions, list) else ([regions] if regions else [])
     dff_dt = apply_common_filters(df_dt, year_val=year_val, months=months or [], dims=regions or [])
@@ -10999,6 +11141,7 @@ def update_home(year_val, months, regions, theme):
     Input("daily-driver", "value"),
     Input("theme", "data"),
 )
+@timed_callback("daily_latest")
 def update_daily_latest(start_date, end_date, regions, drivers, theme):
     theme = theme or "light"
     regions = _normalize_multi_value(regions)
@@ -11374,6 +11517,8 @@ def callbacks(prefix: str):
         State("menu", "data"),
         State("page", "data"),
     )
+    @timed_callback(f"{prefix}.p1")
+    @timed_callback(f"{prefix}.hr_p1")
     def p1(*args):
         if type_filter_kind == "fleet":
             idx = 0
@@ -11398,15 +11543,11 @@ def callbacks(prefix: str):
         if menu != prefix or int(page) != 1:
             raise PreventUpdate
 
-        dff = apply_region_scope_to_df(df)
         if type_filter_kind == "fleet":
+            dff = apply_region_scope_to_df(df)
             dff = _latest_fleet_snapshot_df(dff)
         else:
-            dff = _apply_real_data_cutoff(dff)
-        if year_val is not None and "nam" in dff.columns:
-            dff = dff[dff["nam"] == int(year_val)]
-        if months and "thang_label" in dff.columns:
-            dff = dff[dff["thang_label"].isin(months)]
+            dff = apply_common_filters(df, year_val=year_val, months=months, dims=[], real_cutoff=True)
         dff = _apply_type_filter(dff, type_filter)
         dff = _apply_fleet_seat_filter(dff, seat_filter)
         if type_filter_kind == "fleet" and (dff is None or dff.empty):
@@ -11863,6 +12004,8 @@ def callbacks(prefix: str):
         State("menu", "data"),
         State("page", "data"),
     )
+    @timed_callback(f"{prefix}.p2")
+    @timed_callback(f"{prefix}.hr_p2")
     def p2(*args):
         if type_filter_kind == "fleet":
             idx = 0
@@ -11889,17 +12032,13 @@ def callbacks(prefix: str):
             raise PreventUpdate
 
         dims = dim if isinstance(dim, list) else ([dim] if dim else [])
-        dff = apply_region_scope_to_df(df)
         if type_filter_kind == "fleet":
+            dff = apply_region_scope_to_df(df)
             dff = _latest_fleet_snapshot_df(dff)
+            if dims and "khu_vuc" in dff.columns:
+                dff = dff[dff["khu_vuc"].astype(str).isin([str(x) for x in dims])]
         else:
-            dff = _apply_real_data_cutoff(dff)
-        if dims and "khu_vuc" in dff.columns:
-            dff = dff[dff["khu_vuc"].astype(str).isin([str(x) for x in dims])]
-        if year_val is not None and "nam" in dff.columns:
-            dff = dff[dff["nam"] == int(year_val)]
-        if months and "thang_label" in dff.columns:
-            dff = dff[dff["thang_label"].isin(months)]
+            dff = apply_common_filters(df, year_val=year_val, months=months, dims=dims, real_cutoff=True)
         dff = _apply_type_filter(dff, type_filter)
         dff = _apply_fleet_seat_filter(dff, seat_filter)
         if type_filter_kind == "fleet" and (dff is None or dff.empty):
@@ -13022,6 +13161,377 @@ for _prefix in [p for p in DASH_PREFIXES if p not in HR_MENU_PREFIXES]:
 for _prefix in HR_MENU_PREFIXES:
     hr_callbacks(_prefix)
 
+
+# =========================================================
+# PREMIUM ZOOM / DRILL-DOWN PRESENTATION
+# =========================================================
+ZOOM_COLUMN_LABELS = {
+    "thang_label": "Tháng",
+    "ngay_label": "Ngày dữ liệu",
+    "thang_nam": "Kỳ dữ liệu",
+    "thang_nam_vn": "Kỳ dữ liệu",
+    "nam": "Năm",
+    "khu_vuc": "Khu vực",
+    "label": "Nhóm dữ liệu",
+    "loai_hinh_std": "Loại hình hợp tác",
+    "loai_hop_dong_std": "Loại hợp đồng",
+    "loai_xe": "Dòng xe",
+    "nhom_nhien_lieu": "Nhóm nhiên liệu",
+    "nhom_vong_doi": "Nhóm vòng đời",
+    "bo_phan": "Bộ phận",
+    "metric_fmt": "Giá trị",
+    "val_fmt": "Giá trị",
+    "value_fmt": "Giá trị",
+    "avg_fmt": "Trung bình",
+    "rev_fmt": "Doanh thu",
+    "trip_fmt": "Số cuốc",
+    "avg_per_trip_fmt": "TB / cuốc",
+    "rev_ma7_fmt": "Doanh thu TB 7 ngày",
+    "daily_lh_label": "Loại hình hợp tác",
+    "hinhthuc_kinhdoanh": "Hình thức kinh doanh",
+    "loaihinh_hoptac": "Loại hình hợp tác",
+    "loai_luong": "Loại lương",
+    "so_cho": "Số chỗ",
+    "so_cho_num": "Số chỗ",
+    "thang": "Tháng",
+    "metric_label": "Chỉ tiêu",
+    "metric_key": "Mã chỉ tiêu",
+    "ty_trong_fmt": "Tỷ trọng",
+    "ty_trong_xe": "Tỷ trọng xe",
+    "xe_fmt": "Số lượng xe",
+    "bks_fmt": "Biển kiểm soát",
+    "so_tai_fmt": "Số tài",
+    "pct_fmt": "Tỷ trọng",
+    "pct_segment_fmt": "Đóng góp nhóm",
+    "count_fmt": "Số lượng",
+    "tong_doanh_thu_fmt": "Doanh thu",
+    "tong_so_cuoc_fmt": "Số cuốc",
+    "tong_doanh_thu": "Tổng doanh thu",
+    "tong_so_cuoc": "Tổng số cuốc",
+    "so_luong": "Số lượng",
+    "so_luong_fmt": "Số lượng",
+    "so_luong_nhan_su_fmt": "Nhân sự",
+    "so_vao_lam_fmt": "Vào làm",
+    "so_nghi_viec_fmt": "Nghỉ việc",
+    "headcount_dau_ky_fmt": "Đầu kỳ",
+    "so_giu_on_dinh_fmt": "Giữ ổn định",
+    "bien_dong_thuan_fmt": "Biến động thuần",
+    "so_duoi_1_nam_fmt": "Dưới 1 năm",
+    "so_tu_1_den_3_nam_fmt": "1 - 3 năm",
+    "so_tren_3_nam_fmt": "Trên 3 năm",
+    "ty_le_tang_fmt": "Tỷ lệ tăng",
+    "ty_le_giam_fmt": "Tỷ lệ giảm",
+    "ty_le_giu_chan_fmt": "Tỷ lệ giữ chân",
+    "so_xe_fmt": "Xe hoạt động",
+    "so_tai_xe_fmt": "Tài xế",
+    "sokm_vandoanh_fmt": "KM vận doanh",
+    "sokm_cokhach_fmt": "KM có khách",
+    "km_co_khach_ratio_fmt": "Tỷ lệ KM khách",
+    "so_luong_xe": "Số lượng xe",
+    "tong_so_cho": "Tổng số chỗ",
+    "so_cho_binh_quan_xe": "Số chỗ BQ / xe",
+    "so_bien_kiem_soat": "Số biển kiểm soát",
+    "so_so_tai": "Số số tài",
+    "tong_phai_chi": "Tổng phải chi",
+    "so_diem_tiep_thi": "Số điểm tiếp thị",
+    "so_ho_so_hoa_hong": "Hồ sơ hoa hồng",
+    "tong_da_chi_du": "Đã chi đủ",
+    "tong_chua_chi_du": "Chưa chi đủ",
+    "tong_khong_chi": "Không chi",
+    "tong_tien_de_xuat": "Tổng tiền đề xuất",
+    "so_tien_thu_duoc": "Tiền thu được",
+    "so_tien_da_xu_ly": "Tiền đã xử lý",
+    "so_tien_con_no": "Tiền còn nợ",
+    "so_bien_ban": "Số biên bản",
+    "top_region": "Khu vực dẫn đầu",
+}
+
+ZOOM_TARGET_LABELS = {
+    "home-main": "Tổng quan • Doanh thu & số cuốc theo tháng",
+    "home-region-donut": "Tổng quan • Cơ cấu doanh thu theo khu vực",
+    "home-region-bar": "Tổng quan • Top khu vực theo doanh thu",
+    "home-lh-donut": "Tổng quan • Cơ cấu doanh thu theo loại hình",
+    "home-hd-bar": "Tổng quan • Hợp đồng theo nhóm dịch vụ",
+    "daily-main": "Doanh thu ngày checker • Xu hướng doanh thu & số cuốc",
+    "daily-region-donut": "Doanh thu ngày checker • Cơ cấu theo khu vực",
+    "daily-region-bar": "Doanh thu ngày checker • Xếp hạng khu vực",
+    "daily-lh-donut": "Doanh thu ngày checker • Cơ cấu loại hình hợp tác",
+    "daily-hd-bar": "Doanh thu ngày checker • Hình thức kinh doanh",
+}
+
+ZOOM_SUFFIX_LABELS = {
+    "p1-line": "Page 1 • Xu hướng tổng hợp theo tháng",
+    "p1-bar": "Page 1 • Xếp hạng khu vực",
+    "p1-pie": "Page 1 • Cơ cấu theo khu vực",
+    "p2-line": "Page 2 • Xu hướng phân tích theo khu vực",
+    "p2-bar": "Page 2 • So sánh khu vực",
+    "p2-pie": "Page 2 • Cơ cấu dữ liệu sau lọc",
+    "kpi1": "KPI chính",
+    "kpi2": "KPI phụ trợ",
+    "kpi3": "KPI hiệu suất",
+    "kpi4": "KPI phạm vi hoạt động",
+}
+
+
+def _zoom_metric_label(meta=None, store=None):
+    meta = meta or {}
+    store = store or {}
+    value = meta.get("metric_label") or store.get("title") or "Giá trị"
+    try:
+        return str(value).strip() or "Giá trị"
+    except Exception:
+        return "Giá trị"
+
+
+def _zoom_column_label(col: str, metric_label: str = "Giá trị") -> str:
+    col = str(col)
+    if col in {"metric_fmt", "val_fmt", "value_fmt"}:
+        return metric_label or "Giá trị"
+    if col in ZOOM_COLUMN_LABELS:
+        return ZOOM_COLUMN_LABELS[col]
+    try:
+        cleaned = col.replace("_fmt", "").replace("_", " ").strip()
+        if not cleaned:
+            return col
+        return cleaned[:1].upper() + cleaned[1:]
+    except Exception:
+        return col
+
+
+def _zoom_target_label(target: str, meta=None, store=None) -> str:
+    target = str(target or "").strip()
+    meta = meta or {}
+    store = store or {}
+    if target in ZOOM_TARGET_LABELS:
+        return ZOOM_TARGET_LABELS[target]
+    if target.startswith("home-kpi"):
+        return f"Tổng quan • {store.get('title') or ZOOM_SUFFIX_LABELS.get(target.replace('home-', ''), 'KPI điều hành')}"
+    if target.startswith("daily-kpi"):
+        return f"Doanh thu ngày checker • {store.get('title') or ZOOM_SUFFIX_LABELS.get(target.replace('daily-', ''), 'KPI điều hành')}"
+    for prefix in DASH_PREFIXES:
+        prefix_key = f"{prefix}-"
+        if target.startswith(prefix_key):
+            try:
+                menu_label = get_menu_config(prefix).get("menu_label", prefix.upper())
+            except Exception:
+                menu_label = prefix.upper()
+            suffix = target[len(prefix_key):]
+            if suffix in ZOOM_SUFFIX_LABELS:
+                if suffix.startswith("kpi") and store.get("title"):
+                    return f"{menu_label} • {store.get('title')}"
+                return f"{menu_label} • {ZOOM_SUFFIX_LABELS[suffix]}"
+            for known_suffix, known_label in ZOOM_SUFFIX_LABELS.items():
+                if suffix.endswith(known_suffix):
+                    return f"{menu_label} • {known_label}"
+            return f"{menu_label} • {suffix.replace('-', ' ').upper()}"
+    chart_label = meta.get("chart") or target
+    return str(chart_label).replace("_", " ").replace("-", " ").upper()
+
+
+def _zoom_title(target: str, store=None) -> str:
+    store = store or {}
+    meta = store.get("meta", {}) or {}
+    return "PHÓNG TO • " + _zoom_target_label(target, meta=meta, store=store)
+
+
+def _zoom_table_title(target: str, store=None, prefix: str = "BẢNG PHÂN TÍCH") -> str:
+    store = store or {}
+    meta = store.get("meta", {}) or {}
+    return f"{prefix} • {_zoom_target_label(target, meta=meta, store=store)}"
+
+
+def _zoom_prepare_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame()
+    out = df.copy()
+    try:
+        if "pct" in out.columns and "pct_fmt" not in out.columns:
+            out["pct_fmt"] = pd.to_numeric(out["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+        for raw_col, fmt_col in [
+            ("tong_doanh_thu", "tong_doanh_thu_fmt"),
+            ("tong_so_cuoc", "tong_so_cuoc_fmt"),
+            ("metric", "metric_fmt"),
+            ("val", "val_fmt"),
+            ("value", "value_fmt"),
+            ("count", "count_fmt"),
+        ]:
+            if raw_col in out.columns and fmt_col not in out.columns:
+                out[fmt_col] = pd.to_numeric(out[raw_col], errors="coerce").fillna(0).apply(fmt_vn)
+    except Exception:
+        pass
+    return out
+
+
+def _zoom_columns_data(df: pd.DataFrame, metric_label: str = "Giá trị", preferred_ids=None, max_cols: int = 12):
+    df = _zoom_prepare_df(df)
+    if df.empty:
+        return [], []
+    preferred_ids = preferred_ids or [
+        "ngay_label", "thang_label", "khu_vuc", "label", "loai_hinh_std", "loai_hop_dong_std",
+        "loai_xe", "nhom_nhien_lieu", "bo_phan", "nhom_vong_doi",
+        "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "metric_fmt", "val_fmt", "value_fmt",
+        "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_fmt", "pct_fmt", "count_fmt",
+        "so_luong_nhan_su_fmt", "so_vao_lam_fmt", "so_nghi_viec_fmt", "ty_le_tang_fmt", "ty_le_giam_fmt", "ty_le_giu_chan_fmt",
+        "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
+        "so_luong_xe", "tong_so_cho", "so_cho_binh_quan_xe", "so_bien_kiem_soat", "so_so_tai",
+        "tong_phai_chi", "so_diem_tiep_thi", "so_ho_so_hoa_hong", "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_con_no",
+    ]
+    ids = [c for c in preferred_ids if c in df.columns]
+    if not ids:
+        ids = [c for c in df.columns if not str(c).startswith("_")][:max_cols]
+    ids = ids[:max_cols]
+    columns = [{"name": _zoom_column_label(c, metric_label), "id": c} for c in ids]
+    data = df[ids].to_dict("records")
+    return columns, json_safe(data)
+
+
+def _zoom_badge(text, icon="fa-circle-info", tone="green"):
+    if tone == "dark":
+        bg, fg, border = "#0f172a", "#ffffff", "#1e293b"
+    elif tone == "amber":
+        bg, fg, border = "#fffbeb", "#92400e", "#fde68a"
+    else:
+        bg, fg, border = "#ecfdf5", "#166534", "#bbf7d0"
+    return html.Span(
+        [fa_icon(icon, 11, fg), html.Span(str(text), className="ms-1")],
+        style={
+            "display": "inline-flex", "alignItems": "center", "gap": "4px",
+            "padding": "7px 10px", "borderRadius": "999px", "backgroundColor": bg,
+            "color": fg, "border": f"1px solid {border}", "fontSize": "12px", "fontWeight": "900",
+            "marginRight": "8px", "marginBottom": "8px", "whiteSpace": "nowrap",
+        }
+    )
+
+
+def _zoom_table_component(target: str, store: dict, df: pd.DataFrame, theme: str, title_prefix: str = "BẢNG PHÂN TÍCH", subtitle_items=None, dense: bool = False, page_size: int = 14):
+    store = store or {}
+    meta = store.get("meta", {}) or {}
+    df = _zoom_prepare_df(df)
+    metric_label = _zoom_metric_label(meta, store)
+    columns, data = _zoom_columns_data(df, metric_label=metric_label, max_cols=14 if not dense else 10)
+    z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=dense)
+    row_count = len(df) if isinstance(df, pd.DataFrame) else 0
+    title = _zoom_table_title(target, store, title_prefix)
+    subtitle = " • ".join([str(x) for x in (subtitle_items or []) if str(x).strip()])
+    if not subtitle:
+        subtitle = "Bảng drill-down được chuẩn hóa tên cột tiếng Việt để đối chiếu nhanh với KPI và biểu đồ."
+    card_style = {
+        "border": f"1.5px solid {GREEN_BORDER if theme == 'light' else '#3b3b57'}",
+        "boxShadow": f"0 16px 34px {GREEN_SHADOW if theme == 'light' else 'rgba(20,20,45,0.22)'}",
+        "borderRadius": "22px",
+        "overflow": "hidden",
+        "backgroundColor": "#ffffff" if theme == "light" else DARK_BG,
+        "width": "100%",
+    }
+    head_bg = "linear-gradient(135deg,#f8fafc 0%,#ecfdf5 100%)" if theme == "light" else "linear-gradient(135deg,#111827 0%,#064e3b 100%)"
+    head_color = "#0f172a" if theme == "light" else "#ffffff"
+    return dbc.Card(
+        dbc.CardBody([
+            html.Div([
+                html.Div([
+                    html.Div("TRUNG TÂM PHÂN TÍCH", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.14em", "color": GREEN_PRIMARY, "textTransform":"uppercase"}),
+                    html.Div(title, style={"fontSize":"21px", "fontWeight":"950", "lineHeight":"1.25", "marginTop":"4px", "color": head_color}),
+                    html.Div(subtitle, style={"fontSize":"13px", "fontWeight":"700", "opacity":0.78, "marginTop":"6px", "color": head_color}),
+                ], style={"minWidth":0, "flex":"1 1 auto"}),
+                html.Div([
+                    _zoom_badge(f"{fmt_vn(row_count)} dòng", "fa-table-list", "green"),
+                    _zoom_badge(metric_label, "fa-chart-line", "dark" if theme != "light" else "green"),
+                    _zoom_badge("Drill-down", "fa-magnifying-glass-chart", "amber"),
+                ], style={"display":"flex", "flexWrap":"wrap", "justifyContent":"flex-end", "alignItems":"center"}),
+            ], style={"display":"flex", "gap":"14px", "alignItems":"flex-start", "justifyContent":"space-between", "padding":"16px", "borderRadius":"18px", "background": head_bg, "border":"1px solid rgba(34,197,94,0.18)", "marginBottom":"14px"}),
+            html.Div(
+                dash_table.DataTable(
+                    columns=columns,
+                    data=data,
+                    page_size=page_size,
+                    sort_action="native",
+                    filter_action="none",
+                    cell_selectable=True,
+                    fixed_rows={"headers": True},
+                    style_header=z_style_header,
+                    style_cell=z_style_cell,
+                    style_table={**z_style_table, "maxHeight": "58vh", "overflowY": "auto"},
+                    style_data_conditional=[
+                        {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc" if theme == "light" else "#111827"},
+                        {"if": {"state": "active"}, "backgroundColor": "#ecfdf5" if theme == "light" else "#064e3b", "border": f"1px solid {GREEN_BORDER}"},
+                        {"if": {"state": "selected"}, "backgroundColor": "#dcfce7" if theme == "light" else "#14532d", "border": f"1px solid {GREEN_BORDER}"},
+                    ],
+                ) if columns else html.Div("Không có dữ liệu chi tiết để hiển thị.", style={"opacity":0.82, "fontWeight":"800", "padding":"16px"}),
+                style=z_wrapper_style,
+            )
+        ], style={"padding":"14px", "width":"100%"}),
+        style=card_style,
+    )
+
+
+def _zoom_empty_panel(message: str, theme: str):
+    return dbc.Card(
+        dbc.CardBody([
+            html.Div(fa_icon("fa-database", 26, GREEN_PRIMARY), style={"marginBottom":"8px"}),
+            html.Div("Chưa có dữ liệu chi tiết", style={"fontSize":"18px", "fontWeight":"950"}),
+            html.Div(message, style={"opacity":0.78, "fontWeight":"700", "marginTop":"4px"}),
+        ]),
+        style={"border": f"1.5px solid {GREEN_BORDER}", "borderRadius":"22px", "boxShadow":f"0 12px 26px {GREEN_SHADOW}", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
+    )
+
+
+def _zoom_click_hint_panel(target: str, store: dict, theme: str):
+    return dbc.Card(
+        dbc.CardBody([
+            html.Div([
+                html.Div("CHẾ ĐỘ PHÂN TÍCH TƯƠNG TÁC", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.13em", "color":GREEN_PRIMARY}),
+                html.Div(_zoom_table_title(target, store, "BIỂU ĐỒ PHÓNG TO"), style={"fontSize":"18px", "fontWeight":"950", "marginTop":"4px"}),
+                html.Div("Click trực tiếp vào cột, điểm dữ liệu hoặc lát biểu đồ để mở bảng drill-down tương ứng ngay bên dưới.", style={"opacity":0.78, "fontWeight":"750", "marginTop":"4px"}),
+            ]),
+            html.Div([
+                _zoom_badge("Có thể cuộn / zoom", "fa-up-down-left-right", "green"),
+                _zoom_badge("Bảng chi tiết theo điểm click", "fa-table", "amber"),
+            ], style={"marginTop":"10px"}),
+        ]),
+        style={"border": f"1.5px solid {GREEN_BORDER}", "borderRadius":"22px", "boxShadow":f"0 12px 26px {GREEN_SHADOW}", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
+    )
+
+
+def _zoom_kpi_panel(target: str, store: dict, df_zoom: pd.DataFrame, theme: str):
+    df_zoom = _zoom_prepare_df(df_zoom)
+    metric_label = store.get("title", "KPI")
+    columns, data = _zoom_columns_data(df_zoom, metric_label=metric_label, max_cols=14)
+    z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
+    return dbc.Card(
+        dbc.CardBody([
+            html.Div([
+                html.Div([
+                    html.Div("KPI ĐIỀU HÀNH", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.14em", "color":GREEN_PRIMARY}),
+                    html.Div(_zoom_target_label(target, store=store), style={"fontSize":"22px", "fontWeight":"950", "lineHeight":"1.25", "marginTop":"4px"}),
+                    html.Div(store.get("subtitle", ""), style={"fontSize":"13px", "opacity":0.78, "fontWeight":"800", "marginTop":"5px"}),
+                ], style={"flex":"1 1 auto", "minWidth":0}),
+                html.Div(store.get("main", "0"), style={"fontSize":"46px", "fontWeight":"950", "lineHeight":"1", "color":GREEN_PRIMARY, "textAlign":"right"}),
+            ], style={"display":"flex", "gap":"18px", "alignItems":"center", "justifyContent":"space-between", "padding":"18px", "borderRadius":"20px", "background":"linear-gradient(135deg,#f8fafc 0%,#ecfdf5 100%)" if theme == "light" else "linear-gradient(135deg,#111827 0%,#064e3b 100%)", "border":"1px solid rgba(34,197,94,0.20)", "marginBottom":"14px"}),
+            html.Div([
+                _zoom_badge(f"{fmt_vn(len(df_zoom))} khu vực", "fa-layer-group", "green"),
+                _zoom_badge("Bảng", "fa-table-columns", "amber"),
+            ], style={"marginBottom":"8px"}),
+            html.Div(
+                dash_table.DataTable(
+                    columns=columns,
+                    data=data,
+                    page_size=12,
+                    sort_action="native",
+                    fixed_rows={"headers": True},
+                    style_header=z_style_header,
+                    style_cell=z_style_cell,
+                    style_table={**z_style_table, "maxHeight":"58vh", "overflowY":"auto"},
+                    style_data_conditional=[
+                        {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc" if theme == "light" else "#111827"},
+                        {"if": {"state": "active"}, "backgroundColor": "#ecfdf5" if theme == "light" else "#064e3b", "border": f"1px solid {GREEN_BORDER}"},
+                    ],
+                ) if columns else html.Div("KPI này chưa có bảng chi tiết.", style={"opacity":0.8, "fontWeight":"800"}),
+                style=z_wrapper_style,
+            )
+        ], style={"width":"100%", "padding":"14px"}),
+        style={"border": f"1.5px solid {GREEN_BORDER if theme == 'light' else '#3b3b57'}", "boxShadow": f"0 16px 34px {GREEN_SHADOW}", "borderRadius":"24px", "width":"100%", "overflow":"hidden", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
+    )
+
 @app.callback(
     Output("zoom-modal", "is_open"),
     Output("zoom-title", "children"),
@@ -13064,7 +13574,7 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         fig = store.get("figure", {}) or {}
 
         if not rows:
-            detail = html.Div("Không có dữ liệu drill-down cho biểu đồ này.", style={"opacity":0.85})
+            detail = _zoom_empty_panel("Biểu đồ này chưa có dữ liệu drill-down đi kèm trong store.", theme)
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
         pt = (clickData.get("points") or [{}])[0]
@@ -13100,61 +13610,20 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             df2 = df[df["label"].astype(str) == str(label)]
             if not df2.empty:
                 df = df2
-        if "pct" in df.columns and "pct_fmt" not in df.columns:
-            df["pct_fmt"] = pd.to_numeric(df["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
 
+        df = _zoom_prepare_df(df)
         if df.empty:
-            detail = html.Div("Không tìm thấy dòng dữ liệu phù hợp cho điểm bạn click.", style={"opacity":0.85})
+            detail = _zoom_empty_panel("Không tìm thấy dòng dữ liệu phù hợp với điểm/cột bạn vừa click.", theme)
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
-        metric_label = meta.get("metric_label", "Giá trị")
-
-        preferred_cols = [
-            ("Tháng", "thang_label"),
-            ("Khu vực", "khu_vuc"),
-            ("Nhóm", "label"),
-            ("Nhóm vòng đời", "nhom_vong_doi"),
-            (metric_label, "metric_fmt"),
-            (metric_label, "val_fmt"),
-            ("Tỷ trọng", "pct_fmt"),
-            ("Quy mô", "count_fmt"),
-            ("Đóng góp nhóm", "pct_segment_fmt"),
-        ]
-        out_cols = [(a, b) for a, b in preferred_cols if b in df.columns]
-
-        if not out_cols:
-            out_cols = [(c, c) for c in df.columns[:8]]
-
-        columns = [{"name": a, "id": b} for a, b in out_cols]
-        data = df[[b for _, b in out_cols if b in df.columns]].to_dict("records")
-
-        title = f"CHI TIẾT • {metric_label}"
         subtitle = []
         if month_label:
             subtitle.append(f"Tháng: {month_label}")
         if region:
-            subtitle.append(f"Trace/KV: {region}")
-
-        style_header, style_cell, style_table, wrapper_style = _zoom_table_styles(theme, dense=True)
-
-        detail = dbc.Card(
-            dbc.CardBody([
-                html.Div(title, style={"fontSize":"15px","fontWeight":"900"}),
-                html.Div(" • ".join(subtitle), style={"opacity":0.85,"marginBottom":"8px","fontWeight":"700"}),
-                html.Div(
-                    dash_table.DataTable(
-                        columns=columns,
-                        data=data,
-                        page_size=14,
-                        style_cell=style_cell,
-                        style_header=style_header,
-                        style_table=style_table,
-                    ),
-                    style=wrapper_style,
-                )
-            ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
-            style={"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
-        )
+            subtitle.append(f"Chuỗi/Khu vực: {region}")
+        if label and str(label) != str(month_label):
+            subtitle.append(f"Nhóm: {label}")
+        detail = _zoom_table_component(target, store, df, theme, title_prefix="CHI TIẾT ĐIỂM DỮ LIỆU", subtitle_items=subtitle, dense=True, page_size=14)
         return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
     if isinstance(trig, dict) and trig.get("type") == "zoomable":
@@ -13175,79 +13644,35 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         if not store:
             raise PreventUpdate
 
-        title = f"PHÓNG TO • {target}"
-        detail_children = []
-        detail_style = {"display": "none"}
+        title = _zoom_title(target, store)
 
         if store.get("kind") == "kpi" or kind == "kpi":
-            rows = store.get("rows", []) or []
-            cols = []
-            data = []
-            df_zoom = pd.DataFrame(rows)
-
-            if not df_zoom.empty and "pct" in df_zoom.columns and "pct_fmt" not in df_zoom.columns:
-                df_zoom["pct_fmt"] = pd.to_numeric(df_zoom["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
-
-            preferred_cols = [
-                ("Khu vực", "khu_vuc"),
-                (store.get("title", "Giá trị"), "value_fmt"),
-                ("Trung bình", "avg_fmt"),
-                ("Tỷ trọng", "pct_fmt"),
-                ("Nhân sự", "so_luong_nhan_su_fmt"),
-                ("Vào làm", "so_vao_lam_fmt"),
-                ("Nghỉ việc", "so_nghi_viec_fmt"),
-                ("Đầu kỳ", "headcount_dau_ky_fmt"),
-                ("Giữ ổn định", "so_giu_on_dinh_fmt"),
-                ("Biến động thuần", "bien_dong_thuan_fmt"),
-                ("Dưới 1 năm", "so_duoi_1_nam_fmt"),
-                ("1 - 3 năm", "so_tu_1_den_3_nam_fmt"),
-                ("Trên 3 năm", "so_tren_3_nam_fmt"),
-                ("Tỷ lệ tăng", "ty_le_tang_fmt"),
-                ("Tỷ lệ giảm", "ty_le_giam_fmt"),
-                ("Tỷ lệ giữ chân", "ty_le_giu_chan_fmt"),
-            ]
-            if not df_zoom.empty:
-                use_cols = [(a, b) for a, b in preferred_cols if b in df_zoom.columns]
-                if not use_cols:
-                    use_cols = [(c, c) for c in df_zoom.columns[:8]]
-                cols = [{"name": a, "id": b} for a, b in use_cols]
-                data = df_zoom[[b for _, b in use_cols]].to_dict("records")
-
-            z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
-            if theme == "light":
-                z_card_style = {"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
-            else:
-                z_card_style = {"border":"1px solid #3b3b57","boxShadow":"0 0 20px rgba(90,80,255,0.15)", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
-
-            kpi_card = dbc.Card(
-                dbc.CardBody([
-                    html.Div(store.get("title","KPI"), style={"fontSize":"14px","fontWeight":"900","opacity":0.85}),
-                    html.Div(store.get("main","0"), style={"fontSize":"44px","fontWeight":"900","marginTop":"6px"}),
-                    html.Div(store.get("subtitle",""), style={"fontSize":"13px","opacity":0.85,"fontWeight":"800","marginTop":"4px"}),
-                    html.Hr(style={"borderColor":"#d0d7e2" if theme=="light" else "#444"}),
-                    html.Div(
-                        dash_table.DataTable(
-                            columns=cols,
-                            data=data,
-                            page_size=12,
-                            style_header=z_style_header,
-                            style_cell=z_style_cell,
-                            style_table=z_style_table,
-                        ) if cols else html.Div("Không có breakdown theo khu vực.", style={"opacity":0.8}),
-                        style=z_wrapper_style,
-                    )
-                ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
-                style=z_card_style
-            )
+            df_zoom = _zoom_prepare_df(pd.DataFrame(store.get("rows", []) or []))
+            kpi_card = _zoom_kpi_panel(target, store, df_zoom, theme)
             return True, title, kpi_card, {}, {"display":"none"}, [], {"display":"none"}, {"kind":"kpi","target":target}
 
-        fig_dict = store.get("figure", {})
+        fig_dict = store.get("figure", {}) or {}
+        rows = store.get("rows", []) or []
+        if not fig_dict:
+            df_zoom = _zoom_prepare_df(pd.DataFrame(rows))
+            if not df_zoom.empty:
+                detail_children = _zoom_table_component(
+                    target,
+                    store,
+                    df_zoom,
+                    theme,
+                    title_prefix="BẢNG CHI TIẾT",
+                    subtitle_items=["Dữ liệu của biểu đồ", "Số liệu chi tiết"],
+                    dense=False,
+                    page_size=14,
+                )
+            else:
+                detail_children = _zoom_empty_panel("Không có dữ liệu chi tiết cho biểu đồ này.", theme)
+            return True, title, None, {}, {"display":"none"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
+
         fig_dict = enhance_zoom_figure(fig_dict)
-
-        detail_style = {"display":"block"}
-        detail_children = html.Div("Click vào 1 điểm/cột để xem chi tiết.", style={"opacity":0.8, "fontWeight":"700"})
-
-        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, detail_style, {"kind":"fig","target":target}
+        detail_children = _zoom_click_hint_panel(target, store, theme)
+        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
 
     raise PreventUpdate
 
@@ -14326,6 +14751,9 @@ def ai_chat(n_send, n_clear, _chip_clicks, question, history):
 )
 def clear_ai_input(_):
     return ""
+
+if DASH_LOG_BOOT_TIMING:
+    _perf_log("app_import_total", _BOOT_STARTED)
 
 if __name__ == "__main__":
     app.run(

@@ -53,6 +53,12 @@ BASE_DIR.mkdir(exist_ok=True)
 CHART_DIR.mkdir(exist_ok=True)
 EXCEL_FILE = BASE_DIR / os.getenv("OUTPUT_EXCEL_NAME", "bao_cao_doanh_thu_tong_hop.xlsx")
 
+# Runtime cache for Dash web app. Excel is still exported for download/audit,
+# but the Dash app should read these smaller cache files first on Vercel.
+CACHE_DIR = Path(os.getenv("OUTPUT_CACHE_DIR", str(BASE_DIR / "cache")))
+EXPORT_DASH_CACHE = str(os.getenv("EXPORT_DASH_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+CACHE_DIR.mkdir(exist_ok=True)
+
 SQL_QUERY_TIMEOUT = int(os.getenv("SQL_QUERY_TIMEOUT", "90"))
 SQL_ENABLE_DATE_PUSHDOWN = str(os.getenv("SQL_ENABLE_DATE_PUSHDOWN", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 SQL_LOG_TIMING = str(os.getenv("SQL_LOG_TIMING", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -1094,6 +1100,41 @@ hopdong_kv_thang = df_hd.groupby(
     tong_so_cuoc=("so_cuoc", "sum")
 )
 
+def _cache_safe_sheet_name(sheet_name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(sheet_name)).strip("_") or "sheet"
+
+
+def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
+    if not EXPORT_DASH_CACHE:
+        return
+    try:
+        CACHE_DIR.mkdir(exist_ok=True)
+    except Exception:
+        pass
+    safe_name = _cache_safe_sheet_name(sheet_name)
+    # Prefer Parquet for fast cold-start reads. If the deployment does not have
+    # pyarrow/fastparquet, fall back to pickle, which app.py also supports.
+    try:
+        df.to_parquet(CACHE_DIR / f"{safe_name}.parquet", index=False)
+        return
+    except Exception as e:
+        print(f"[CACHE EXPORT] parquet failed for {sheet_name}: {e}")
+    try:
+        df.reset_index(drop=True).to_feather(CACHE_DIR / f"{safe_name}.feather")
+        return
+    except Exception as e:
+        print(f"[CACHE EXPORT] feather failed for {sheet_name}: {e}")
+    try:
+        df.to_pickle(CACHE_DIR / f"{safe_name}.pkl")
+    except Exception as e:
+        print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
+
+
+def _write_sheet(writer, df: pd.DataFrame, sheet_name: str) -> None:
+    df.to_excel(writer, sheet_name, index=False)
+    _export_cache_sheet(df, sheet_name)
+
+
 EXCEL_WRITER_ENGINE = os.getenv("OUTPUT_EXCEL_ENGINE", "xlsxwriter").strip() or "xlsxwriter"
 try:
     _excel_writer = pd.ExcelWriter(EXCEL_FILE, engine=EXCEL_WRITER_ENGINE)
@@ -1102,48 +1143,49 @@ except Exception as e:
     _excel_writer = pd.ExcelWriter(EXCEL_FILE, engine="openpyxl")
 
 with _excel_writer as writer:
-    doanhthu_thang_khuvuc.to_excel(writer, "DoanhThu_Thang_KhuVuc", index=False)
-    doanhthu_khuvuc.to_excel(writer, "Tong_DoanhThu_KhuVuc", index=False)
+    _write_sheet(writer, doanhthu_thang_khuvuc, "DoanhThu_Thang_KhuVuc")
+    _write_sheet(writer, doanhthu_khuvuc, "Tong_DoanhThu_KhuVuc")
 
-    doanhthu_lh.to_excel(writer, "DoanhThu_LoaiHinh", index=False)
-    doanhthu_lh_kv.to_excel(writer, "DoanhThu_LH_KhuVuc", index=False)
-    doanhthu_lh_thang.to_excel(writer, "DoanhThu_LH_Thang", index=False)
-    doanhthu_lh_kv_thang.to_excel(writer, "DoanhThu_LH_KV_Thang", index=False)
+    _write_sheet(writer, doanhthu_lh, "DoanhThu_LoaiHinh")
+    _write_sheet(writer, doanhthu_lh_kv, "DoanhThu_LH_KhuVuc")
+    _write_sheet(writer, doanhthu_lh_thang, "DoanhThu_LH_Thang")
+    _write_sheet(writer, doanhthu_lh_kv_thang, "DoanhThu_LH_KV_Thang")
 
-    doanhthu_ngay_checker.to_excel(writer, "DoanhThu_Ngay_Checker", index=False)
-    doanhthu_ngay_lh_checker.to_excel(writer, "DoanhThu_Ngay_LH_Checker", index=False)
-    doanhthu_ngay_hinhthuc_checker.to_excel(writer, "DoanhThu_Ngay_HinhThuc", index=False)
-    doanhthu_ngay_luong_checker.to_excel(writer, "DoanhThu_Ngay_Luong", index=False)
-    doanhthu_ngay_socho_checker.to_excel(writer, "DoanhThu_Ngay_SoCho", index=False)
-    doanhthu_ngay_taixe_checker.to_excel(writer, "DoanhThu_Ngay_TaiXe", index=False)
-    doanhthu_ngay_taixe_lh_checker.to_excel(writer, "DoanhThu_Ngay_TaiXe_LH", index=False)
-    doanhthu_ngay_taixe_hinhthuc_checker.to_excel(writer, "DoanhThu_Ngay_TaiXe_HinhThuc", index=False)
-    doanhthu_ngay_taixe_luong_checker.to_excel(writer, "DoanhThu_Ngay_TaiXe_Luong", index=False)
-    doanhthu_ngay_taixe_socho_checker.to_excel(writer, "DoanhThu_Ngay_TaiXe_SoCho", index=False)
-    doanhthu_ngay_raw_checker.to_excel(writer, "DoanhThu_Ngay_Raw_Checker", index=False)
+    _write_sheet(writer, doanhthu_ngay_checker, "DoanhThu_Ngay_Checker")
+    _write_sheet(writer, doanhthu_ngay_lh_checker, "DoanhThu_Ngay_LH_Checker")
+    _write_sheet(writer, doanhthu_ngay_hinhthuc_checker, "DoanhThu_Ngay_HinhThuc")
+    _write_sheet(writer, doanhthu_ngay_luong_checker, "DoanhThu_Ngay_Luong")
+    _write_sheet(writer, doanhthu_ngay_socho_checker, "DoanhThu_Ngay_SoCho")
+    _write_sheet(writer, doanhthu_ngay_taixe_checker, "DoanhThu_Ngay_TaiXe")
+    _write_sheet(writer, doanhthu_ngay_taixe_lh_checker, "DoanhThu_Ngay_TaiXe_LH")
+    _write_sheet(writer, doanhthu_ngay_taixe_hinhthuc_checker, "DoanhThu_Ngay_TaiXe_HinhThuc")
+    _write_sheet(writer, doanhthu_ngay_taixe_luong_checker, "DoanhThu_Ngay_TaiXe_Luong")
+    _write_sheet(writer, doanhthu_ngay_taixe_socho_checker, "DoanhThu_Ngay_TaiXe_SoCho")
+    _write_sheet(writer, doanhthu_ngay_raw_checker, "DoanhThu_Ngay_Raw_Checker")
 
-    hopdong_tong.to_excel(writer, "HopDong_Tong", index=False)
-    hopdong_khuvuc.to_excel(writer, "HopDong_KhuVuc", index=False)
-    hopdong_thang.to_excel(writer, "HopDong_Thang", index=False)
-    hopdong_kv_thang.to_excel(writer, "HopDong_KV_Thang", index=False)
+    _write_sheet(writer, hopdong_tong, "HopDong_Tong")
+    _write_sheet(writer, hopdong_khuvuc, "HopDong_KhuVuc")
+    _write_sheet(writer, hopdong_thang, "HopDong_Thang")
+    _write_sheet(writer, hopdong_kv_thang, "HopDong_KV_Thang")
 
-    nhansu_nhanvien_kv_thang.to_excel(writer, "NhanSu_NhanVien_KV_Thang", index=False)
-    nhansu_taixe_kv_thang.to_excel(writer, "NhanSu_TaiXe_KV_Thang", index=False)
+    _write_sheet(writer, nhansu_nhanvien_kv_thang, "NhanSu_NhanVien_KV_Thang")
+    _write_sheet(writer, nhansu_taixe_kv_thang, "NhanSu_TaiXe_KV_Thang")
 
-    diemtiepthi_kv_thang.to_excel(writer, "KinhDoanh_DiemTiepThi_KV_Thang", index=False)
-    diemtiepthi_kv_thang.to_excel(writer, "DiemTiepThi_KV_Thang", index=False)
+    _write_sheet(writer, diemtiepthi_kv_thang, "KinhDoanh_DiemTiepThi_KV_Thang")
+    _write_sheet(writer, diemtiepthi_kv_thang, "DiemTiepThi_KV_Thang")
 
-    xe_truc_thuoc_kv_thang.to_excel(writer, "PhuongTien_XeTrucThuoc_KV_Thang", index=False)
-    xe_truc_thuoc_kv_thang.to_excel(writer, "XeTrucThuoc_KV_Thang", index=False)
-    xe_phan_quyen_kv_thang.to_excel(writer, "PhuongTien_XePhanQuyen_KV_Thang", index=False)
-    xe_phan_quyen_kv_thang.to_excel(writer, "XePhanQuyen_KV_Thang", index=False)
+    _write_sheet(writer, xe_truc_thuoc_kv_thang, "PhuongTien_XeTrucThuoc_KV_Thang")
+    _write_sheet(writer, xe_truc_thuoc_kv_thang, "XeTrucThuoc_KV_Thang")
+    _write_sheet(writer, xe_phan_quyen_kv_thang, "PhuongTien_XePhanQuyen_KV_Thang")
+    _write_sheet(writer, xe_phan_quyen_kv_thang, "XePhanQuyen_KV_Thang")
 
-    bienban_kv_thang.to_excel(writer, "KinhDoanh_BienBan_KV_Thang", index=False)
-    bienban_kv_thang.to_excel(writer, "BienBan_KV_Thang", index=False)
+    _write_sheet(writer, bienban_kv_thang, "KinhDoanh_BienBan_KV_Thang")
+    _write_sheet(writer, bienban_kv_thang, "BienBan_KV_Thang")
 
     for kv, d in top10_driver.groupby("khu_vuc"):
-        d.to_excel(writer, f"TOP10_{kv[:25]}", index=False)
+        _write_sheet(writer, d, f"TOP10_{kv[:25]}")
 
 print("PIPELINE COMPLETED")
 print("Excel output:", EXCEL_FILE)
+print("Dash cache output:", CACHE_DIR if EXPORT_DASH_CACHE else "disabled")
 print("Date range:", START_DATE.strftime("%Y-%m-%d") if START_DATE is not None else "-", "->", END_DATE.strftime("%Y-%m-%d") if END_DATE is not None else "-")
