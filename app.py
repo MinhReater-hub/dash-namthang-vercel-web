@@ -127,7 +127,17 @@ DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("
 DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
+<<<<<<< HEAD
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+=======
+# Chart zoom policy:
+# - KPI cards keep using lightweight rows.
+# - Chart cards must open the enlarged chart first; point/click drill-down appears only after the user clicks a data point.
+# - Keep the old DASH_ZOOM_STORE_INCLUDE_FIGURE flag for backward compatibility, but force chart figures on by default
+#   so a production env value of 0 no longer degrades chart zoom into a table-only fallback.
+DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -5190,6 +5200,7 @@ def _limit_store_rows(rows, max_rows: int):
         return list(rows), False, total
     return rows, False, 0
 
+<<<<<<< HEAD
 def pack_fig_store(fig, rows=None, meta=None):
     fig_dict = {}
     if DASH_ZOOM_STORE_INCLUDE_FIGURE:
@@ -5200,6 +5211,33 @@ def pack_fig_store(fig, rows=None, meta=None):
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
     meta_out["figure_included"] = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE)
+=======
+def _zoom_figure_to_store_dict(fig):
+    """Serialize a Plotly figure for zoom without touching the displayed page chart.
+
+    The dashboard already sends the figure to the visible dcc.Graph. This copy is used only
+    by the zoom modal so chart clicks can open a real enlarged chart instead of a fallback
+    data table. Rows stay limited separately for drill-down tables.
+    """
+    if fig is None:
+        return {}
+    try:
+        fig_dict = fig.to_dict() if hasattr(fig, "to_dict") else fig
+    except Exception:
+        fig_dict = fig
+    try:
+        return json_safe(fig_dict)
+    except Exception:
+        return fig_dict if isinstance(fig_dict, dict) else {}
+
+def pack_fig_store(fig, rows=None, meta=None):
+    include_figure = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS)
+    fig_dict = _zoom_figure_to_store_dict(fig) if include_figure else {}
+    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
+    meta_out = dict(meta or {})
+    meta_out["figure_included"] = bool(fig_dict)
+    meta_out["figure_policy"] = "chart_zoom_first" if fig_dict else "rows_only"
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
@@ -7133,6 +7171,7 @@ def _daily_driver_options():
 
 
 def _daily_default_start_date(min_d, max_d):
+<<<<<<< HEAD
     try:
         if max_d is None or pd.isna(max_d):
             return min_d
@@ -7142,6 +7181,42 @@ def _daily_default_start_date(min_d, max_d):
         return start
     except Exception:
         return min_d
+=======
+    """Return a true 30-day opening window for the daily dashboard.
+
+    Do not clamp the start date up to min_d. If the available bounds temporarily
+    collapse to a single day, clamping makes DatePickerRange lock to one date
+    such as 01/04/2026 -> 01/04/2026. The daily page should still open a
+    30-day range; days without rows are harmless because callbacks only return
+    existing rows inside the selected range.
+    """
+    try:
+        if max_d is None or pd.isna(max_d):
+            max_d = _current_vn_day_start()
+        return pd.Timestamp(max_d).normalize() - pd.Timedelta(days=29)
+    except Exception:
+        try:
+            return _current_vn_day_start() - pd.Timedelta(days=29)
+        except Exception:
+            return min_d
+
+
+def _daily_picker_min_date(min_d, default_start):
+    """Choose min_date_allowed without clipping the default 30-day range."""
+    candidates = []
+    for value in [min_d, default_start]:
+        try:
+            if value is not None and not pd.isna(value):
+                candidates.append(pd.Timestamp(value).normalize())
+        except Exception:
+            continue
+    if not candidates:
+        try:
+            return _current_vn_day_start() - pd.Timedelta(days=29)
+        except Exception:
+            return None
+    return min(candidates)
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
 
 def _first_non_empty_df(*frames):
@@ -7215,17 +7290,52 @@ def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, driver
 
 
 def _daily_date_bounds():
-    dates = []
+    """Find date bounds for the daily dashboard, preferring true day-level columns.
+
+    The daily page can fall back to monthly/core datasets when day-level cache is
+    unavailable. For DatePickerRange bounds, however, monthly fallback dates such
+    as the first day of a month must not override real daily dates or collapse
+    the control to a single day.
+    """
     cutoff_day = _current_vn_day_start()
+<<<<<<< HEAD
     for dff in [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]:
+=======
+    frames = [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]
+
+    def _collect(frame, explicit_only=True):
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
         try:
-            s = _coerce_daily_date_series(dff).dropna()
-            if not s.empty:
-                s = s[s <= cutoff_day]
-                if not s.empty:
-                    dates.extend(s.tolist())
+            if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+                return []
+            if explicit_only:
+                col = _find_daily_date_col(frame)
+                if not col:
+                    return []
+                s = pd.to_datetime(frame[col], errors="coerce")
+            else:
+                s = _coerce_daily_date_series(frame)
+            try:
+                if getattr(s.dt, "tz", None) is not None:
+                    s = s.dt.tz_convert(VN_TZ).dt.tz_localize(None)
+            except Exception:
+                pass
+            s = pd.to_datetime(s, errors="coerce").dt.normalize().dropna()
+            if s.empty:
+                return []
+            s = s[s <= cutoff_day]
+            return s.tolist()
         except Exception:
-            continue
+            return []
+
+    dates = []
+    for dff in frames:
+        dates.extend(_collect(dff, explicit_only=True))
+
+    if not dates:
+        for dff in frames:
+            dates.extend(_collect(dff, explicit_only=False))
+
     if not dates:
         return None, None
     mn = pd.Timestamp(min(dates)).normalize()
@@ -7340,9 +7450,18 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
 
 def daily_latest_page():
     min_d, max_d = _daily_date_bounds()
+    if max_d is None or pd.isna(max_d):
+        max_d = _current_vn_day_start()
+    default_start = _daily_default_start_date(min_d, max_d)
+    picker_min_d = _daily_picker_min_date(min_d, default_start)
     latest_iso = _date_iso(max_d)
+<<<<<<< HEAD
     min_iso = _date_iso(min_d)
     default_start_iso = _date_iso(_daily_default_start_date(min_d, max_d))
+=======
+    min_iso = _date_iso(picker_min_d)
+    default_start_iso = _date_iso(default_start)
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
     hero = executive_header(
         "DOANH THU CẬP NHẬT THEO NGÀY",
         "Theo dõi dữ liệu ngày: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
@@ -13654,6 +13773,7 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
         if not fig_dict:
+<<<<<<< HEAD
             df_zoom = _zoom_prepare_df(pd.DataFrame(rows))
             if not df_zoom.empty:
                 detail_children = _zoom_table_component(
@@ -13673,6 +13793,20 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         fig_dict = enhance_zoom_figure(fig_dict)
         detail_children = _zoom_click_hint_panel(target, store, theme)
         return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
+=======
+            # A chart card should never open as a data table. If the figure is missing
+            # because an old deployment/env disabled figure storage, show a clear chart
+            # placeholder and keep drill-down hidden until the user clicks a real point
+            # after redeploying with figure storage enabled.
+            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy redeploy bản app.py mới để bật chart zoom-first.", theme).to_dict()
+            fig_dict = enhance_zoom_figure(fig_dict)
+            return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+
+        fig_dict = enhance_zoom_figure(fig_dict)
+        # Theo yêu cầu: lần click đầu vào chart chỉ phóng to đúng biểu đồ.
+        # Bảng drill-down chỉ hiện sau khi người dùng click vào cột/điểm/lát trên biểu đồ zoom.
+        return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+>>>>>>> 4eb4e7b (Fix daily date filter default 30 days)
 
     raise PreventUpdate
 
