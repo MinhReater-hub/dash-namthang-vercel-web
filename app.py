@@ -21,6 +21,7 @@ from dash.exceptions import PreventUpdate
 import os
 import json
 import hmac
+import hashlib
 import time
 from functools import wraps
 from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
@@ -127,18 +128,20 @@ DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("
 DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
-# Chart zoom/performance policy:
+# Chart/performance policy:
 # - KPI cards keep using lightweight rows.
-# - Chart cards must still open the enlarged chart first; point/click drill-down appears only after clicking a data point.
-# - To keep the initial dashboard payload small, chart figures are cached server-side by default instead of being duplicated
-#   inside every dcc.Store. This preserves zoom-first behavior while avoiding sending each Plotly figure twice.
-#   Override with DASH_ZOOM_FIGURE_STORE_POLICY=inline only if you need legacy fully-inline stores.
+# - Chart cards must open the enlarged chart first; point/click drill-down appears only after the user clicks a data point.
+# - v3 uses server-side figure-cache tokens for zoom by default, so the visible dcc.Graph figure is not duplicated
+#   into every dcc.Store payload. This keeps the same UX while reducing browser JSON/render pressure.
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_ZOOM_FIGURE_STORE_POLICY = os.getenv("DASH_ZOOM_FIGURE_STORE_POLICY", "cache").strip().lower()
-DASH_ZOOM_FIGURE_CACHE_MAX = int(os.getenv("DASH_ZOOM_FIGURE_CACHE_MAX", "256"))
+DASH_ZOOM_FIGURE_STORE_POLICY = os.getenv("DASH_ZOOM_FIGURE_STORE_POLICY", "cache").strip().lower()  # cache | direct | rows_only
+DASH_ZOOM_FIGURE_CACHE_MAX = int(os.getenv("DASH_ZOOM_FIGURE_CACHE_MAX", "512"))
 DASH_GRAPH_FAST_CONFIG = str(os.getenv("DASH_GRAPH_FAST_CONFIG", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_STATIC_CACHE_SECONDS = int(os.getenv("DASH_STATIC_CACHE_SECONDS", "31536000"))
+DASH_CALLBACK_RESULT_CACHE = str(os.getenv("DASH_CALLBACK_RESULT_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_CALLBACK_RESULT_CACHE_MAX = int(os.getenv("DASH_CALLBACK_RESULT_CACHE_MAX", "256"))
+DASH_CALLBACK_RESULT_CACHE_TTL = int(os.getenv("DASH_CALLBACK_RESULT_CACHE_TTL", "900"))
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -165,13 +168,92 @@ def _perf_log(label: str, started: float, extra: str = "") -> None:
         pass
 
 
+CALLBACK_RESULT_CACHE = {}
+
+def _callback_scope_key():
+    """Cache separation by logged-in account/role/regions without depending on later auth helpers."""
+    try:
+        if has_request_context():
+            raw = session.get("dash_auth_user") or {}
+            return (
+                str(raw.get("username", "")),
+                str(raw.get("role", "")),
+                tuple(sorted(str(x) for x in (raw.get("regions") or []))),
+            )
+    except Exception:
+        pass
+    return ("anonymous", "", ())
+
+def _callback_cache_json_default(obj):
+    try:
+        if isinstance(obj, (pd.Timestamp, datetime)):
+            return obj.isoformat()
+    except Exception:
+        pass
+    try:
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+    except Exception:
+        pass
+    return str(obj)
+
+def _callback_result_cache_key(label: str, args, kwargs):
+    try:
+        payload = json.dumps(
+            {"label": label, "scope": _callback_scope_key(), "args": args, "kwargs": kwargs},
+            ensure_ascii=False, sort_keys=True, default=_callback_cache_json_default, separators=(",", ":"),
+        )
+    except Exception:
+        payload = repr((label, _callback_scope_key(), args, kwargs))
+    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+def _callback_cache_get(key):
+    if not DASH_CALLBACK_RESULT_CACHE:
+        return None
+    hit = CALLBACK_RESULT_CACHE.get(key)
+    if not hit:
+        return None
+    ts, value = hit
+    if DASH_CALLBACK_RESULT_CACHE_TTL > 0 and (time.time() - ts) > DASH_CALLBACK_RESULT_CACHE_TTL:
+        CALLBACK_RESULT_CACHE.pop(key, None)
+        return None
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+def _callback_cache_set(key, value):
+    if not DASH_CALLBACK_RESULT_CACHE:
+        return
+    try:
+        if len(CALLBACK_RESULT_CACHE) >= DASH_CALLBACK_RESULT_CACHE_MAX:
+            # Keep pruning simple and deterministic for serverless memory safety.
+            oldest = sorted(CALLBACK_RESULT_CACHE.items(), key=lambda kv: kv[1][0])[: max(1, DASH_CALLBACK_RESULT_CACHE_MAX // 6)]
+            for old_key, _ in oldest:
+                CALLBACK_RESULT_CACHE.pop(old_key, None)
+        CALLBACK_RESULT_CACHE[key] = (time.time(), copy.deepcopy(value))
+    except Exception:
+        pass
+
 def timed_callback(label: str):
     def _decorator(func):
         @wraps(func)
         def _wrapped(*args, **kwargs):
             started = time.perf_counter()
+            cache_key = _callback_result_cache_key(label, args, kwargs)
+            cached = _callback_cache_get(cache_key)
+            if cached is not None:
+                if DASH_LOG_CALLBACK_TIMING:
+                    _perf_log(f"callback:{label}:cache_hit", started)
+                return cached
             try:
-                return func(*args, **kwargs)
+                result = func(*args, **kwargs)
+                _callback_cache_set(cache_key, result)
+                return result
             finally:
                 if DASH_LOG_CALLBACK_TIMING:
                     _perf_log(f"callback:{label}", started)
@@ -4457,6 +4539,7 @@ def apply_theme(fig, theme, use_time_axis: bool = True):
     base_font_color = "#f8fafc" if theme == "dark" else "#0f172a"
 
     fig.update_layout(
+        uirevision="dash-fast-v3",
         legend_itemclick="toggleothers",
         legend_itemdoubleclick="toggle",
         font=dict(
@@ -4507,6 +4590,7 @@ def apply_exec_layout(fig, theme="light", title=None, top=120, x_title=None, y_t
     top2 = _chart_title_margin(title_text, base_top=top, min_top=178, extra_per_line=34)
 
     fig.update_layout(
+        uirevision="dash-fast-v3",
         plot_bgcolor=bg,
         paper_bgcolor=bg,
         font=dict(
@@ -4564,6 +4648,7 @@ def apply_exec_layout(fig, theme="light", title=None, top=120, x_title=None, y_t
 def apply_chart_title(fig, title: str, top: int = 120, y_title: str = None, theme: str = "light"):
     top2 = _chart_title_margin(title, base_top=top, min_top=190, extra_per_line=34)
     fig.update_layout(
+        uirevision="dash-fast-v3",
         title=_premium_chart_title_dict(title, theme=theme),
         margin=dict(l=22, r=16, t=top2, b=20),
         title_automargin=True,
@@ -5028,19 +5113,22 @@ def make_kpi_card(title, body_id, target, icon=None, min_height="220px"):
         style={"cursor": "pointer"}
     )
 
-def _graph_card_config(display_modebar: bool = False) -> dict:
-    """Lean Plotly config for faster client-side rendering without changing chart logic/UI."""
-    cfg = {"displayModeBar": bool(display_modebar), "responsive": True}
+def _plotly_fast_config(display_mode_bar: bool = False, scroll_zoom: bool = False) -> dict:
+    cfg = {
+        "displayModeBar": bool(display_mode_bar),
+        "responsive": True,
+        "displaylogo": False,
+        "scrollZoom": bool(scroll_zoom),
+    }
     if DASH_GRAPH_FAST_CONFIG:
+        # Lower device pixel ratio materially improves mobile/Safari/Chrome render time
+        # for multi-chart dashboards while preserving the same data, layout and interaction logic.
         cfg.update({
-            "showTips": False,
-            "doubleClick": "reset",
-            "scrollZoom": False,
             "plotGlPixelRatio": 1,
-            "displaylogo": False,
+            "showTips": False,
+            "doubleClick": "reset+autosize",
         })
     return cfg
-
 
 def make_graph_card(graph_id, target, height="390px"):
     return html.Div(
@@ -5051,7 +5139,7 @@ def make_graph_card(graph_id, target, height="390px"):
                     [
                         dcc.Graph(
                             id=graph_id,
-                            config=_graph_card_config(display_modebar=False),
+                            config=_plotly_fast_config(display_mode_bar=False, scroll_zoom=False),
                             style={"height": height}
                         )
                     ],
@@ -5216,7 +5304,12 @@ def _limit_store_rows(rows, max_rows: int):
     return rows, False, 0
 
 def _zoom_figure_to_store_dict(fig):
-    """Serialize a Plotly figure for zoom without touching the displayed page chart."""
+    """Serialize a Plotly figure for zoom without touching the displayed page chart.
+
+    The dashboard already sends the figure to the visible dcc.Graph. This copy is used only
+    by the zoom modal so chart clicks can open a real enlarged chart instead of a fallback
+    data table. Rows stay limited separately for drill-down tables.
+    """
     if fig is None:
         return {}
     try:
@@ -5230,75 +5323,62 @@ def _zoom_figure_to_store_dict(fig):
 
 ZOOM_FIGURE_CACHE = {}
 
-def _zoom_store_policy() -> str:
-    raw = str(DASH_ZOOM_FIGURE_STORE_POLICY or "cache").strip().lower()
-    if raw in {"inline", "legacy", "embed", "embedded"}:
-        return "inline"
-    if raw in {"off", "none", "rows", "rows_only"}:
-        return "off"
-    return "cache"
-
-def _remember_zoom_figure(fig_dict: dict, meta_out: dict) -> str | None:
-    if not isinstance(fig_dict, dict) or not fig_dict:
+def _cache_zoom_figure(fig_dict, meta=None):
+    if not fig_dict:
         return None
     try:
-        chart = str((meta_out or {}).get("chart", "chart"))
-        cache_key = f"zf:{chart}:{time.time_ns()}:{len(ZOOM_FIGURE_CACHE)}"
-        ZOOM_FIGURE_CACHE[cache_key] = fig_dict
-        while DASH_ZOOM_FIGURE_CACHE_MAX > 0 and len(ZOOM_FIGURE_CACHE) > DASH_ZOOM_FIGURE_CACHE_MAX:
-            oldest = next(iter(ZOOM_FIGURE_CACHE))
-            ZOOM_FIGURE_CACHE.pop(oldest, None)
-        return cache_key
+        payload = json.dumps(json_safe(fig_dict), ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        token = hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
     except Exception:
-        return None
-
-def _get_cached_zoom_figure(cache_key: str | None) -> dict:
-    if not cache_key:
-        return {}
+        token = hashlib.sha1(repr(fig_dict).encode("utf-8", errors="ignore")).hexdigest()
     try:
-        cached = ZOOM_FIGURE_CACHE.get(str(cache_key))
-        return cached if isinstance(cached, dict) else {}
+        if len(ZOOM_FIGURE_CACHE) >= DASH_ZOOM_FIGURE_CACHE_MAX:
+            oldest = sorted(ZOOM_FIGURE_CACHE.items(), key=lambda kv: kv[1][0])[: max(1, DASH_ZOOM_FIGURE_CACHE_MAX // 8)]
+            for old_key, _ in oldest:
+                ZOOM_FIGURE_CACHE.pop(old_key, None)
+        ZOOM_FIGURE_CACHE[token] = (time.time(), fig_dict)
     except Exception:
-        return {}
+        pass
+    return token
 
-def _get_zoom_figure_from_store(store: dict) -> dict:
+def _resolve_zoom_figure_from_store(store: dict) -> dict:
     if not isinstance(store, dict):
         return {}
-    fig = store.get("figure", {}) or {}
-    if isinstance(fig, dict) and fig:
-        return fig
+    fig_dict = store.get("figure", {}) or {}
+    if isinstance(fig_dict, dict) and fig_dict:
+        return fig_dict
     meta = store.get("meta", {}) or {}
-    cache_key = store.get("figure_cache_key") or meta.get("figure_cache_key")
-    return _get_cached_zoom_figure(cache_key)
+    token = store.get("figure_cache_key") or meta.get("figure_cache_key")
+    if token:
+        try:
+            cached = ZOOM_FIGURE_CACHE.get(str(token))
+            if cached and isinstance(cached[1], dict):
+                return cached[1]
+        except Exception:
+            return {}
+    return {}
 
 def pack_fig_store(fig, rows=None, meta=None):
-    # Default mode stores only a lightweight server-side figure key in dcc.Store.
-    # This removes the previous duplicate Plotly payload while preserving zoom-first UX.
-    policy = _zoom_store_policy()
-    fig_dict = _zoom_figure_to_store_dict(fig) if policy in {"inline", "cache"} else {}
+    policy = str(DASH_ZOOM_FIGURE_STORE_POLICY or "cache").strip().lower()
+    want_cache = policy in {"cache", "token", "server", "server_cache"}
+    want_direct = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or policy in {"direct", "inline"} or (DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS and not want_cache))
+    build_for_zoom = bool(want_cache or want_direct)
+    fig_dict_full = _zoom_figure_to_store_dict(fig) if build_for_zoom else {}
+    fig_dict_payload = fig_dict_full if want_direct else {}
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
-    cache_key = None
-    store_fig = {}
-    if fig_dict and policy == "inline":
-        store_fig = fig_dict
-    elif fig_dict and policy == "cache":
-        cache_key = _remember_zoom_figure(fig_dict, meta_out)
-    elif DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS:
-        # Explicit legacy compatibility switch: allow inline figure if policy is off but old envs ask for it.
-        fig_dict = _zoom_figure_to_store_dict(fig)
-        store_fig = fig_dict if fig_dict else {}
-        policy = "inline" if store_fig else "off"
-
-    meta_out["figure_included"] = bool(store_fig)
-    meta_out["figure_cached"] = bool(cache_key)
-    meta_out["figure_cache_key"] = cache_key
-    meta_out["figure_policy"] = "server_cache_zoom_first" if cache_key else ("inline_zoom_first" if store_fig else "rows_only")
+    if want_cache and fig_dict_full:
+        token = _cache_zoom_figure(fig_dict_full, meta=meta_out)
+        if token:
+            meta_out["figure_cache_key"] = token
+    meta_out["figure_included"] = bool(fig_dict_payload)
+    meta_out["figure_cached"] = bool(meta_out.get("figure_cache_key"))
+    meta_out["figure_policy"] = "server_cache_zoom_first" if meta_out.get("figure_cache_key") else ("direct_zoom_first" if fig_dict_payload else "rows_only")
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
         meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
-    return {"kind": "fig", "figure": store_fig, "figure_cache_key": cache_key, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
+    return {"kind": "fig", "figure": fig_dict_payload, "figure_cache_key": meta_out.get("figure_cache_key"), "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
 
 def pack_kpi_store(title, main, subtitle, rows=None, kind="kpi"):
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_KPI_STORE_MAX_ROWS)
@@ -5567,14 +5647,17 @@ def protect_dash_routes():
     return redirect(url_for("login", next=next_path))
 
 @server.after_request
-def add_dash_static_cache_headers(response):
-    """Let Vercel/browser cache Dash component bundles aggressively after the first warm load."""
+def add_static_cache_headers(response):
     try:
         path = request.path or ""
-        if path.startswith("/_dash-component-suites/") or path.startswith("/assets/") or path == "/favicon.ico":
+        if DASH_STATIC_CACHE_SECONDS > 0 and (
+            path.startswith("/_dash-component-suites/")
+            or path.startswith("/assets/")
+            or path == "/favicon.ico"
+        ):
             response.headers["Cache-Control"] = f"public, max-age={DASH_STATIC_CACHE_SECONDS}, immutable"
-        elif path in {"/_dash-layout", "/_dash-dependencies"}:
-            response.headers.setdefault("Cache-Control", "private, max-age=60")
+        elif path.startswith("/_dash-update-component") or path in {"/_dash-layout", "/_dash-dependencies"}:
+            response.headers["Cache-Control"] = "no-store"
     except Exception:
         pass
     return response
@@ -9978,7 +10061,7 @@ app.layout = dbc.Container(
                         dcc.Graph(
                             id="zoom-graph",
                             figure={},
-                            config={"displayModeBar": True, "scrollZoom": True},
+                            config=_plotly_fast_config(display_mode_bar=True, scroll_zoom=True),
                             style={"display": "none", "height": "82vh"}
                         ),
                         html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
@@ -13738,7 +13821,7 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
 
         meta = store.get("meta", {}) or {}
         rows = store.get("rows", []) or []
-        fig = _get_zoom_figure_from_store(store)
+        fig = _resolve_zoom_figure_from_store(store)
 
         if not rows:
             detail = _zoom_empty_panel("Biểu đồ này chưa có dữ liệu drill-down đi kèm trong store.", theme)
@@ -13818,14 +13901,14 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             kpi_card = _zoom_kpi_panel(target, store, df_zoom, theme)
             return True, title, kpi_card, {}, {"display":"none"}, [], {"display":"none"}, {"kind":"kpi","target":target}
 
-        fig_dict = _get_zoom_figure_from_store(store)
+        fig_dict = _resolve_zoom_figure_from_store(store)
         rows = store.get("rows", []) or []
         if not fig_dict:
             # A chart card should never open as a data table. If the figure is missing
             # because an old deployment/env disabled figure storage, show a clear chart
             # placeholder and keep drill-down hidden until the user clicks a real point
             # after redeploying with figure storage enabled.
-            fig_dict = empty_figure("Biểu đồ phóng to đang được làm mới. Vui lòng click lại sau vài giây nếu Vercel vừa cold start hoặc cache vừa được xoay vòng.", theme).to_dict()
+            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy redeploy bản app.py mới để bật chart zoom-first.", theme).to_dict()
             fig_dict = enhance_zoom_figure(fig_dict)
             return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
 
