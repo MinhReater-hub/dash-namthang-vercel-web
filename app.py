@@ -21,7 +21,6 @@ from dash.exceptions import PreventUpdate
 import os
 import json
 import hmac
-import hashlib
 import time
 from functools import wraps
 from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
@@ -128,20 +127,14 @@ DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("
 DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
-# Chart/performance policy:
-# - KPI cards keep using lightweight rows.
-# - Chart cards must open the enlarged chart first; point/click drill-down appears only after the user clicks a data point.
-# - v3 uses server-side figure-cache tokens for zoom by default, so the visible dcc.Graph figure is not duplicated
-#   into every dcc.Store payload. This keeps the same UX while reducing browser JSON/render pressure.
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_ZOOM_FIGURE_STORE_POLICY = os.getenv("DASH_ZOOM_FIGURE_STORE_POLICY", "cache").strip().lower()  # cache | direct | rows_only
-DASH_ZOOM_FIGURE_CACHE_MAX = int(os.getenv("DASH_ZOOM_FIGURE_CACHE_MAX", "512"))
+# Zoom chart safety: chart zoom must always have a real figure unless explicitly disabled.
+# `cache`/`direct` are treated as zoom-first safe modes. Use `rows_only` only if you intentionally
+# accept table-only zoom fallback for charts.
+DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_ZOOM_FIGURE_STORE_POLICY = os.getenv("DASH_ZOOM_FIGURE_STORE_POLICY", "direct").strip().lower()  # direct | cache | rows_only
 DASH_GRAPH_FAST_CONFIG = str(os.getenv("DASH_GRAPH_FAST_CONFIG", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_STATIC_CACHE_SECONDS = int(os.getenv("DASH_STATIC_CACHE_SECONDS", "31536000"))
-DASH_CALLBACK_RESULT_CACHE = str(os.getenv("DASH_CALLBACK_RESULT_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_CALLBACK_RESULT_CACHE_MAX = int(os.getenv("DASH_CALLBACK_RESULT_CACHE_MAX", "256"))
-DASH_CALLBACK_RESULT_CACHE_TTL = int(os.getenv("DASH_CALLBACK_RESULT_CACHE_TTL", "900"))
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -168,92 +161,13 @@ def _perf_log(label: str, started: float, extra: str = "") -> None:
         pass
 
 
-CALLBACK_RESULT_CACHE = {}
-
-def _callback_scope_key():
-    """Cache separation by logged-in account/role/regions without depending on later auth helpers."""
-    try:
-        if has_request_context():
-            raw = session.get("dash_auth_user") or {}
-            return (
-                str(raw.get("username", "")),
-                str(raw.get("role", "")),
-                tuple(sorted(str(x) for x in (raw.get("regions") or []))),
-            )
-    except Exception:
-        pass
-    return ("anonymous", "", ())
-
-def _callback_cache_json_default(obj):
-    try:
-        if isinstance(obj, (pd.Timestamp, datetime)):
-            return obj.isoformat()
-    except Exception:
-        pass
-    try:
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, (np.ndarray,)):
-            return obj.tolist()
-    except Exception:
-        pass
-    return str(obj)
-
-def _callback_result_cache_key(label: str, args, kwargs):
-    try:
-        payload = json.dumps(
-            {"label": label, "scope": _callback_scope_key(), "args": args, "kwargs": kwargs},
-            ensure_ascii=False, sort_keys=True, default=_callback_cache_json_default, separators=(",", ":"),
-        )
-    except Exception:
-        payload = repr((label, _callback_scope_key(), args, kwargs))
-    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
-
-def _callback_cache_get(key):
-    if not DASH_CALLBACK_RESULT_CACHE:
-        return None
-    hit = CALLBACK_RESULT_CACHE.get(key)
-    if not hit:
-        return None
-    ts, value = hit
-    if DASH_CALLBACK_RESULT_CACHE_TTL > 0 and (time.time() - ts) > DASH_CALLBACK_RESULT_CACHE_TTL:
-        CALLBACK_RESULT_CACHE.pop(key, None)
-        return None
-    try:
-        return copy.deepcopy(value)
-    except Exception:
-        return value
-
-def _callback_cache_set(key, value):
-    if not DASH_CALLBACK_RESULT_CACHE:
-        return
-    try:
-        if len(CALLBACK_RESULT_CACHE) >= DASH_CALLBACK_RESULT_CACHE_MAX:
-            # Keep pruning simple and deterministic for serverless memory safety.
-            oldest = sorted(CALLBACK_RESULT_CACHE.items(), key=lambda kv: kv[1][0])[: max(1, DASH_CALLBACK_RESULT_CACHE_MAX // 6)]
-            for old_key, _ in oldest:
-                CALLBACK_RESULT_CACHE.pop(old_key, None)
-        CALLBACK_RESULT_CACHE[key] = (time.time(), copy.deepcopy(value))
-    except Exception:
-        pass
-
 def timed_callback(label: str):
     def _decorator(func):
         @wraps(func)
         def _wrapped(*args, **kwargs):
             started = time.perf_counter()
-            cache_key = _callback_result_cache_key(label, args, kwargs)
-            cached = _callback_cache_get(cache_key)
-            if cached is not None:
-                if DASH_LOG_CALLBACK_TIMING:
-                    _perf_log(f"callback:{label}:cache_hit", started)
-                return cached
             try:
-                result = func(*args, **kwargs)
-                _callback_cache_set(cache_key, result)
-                return result
+                return func(*args, **kwargs)
             finally:
                 if DASH_LOG_CALLBACK_TIMING:
                     _perf_log(f"callback:{label}", started)
@@ -4539,7 +4453,6 @@ def apply_theme(fig, theme, use_time_axis: bool = True):
     base_font_color = "#f8fafc" if theme == "dark" else "#0f172a"
 
     fig.update_layout(
-        uirevision="dash-fast-v3",
         legend_itemclick="toggleothers",
         legend_itemdoubleclick="toggle",
         font=dict(
@@ -4590,7 +4503,6 @@ def apply_exec_layout(fig, theme="light", title=None, top=120, x_title=None, y_t
     top2 = _chart_title_margin(title_text, base_top=top, min_top=178, extra_per_line=34)
 
     fig.update_layout(
-        uirevision="dash-fast-v3",
         plot_bgcolor=bg,
         paper_bgcolor=bg,
         font=dict(
@@ -4648,7 +4560,6 @@ def apply_exec_layout(fig, theme="light", title=None, top=120, x_title=None, y_t
 def apply_chart_title(fig, title: str, top: int = 120, y_title: str = None, theme: str = "light"):
     top2 = _chart_title_margin(title, base_top=top, min_top=190, extra_per_line=34)
     fig.update_layout(
-        uirevision="dash-fast-v3",
         title=_premium_chart_title_dict(title, theme=theme),
         margin=dict(l=22, r=16, t=top2, b=20),
         title_automargin=True,
@@ -5113,22 +5024,20 @@ def make_kpi_card(title, body_id, target, icon=None, min_height="220px"):
         style={"cursor": "pointer"}
     )
 
-def _plotly_fast_config(display_mode_bar: bool = False, scroll_zoom: bool = False) -> dict:
-    cfg = {
-        "displayModeBar": bool(display_mode_bar),
-        "responsive": True,
-        "displaylogo": False,
-        "scrollZoom": bool(scroll_zoom),
-    }
+def _graph_config(display_mode_bar: bool = False, scroll_zoom: bool = False):
+    cfg = {"displayModeBar": bool(display_mode_bar), "responsive": True}
+    if scroll_zoom:
+        cfg["scrollZoom"] = True
     if DASH_GRAPH_FAST_CONFIG:
-        # Lower device pixel ratio materially improves mobile/Safari/Chrome render time
-        # for multi-chart dashboards while preserving the same data, layout and interaction logic.
         cfg.update({
-            "plotGlPixelRatio": 1,
+            "displaylogo": False,
             "showTips": False,
-            "doubleClick": "reset+autosize",
+            "plotGlPixelRatio": 1,
         })
+        if not display_mode_bar:
+            cfg["modeBarButtonsToRemove"] = ["lasso2d", "select2d"]
     return cfg
+
 
 def make_graph_card(graph_id, target, height="390px"):
     return html.Div(
@@ -5139,7 +5048,7 @@ def make_graph_card(graph_id, target, height="390px"):
                     [
                         dcc.Graph(
                             id=graph_id,
-                            config=_plotly_fast_config(display_mode_bar=False, scroll_zoom=False),
+                            config=_graph_config(False),
                             style={"height": height}
                         )
                     ],
@@ -5304,11 +5213,12 @@ def _limit_store_rows(rows, max_rows: int):
     return rows, False, 0
 
 def _zoom_figure_to_store_dict(fig):
-    """Serialize a Plotly figure for zoom without touching the displayed page chart.
+    """Return a JSON-safe Plotly figure for chart zoom.
 
-    The dashboard already sends the figure to the visible dcc.Graph. This copy is used only
-    by the zoom modal so chart clicks can open a real enlarged chart instead of a fallback
-    data table. Rows stay limited separately for drill-down tables.
+    This is intentionally conservative: chart zoom-first must never degrade into a
+    table-only placeholder just because production env flags disabled figure storage.
+    The visible page chart still uses its normal figure; this copy is only for the
+    professional full-screen zoom modal.
     """
     if fig is None:
         return {}
@@ -5321,64 +5231,28 @@ def _zoom_figure_to_store_dict(fig):
     except Exception:
         return fig_dict if isinstance(fig_dict, dict) else {}
 
-ZOOM_FIGURE_CACHE = {}
 
-def _cache_zoom_figure(fig_dict, meta=None):
-    if not fig_dict:
-        return None
-    try:
-        payload = json.dumps(json_safe(fig_dict), ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
-        token = hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
-    except Exception:
-        token = hashlib.sha1(repr(fig_dict).encode("utf-8", errors="ignore")).hexdigest()
-    try:
-        if len(ZOOM_FIGURE_CACHE) >= DASH_ZOOM_FIGURE_CACHE_MAX:
-            oldest = sorted(ZOOM_FIGURE_CACHE.items(), key=lambda kv: kv[1][0])[: max(1, DASH_ZOOM_FIGURE_CACHE_MAX // 8)]
-            for old_key, _ in oldest:
-                ZOOM_FIGURE_CACHE.pop(old_key, None)
-        ZOOM_FIGURE_CACHE[token] = (time.time(), fig_dict)
-    except Exception:
-        pass
-    return token
+def _zoom_should_include_figure() -> bool:
+    policy = str(DASH_ZOOM_FIGURE_STORE_POLICY or "direct").strip().lower()
+    if policy in {"rows_only", "row_only", "none", "off", "false", "0"}:
+        return bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS)
+    # direct/cache/hybrid/safe all keep a real figure payload so zoom-first is guaranteed.
+    return True
 
-def _resolve_zoom_figure_from_store(store: dict) -> dict:
-    if not isinstance(store, dict):
-        return {}
-    fig_dict = store.get("figure", {}) or {}
-    if isinstance(fig_dict, dict) and fig_dict:
-        return fig_dict
-    meta = store.get("meta", {}) or {}
-    token = store.get("figure_cache_key") or meta.get("figure_cache_key")
-    if token:
-        try:
-            cached = ZOOM_FIGURE_CACHE.get(str(token))
-            if cached and isinstance(cached[1], dict):
-                return cached[1]
-        except Exception:
-            return {}
-    return {}
 
 def pack_fig_store(fig, rows=None, meta=None):
-    policy = str(DASH_ZOOM_FIGURE_STORE_POLICY or "cache").strip().lower()
-    want_cache = policy in {"cache", "token", "server", "server_cache"}
-    want_direct = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or policy in {"direct", "inline"} or (DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS and not want_cache))
-    build_for_zoom = bool(want_cache or want_direct)
-    fig_dict_full = _zoom_figure_to_store_dict(fig) if build_for_zoom else {}
-    fig_dict_payload = fig_dict_full if want_direct else {}
+    include_figure = _zoom_should_include_figure()
+    fig_dict = _zoom_figure_to_store_dict(fig) if include_figure else {}
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
-    if want_cache and fig_dict_full:
-        token = _cache_zoom_figure(fig_dict_full, meta=meta_out)
-        if token:
-            meta_out["figure_cache_key"] = token
-    meta_out["figure_included"] = bool(fig_dict_payload)
-    meta_out["figure_cached"] = bool(meta_out.get("figure_cache_key"))
-    meta_out["figure_policy"] = "server_cache_zoom_first" if meta_out.get("figure_cache_key") else ("direct_zoom_first" if fig_dict_payload else "rows_only")
+    meta_out["figure_included"] = bool(fig_dict)
+    meta_out["figure_policy"] = str(DASH_ZOOM_FIGURE_STORE_POLICY or "direct").strip().lower()
+    meta_out["zoom_first_enabled"] = bool(fig_dict)
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
         meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
-    return {"kind": "fig", "figure": fig_dict_payload, "figure_cache_key": meta_out.get("figure_cache_key"), "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
+    return {"kind": "fig", "figure": fig_dict, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
 
 def pack_kpi_store(title, main, subtitle, rows=None, kind="kpi"):
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_KPI_STORE_MAX_ROWS)
@@ -5586,6 +5460,20 @@ server.config.update(
 if _env_flag("SESSION_COOKIE_SECURE", False):
     server.config["SESSION_COOKIE_SECURE"] = True
 
+@server.after_request
+def _dash_static_cache_headers(response):
+    try:
+        path = request.path or ""
+        if DASH_STATIC_CACHE_SECONDS > 0 and (
+            path.startswith("/_dash-component-suites/") or
+            path.startswith("/assets/") or
+            path == "/favicon.ico"
+        ):
+            response.headers["Cache-Control"] = f"public, max-age={DASH_STATIC_CACHE_SECONDS}, immutable"
+    except Exception:
+        pass
+    return response
+
 @server.get("/healthz")
 def healthz():
     return ("ok", 200)
@@ -5645,22 +5533,6 @@ def protect_dash_routes():
     if next_path.endswith("?"):
         next_path = next_path[:-1]
     return redirect(url_for("login", next=next_path))
-
-@server.after_request
-def add_static_cache_headers(response):
-    try:
-        path = request.path or ""
-        if DASH_STATIC_CACHE_SECONDS > 0 and (
-            path.startswith("/_dash-component-suites/")
-            or path.startswith("/assets/")
-            or path == "/favicon.ico"
-        ):
-            response.headers["Cache-Control"] = f"public, max-age={DASH_STATIC_CACHE_SECONDS}, immutable"
-        elif path.startswith("/_dash-update-component") or path in {"/_dash-layout", "/_dash-dependencies"}:
-            response.headers["Cache-Control"] = "no-store"
-    except Exception:
-        pass
-    return response
 
 app = Dash(__name__, server=server, external_stylesheets=[dbc.themes.FLATLY, FA_CDN], suppress_callback_exceptions=True)
 
@@ -7323,40 +7195,15 @@ def _daily_driver_options():
 
 
 def _daily_default_start_date(min_d, max_d):
-    """Return a true 30-day opening window for the daily dashboard.
-
-    Do not clamp the start date up to min_d. If the available bounds temporarily
-    collapse to a single day, clamping makes DatePickerRange lock to one date
-    such as 01/04/2026 -> 01/04/2026. The daily page should still open a
-    30-day range; days without rows are harmless because callbacks only return
-    existing rows inside the selected range.
-    """
     try:
         if max_d is None or pd.isna(max_d):
-            max_d = _current_vn_day_start()
-        return pd.Timestamp(max_d).normalize() - pd.Timedelta(days=29)
-    except Exception:
-        try:
-            return _current_vn_day_start() - pd.Timedelta(days=29)
-        except Exception:
             return min_d
-
-
-def _daily_picker_min_date(min_d, default_start):
-    """Choose min_date_allowed without clipping the default 30-day range."""
-    candidates = []
-    for value in [min_d, default_start]:
-        try:
-            if value is not None and not pd.isna(value):
-                candidates.append(pd.Timestamp(value).normalize())
-        except Exception:
-            continue
-    if not candidates:
-        try:
-            return _current_vn_day_start() - pd.Timedelta(days=29)
-        except Exception:
-            return None
-    return min(candidates)
+        start = pd.Timestamp(max_d).normalize() - pd.Timedelta(days=29)
+        if min_d is not None and not pd.isna(min_d):
+            start = max(start, pd.Timestamp(min_d).normalize())
+        return start
+    except Exception:
+        return min_d
 
 
 def _first_non_empty_df(*frames):
@@ -7430,48 +7277,17 @@ def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, driver
 
 
 def _daily_date_bounds():
-    """Find date bounds for the daily dashboard, preferring true day-level columns.
-
-    The daily page can fall back to monthly/core datasets when day-level cache is
-    unavailable. For DatePickerRange bounds, however, monthly fallback dates such
-    as the first day of a month must not override real daily dates or collapse
-    the control to a single day.
-    """
-    cutoff_day = _current_vn_day_start()
-    frames = [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]
-
-    def _collect(frame, explicit_only=True):
-        try:
-            if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
-                return []
-            if explicit_only:
-                col = _find_daily_date_col(frame)
-                if not col:
-                    return []
-                s = pd.to_datetime(frame[col], errors="coerce")
-            else:
-                s = _coerce_daily_date_series(frame)
-            try:
-                if getattr(s.dt, "tz", None) is not None:
-                    s = s.dt.tz_convert(VN_TZ).dt.tz_localize(None)
-            except Exception:
-                pass
-            s = pd.to_datetime(s, errors="coerce").dt.normalize().dropna()
-            if s.empty:
-                return []
-            s = s[s <= cutoff_day]
-            return s.tolist()
-        except Exception:
-            return []
-
     dates = []
-    for dff in frames:
-        dates.extend(_collect(dff, explicit_only=True))
-
-    if not dates:
-        for dff in frames:
-            dates.extend(_collect(dff, explicit_only=False))
-
+    cutoff_day = _current_vn_day_start()
+    for dff in [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]:
+        try:
+            s = _coerce_daily_date_series(dff).dropna()
+            if not s.empty:
+                s = s[s <= cutoff_day]
+                if not s.empty:
+                    dates.extend(s.tolist())
+        except Exception:
+            continue
     if not dates:
         return None, None
     mn = pd.Timestamp(min(dates)).normalize()
@@ -7586,16 +7402,12 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
 
 def daily_latest_page():
     min_d, max_d = _daily_date_bounds()
-    if max_d is None or pd.isna(max_d):
-        max_d = _current_vn_day_start()
-    default_start = _daily_default_start_date(min_d, max_d)
-    picker_min_d = _daily_picker_min_date(min_d, default_start)
     latest_iso = _date_iso(max_d)
-    min_iso = _date_iso(picker_min_d)
-    default_start_iso = _date_iso(default_start)
+    min_iso = _date_iso(min_d)
+    default_start_iso = _date_iso(_daily_default_start_date(min_d, max_d))
     hero = executive_header(
         "DOANH THU CẬP NHẬT THEO NGÀY",
-        "Theo dõi dữ liệu ngày: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
+        "Theo dõi dữ liệu ngày từ dbo.doanhthungaychecker: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
         right_children=html.Div(id="daily-summary", className="exec-chip-row")
     )
 
@@ -7730,21 +7542,6 @@ def _detail_table_columns(prefix: str):
         "tong_so_cuoc": "Tổng số cuốc",
         "avg_per_trip": "TB / cuốc",
         "avg_per_trip_fmt": "TB / cuốc",
-    "rev_ma7_fmt": "Doanh thu TB 7 ngày",
-    "daily_lh_label": "Loại hình hợp tác",
-    "hinhthuc_kinhdoanh": "Hình thức kinh doanh",
-    "loaihinh_hoptac": "Loại hình hợp tác",
-    "loai_luong": "Loại lương",
-    "so_cho": "Số chỗ",
-    "so_cho_num": "Số chỗ",
-    "thang": "Tháng",
-    "metric_label": "Chỉ tiêu",
-    "metric_key": "Mã chỉ tiêu",
-    "ty_trong_fmt": "Tỷ trọng",
-    "ty_trong_xe": "Tỷ trọng xe",
-    "xe_fmt": "Số lượng xe",
-    "bks_fmt": "Biển kiểm soát",
-    "so_tai_fmt": "Số tài",
         "top_region": "Khu vực dẫn đầu",
         "loai_hinh_std": "Loại hình hợp tác",
         "loaihinh_hoptac": "Loại hình hợp tác",
@@ -10050,24 +9847,20 @@ app.layout = dbc.Container(
             centered=True,
             style={"maxWidth": "98vw", "width": "98vw"},
             children=[
-                dbc.ModalHeader(
-                    dbc.ModalTitle(id="zoom-title", children="PHÓNG TO", style={"fontWeight":"950", "letterSpacing":"0.02em"}),
-                    close_button=True,
-                    style={"background":"linear-gradient(135deg,#0f172a 0%,#14532d 65%,#16a34a 100%)", "color":"#ffffff", "borderBottom":"0", "padding":"14px 18px"}
-                ),
+                dbc.ModalHeader(dbc.ModalTitle(id="zoom-title", children="PHÓNG TO"), close_button=True),
                 dbc.ModalBody(
                     dcc.Loading(type="default", children=html.Div([
                         html.Div(id="zoom-kpi-render", style={"width": "100%", "maxWidth": "100%"}),
                         dcc.Graph(
                             id="zoom-graph",
                             figure={},
-                            config=_plotly_fast_config(display_mode_bar=True, scroll_zoom=True),
+                            config=_graph_config(True, True),
                             style={"display": "none", "height": "82vh"}
                         ),
                         html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
                         html.Div(id="zoom-detail", style={"display": "none", "width": "100%", "maxWidth": "100%", "overflowX": "hidden"})
                     ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"})),
-                    style={"padding": "14px", "overflowX": "hidden", "backgroundColor": "#f8fafc"}
+                    style={"padding": "10px", "overflowX": "hidden"}
                 )
             ],
         ),
@@ -13411,377 +13204,6 @@ for _prefix in [p for p in DASH_PREFIXES if p not in HR_MENU_PREFIXES]:
 for _prefix in HR_MENU_PREFIXES:
     hr_callbacks(_prefix)
 
-
-# =========================================================
-# PREMIUM ZOOM / DRILL-DOWN PRESENTATION
-# =========================================================
-ZOOM_COLUMN_LABELS = {
-    "thang_label": "Tháng",
-    "ngay_label": "Ngày dữ liệu",
-    "thang_nam": "Kỳ dữ liệu",
-    "thang_nam_vn": "Kỳ dữ liệu",
-    "nam": "Năm",
-    "khu_vuc": "Khu vực",
-    "label": "Nhóm dữ liệu",
-    "loai_hinh_std": "Loại hình hợp tác",
-    "loai_hop_dong_std": "Loại hợp đồng",
-    "loai_xe": "Dòng xe",
-    "nhom_nhien_lieu": "Nhóm nhiên liệu",
-    "nhom_vong_doi": "Nhóm vòng đời",
-    "bo_phan": "Bộ phận",
-    "metric_fmt": "Giá trị",
-    "val_fmt": "Giá trị",
-    "value_fmt": "Giá trị",
-    "avg_fmt": "Trung bình",
-    "rev_fmt": "Doanh thu",
-    "trip_fmt": "Số cuốc",
-    "avg_per_trip_fmt": "TB / cuốc",
-    "rev_ma7_fmt": "Doanh thu TB 7 ngày",
-    "daily_lh_label": "Loại hình hợp tác",
-    "hinhthuc_kinhdoanh": "Hình thức kinh doanh",
-    "loaihinh_hoptac": "Loại hình hợp tác",
-    "loai_luong": "Loại lương",
-    "so_cho": "Số chỗ",
-    "so_cho_num": "Số chỗ",
-    "thang": "Tháng",
-    "metric_label": "Chỉ tiêu",
-    "metric_key": "Mã chỉ tiêu",
-    "ty_trong_fmt": "Tỷ trọng",
-    "ty_trong_xe": "Tỷ trọng xe",
-    "xe_fmt": "Số lượng xe",
-    "bks_fmt": "Biển kiểm soát",
-    "so_tai_fmt": "Số tài",
-    "pct_fmt": "Tỷ trọng",
-    "pct_segment_fmt": "Đóng góp nhóm",
-    "count_fmt": "Số lượng",
-    "tong_doanh_thu_fmt": "Doanh thu",
-    "tong_so_cuoc_fmt": "Số cuốc",
-    "tong_doanh_thu": "Tổng doanh thu",
-    "tong_so_cuoc": "Tổng số cuốc",
-    "so_luong": "Số lượng",
-    "so_luong_fmt": "Số lượng",
-    "so_luong_nhan_su_fmt": "Nhân sự",
-    "so_vao_lam_fmt": "Vào làm",
-    "so_nghi_viec_fmt": "Nghỉ việc",
-    "headcount_dau_ky_fmt": "Đầu kỳ",
-    "so_giu_on_dinh_fmt": "Giữ ổn định",
-    "bien_dong_thuan_fmt": "Biến động thuần",
-    "so_duoi_1_nam_fmt": "Dưới 1 năm",
-    "so_tu_1_den_3_nam_fmt": "1 - 3 năm",
-    "so_tren_3_nam_fmt": "Trên 3 năm",
-    "ty_le_tang_fmt": "Tỷ lệ tăng",
-    "ty_le_giam_fmt": "Tỷ lệ giảm",
-    "ty_le_giu_chan_fmt": "Tỷ lệ giữ chân",
-    "so_xe_fmt": "Xe hoạt động",
-    "so_tai_xe_fmt": "Tài xế",
-    "sokm_vandoanh_fmt": "KM vận doanh",
-    "sokm_cokhach_fmt": "KM có khách",
-    "km_co_khach_ratio_fmt": "Tỷ lệ KM khách",
-    "so_luong_xe": "Số lượng xe",
-    "tong_so_cho": "Tổng số chỗ",
-    "so_cho_binh_quan_xe": "Số chỗ BQ / xe",
-    "so_bien_kiem_soat": "Số biển kiểm soát",
-    "so_so_tai": "Số số tài",
-    "tong_phai_chi": "Tổng phải chi",
-    "so_diem_tiep_thi": "Số điểm tiếp thị",
-    "so_ho_so_hoa_hong": "Hồ sơ hoa hồng",
-    "tong_da_chi_du": "Đã chi đủ",
-    "tong_chua_chi_du": "Chưa chi đủ",
-    "tong_khong_chi": "Không chi",
-    "tong_tien_de_xuat": "Tổng tiền đề xuất",
-    "so_tien_thu_duoc": "Tiền thu được",
-    "so_tien_da_xu_ly": "Tiền đã xử lý",
-    "so_tien_con_no": "Tiền còn nợ",
-    "so_bien_ban": "Số biên bản",
-    "top_region": "Khu vực dẫn đầu",
-}
-
-ZOOM_TARGET_LABELS = {
-    "home-main": "Tổng quan • Doanh thu & số cuốc theo tháng",
-    "home-region-donut": "Tổng quan • Cơ cấu doanh thu theo khu vực",
-    "home-region-bar": "Tổng quan • Top khu vực theo doanh thu",
-    "home-lh-donut": "Tổng quan • Cơ cấu doanh thu theo loại hình",
-    "home-hd-bar": "Tổng quan • Hợp đồng theo nhóm dịch vụ",
-    "daily-main": "Doanh thu ngày checker • Xu hướng doanh thu & số cuốc",
-    "daily-region-donut": "Doanh thu ngày checker • Cơ cấu theo khu vực",
-    "daily-region-bar": "Doanh thu ngày checker • Xếp hạng khu vực",
-    "daily-lh-donut": "Doanh thu ngày checker • Cơ cấu loại hình hợp tác",
-    "daily-hd-bar": "Doanh thu ngày checker • Hình thức kinh doanh",
-}
-
-ZOOM_SUFFIX_LABELS = {
-    "p1-line": "Page 1 • Xu hướng tổng hợp theo tháng",
-    "p1-bar": "Page 1 • Xếp hạng khu vực",
-    "p1-pie": "Page 1 • Cơ cấu theo khu vực",
-    "p2-line": "Page 2 • Xu hướng phân tích theo khu vực",
-    "p2-bar": "Page 2 • So sánh khu vực",
-    "p2-pie": "Page 2 • Cơ cấu dữ liệu sau lọc",
-    "kpi1": "KPI chính",
-    "kpi2": "KPI phụ trợ",
-    "kpi3": "KPI hiệu suất",
-    "kpi4": "KPI phạm vi hoạt động",
-}
-
-
-def _zoom_metric_label(meta=None, store=None):
-    meta = meta or {}
-    store = store or {}
-    value = meta.get("metric_label") or store.get("title") or "Giá trị"
-    try:
-        return str(value).strip() or "Giá trị"
-    except Exception:
-        return "Giá trị"
-
-
-def _zoom_column_label(col: str, metric_label: str = "Giá trị") -> str:
-    col = str(col)
-    if col in {"metric_fmt", "val_fmt", "value_fmt"}:
-        return metric_label or "Giá trị"
-    if col in ZOOM_COLUMN_LABELS:
-        return ZOOM_COLUMN_LABELS[col]
-    try:
-        cleaned = col.replace("_fmt", "").replace("_", " ").strip()
-        if not cleaned:
-            return col
-        return cleaned[:1].upper() + cleaned[1:]
-    except Exception:
-        return col
-
-
-def _zoom_target_label(target: str, meta=None, store=None) -> str:
-    target = str(target or "").strip()
-    meta = meta or {}
-    store = store or {}
-    if target in ZOOM_TARGET_LABELS:
-        return ZOOM_TARGET_LABELS[target]
-    if target.startswith("home-kpi"):
-        return f"Tổng quan • {store.get('title') or ZOOM_SUFFIX_LABELS.get(target.replace('home-', ''), 'KPI điều hành')}"
-    if target.startswith("daily-kpi"):
-        return f"Doanh thu ngày checker • {store.get('title') or ZOOM_SUFFIX_LABELS.get(target.replace('daily-', ''), 'KPI điều hành')}"
-    for prefix in DASH_PREFIXES:
-        prefix_key = f"{prefix}-"
-        if target.startswith(prefix_key):
-            try:
-                menu_label = get_menu_config(prefix).get("menu_label", prefix.upper())
-            except Exception:
-                menu_label = prefix.upper()
-            suffix = target[len(prefix_key):]
-            if suffix in ZOOM_SUFFIX_LABELS:
-                if suffix.startswith("kpi") and store.get("title"):
-                    return f"{menu_label} • {store.get('title')}"
-                return f"{menu_label} • {ZOOM_SUFFIX_LABELS[suffix]}"
-            for known_suffix, known_label in ZOOM_SUFFIX_LABELS.items():
-                if suffix.endswith(known_suffix):
-                    return f"{menu_label} • {known_label}"
-            return f"{menu_label} • {suffix.replace('-', ' ').upper()}"
-    chart_label = meta.get("chart") or target
-    return str(chart_label).replace("_", " ").replace("-", " ").upper()
-
-
-def _zoom_title(target: str, store=None) -> str:
-    store = store or {}
-    meta = store.get("meta", {}) or {}
-    return "PHÓNG TO • " + _zoom_target_label(target, meta=meta, store=store)
-
-
-def _zoom_table_title(target: str, store=None, prefix: str = "BẢNG PHÂN TÍCH") -> str:
-    store = store or {}
-    meta = store.get("meta", {}) or {}
-    return f"{prefix} • {_zoom_target_label(target, meta=meta, store=store)}"
-
-
-def _zoom_prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or not isinstance(df, pd.DataFrame):
-        return pd.DataFrame()
-    out = df.copy()
-    try:
-        if "pct" in out.columns and "pct_fmt" not in out.columns:
-            out["pct_fmt"] = pd.to_numeric(out["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
-        for raw_col, fmt_col in [
-            ("tong_doanh_thu", "tong_doanh_thu_fmt"),
-            ("tong_so_cuoc", "tong_so_cuoc_fmt"),
-            ("metric", "metric_fmt"),
-            ("val", "val_fmt"),
-            ("value", "value_fmt"),
-            ("count", "count_fmt"),
-        ]:
-            if raw_col in out.columns and fmt_col not in out.columns:
-                out[fmt_col] = pd.to_numeric(out[raw_col], errors="coerce").fillna(0).apply(fmt_vn)
-    except Exception:
-        pass
-    return out
-
-
-def _zoom_columns_data(df: pd.DataFrame, metric_label: str = "Giá trị", preferred_ids=None, max_cols: int = 12):
-    df = _zoom_prepare_df(df)
-    if df.empty:
-        return [], []
-    preferred_ids = preferred_ids or [
-        "ngay_label", "thang_label", "khu_vuc", "label", "loai_hinh_std", "loai_hop_dong_std",
-        "loai_xe", "nhom_nhien_lieu", "bo_phan", "nhom_vong_doi",
-        "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "metric_fmt", "val_fmt", "value_fmt",
-        "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_fmt", "pct_fmt", "count_fmt",
-        "so_luong_nhan_su_fmt", "so_vao_lam_fmt", "so_nghi_viec_fmt", "ty_le_tang_fmt", "ty_le_giam_fmt", "ty_le_giu_chan_fmt",
-        "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
-        "so_luong_xe", "tong_so_cho", "so_cho_binh_quan_xe", "so_bien_kiem_soat", "so_so_tai",
-        "tong_phai_chi", "so_diem_tiep_thi", "so_ho_so_hoa_hong", "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_con_no",
-    ]
-    ids = [c for c in preferred_ids if c in df.columns]
-    if not ids:
-        ids = [c for c in df.columns if not str(c).startswith("_")][:max_cols]
-    ids = ids[:max_cols]
-    columns = [{"name": _zoom_column_label(c, metric_label), "id": c} for c in ids]
-    data = df[ids].to_dict("records")
-    return columns, json_safe(data)
-
-
-def _zoom_badge(text, icon="fa-circle-info", tone="green"):
-    if tone == "dark":
-        bg, fg, border = "#0f172a", "#ffffff", "#1e293b"
-    elif tone == "amber":
-        bg, fg, border = "#fffbeb", "#92400e", "#fde68a"
-    else:
-        bg, fg, border = "#ecfdf5", "#166534", "#bbf7d0"
-    return html.Span(
-        [fa_icon(icon, 11, fg), html.Span(str(text), className="ms-1")],
-        style={
-            "display": "inline-flex", "alignItems": "center", "gap": "4px",
-            "padding": "7px 10px", "borderRadius": "999px", "backgroundColor": bg,
-            "color": fg, "border": f"1px solid {border}", "fontSize": "12px", "fontWeight": "900",
-            "marginRight": "8px", "marginBottom": "8px", "whiteSpace": "nowrap",
-        }
-    )
-
-
-def _zoom_table_component(target: str, store: dict, df: pd.DataFrame, theme: str, title_prefix: str = "BẢNG PHÂN TÍCH", subtitle_items=None, dense: bool = False, page_size: int = 14):
-    store = store or {}
-    meta = store.get("meta", {}) or {}
-    df = _zoom_prepare_df(df)
-    metric_label = _zoom_metric_label(meta, store)
-    columns, data = _zoom_columns_data(df, metric_label=metric_label, max_cols=14 if not dense else 10)
-    z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=dense)
-    row_count = len(df) if isinstance(df, pd.DataFrame) else 0
-    title = _zoom_table_title(target, store, title_prefix)
-    subtitle = " • ".join([str(x) for x in (subtitle_items or []) if str(x).strip()])
-    if not subtitle:
-        subtitle = "Bảng drill-down được chuẩn hóa tên cột tiếng Việt để đối chiếu nhanh với KPI và biểu đồ."
-    card_style = {
-        "border": f"1.5px solid {GREEN_BORDER if theme == 'light' else '#3b3b57'}",
-        "boxShadow": f"0 16px 34px {GREEN_SHADOW if theme == 'light' else 'rgba(20,20,45,0.22)'}",
-        "borderRadius": "22px",
-        "overflow": "hidden",
-        "backgroundColor": "#ffffff" if theme == "light" else DARK_BG,
-        "width": "100%",
-    }
-    head_bg = "linear-gradient(135deg,#f8fafc 0%,#ecfdf5 100%)" if theme == "light" else "linear-gradient(135deg,#111827 0%,#064e3b 100%)"
-    head_color = "#0f172a" if theme == "light" else "#ffffff"
-    return dbc.Card(
-        dbc.CardBody([
-            html.Div([
-                html.Div([
-                    html.Div("TRUNG TÂM PHÂN TÍCH", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.14em", "color": GREEN_PRIMARY, "textTransform":"uppercase"}),
-                    html.Div(title, style={"fontSize":"21px", "fontWeight":"950", "lineHeight":"1.25", "marginTop":"4px", "color": head_color}),
-                    html.Div(subtitle, style={"fontSize":"13px", "fontWeight":"700", "opacity":0.78, "marginTop":"6px", "color": head_color}),
-                ], style={"minWidth":0, "flex":"1 1 auto"}),
-                html.Div([
-                    _zoom_badge(f"{fmt_vn(row_count)} dòng", "fa-table-list", "green"),
-                    _zoom_badge(metric_label, "fa-chart-line", "dark" if theme != "light" else "green"),
-                    _zoom_badge("Drill-down", "fa-magnifying-glass-chart", "amber"),
-                ], style={"display":"flex", "flexWrap":"wrap", "justifyContent":"flex-end", "alignItems":"center"}),
-            ], style={"display":"flex", "gap":"14px", "alignItems":"flex-start", "justifyContent":"space-between", "padding":"16px", "borderRadius":"18px", "background": head_bg, "border":"1px solid rgba(34,197,94,0.18)", "marginBottom":"14px"}),
-            html.Div(
-                dash_table.DataTable(
-                    columns=columns,
-                    data=data,
-                    page_size=page_size,
-                    sort_action="native",
-                    filter_action="none",
-                    cell_selectable=True,
-                    fixed_rows={"headers": True},
-                    style_header=z_style_header,
-                    style_cell=z_style_cell,
-                    style_table={**z_style_table, "maxHeight": "58vh", "overflowY": "auto"},
-                    style_data_conditional=[
-                        {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc" if theme == "light" else "#111827"},
-                        {"if": {"state": "active"}, "backgroundColor": "#ecfdf5" if theme == "light" else "#064e3b", "border": f"1px solid {GREEN_BORDER}"},
-                        {"if": {"state": "selected"}, "backgroundColor": "#dcfce7" if theme == "light" else "#14532d", "border": f"1px solid {GREEN_BORDER}"},
-                    ],
-                ) if columns else html.Div("Không có dữ liệu chi tiết để hiển thị.", style={"opacity":0.82, "fontWeight":"800", "padding":"16px"}),
-                style=z_wrapper_style,
-            )
-        ], style={"padding":"14px", "width":"100%"}),
-        style=card_style,
-    )
-
-
-def _zoom_empty_panel(message: str, theme: str):
-    return dbc.Card(
-        dbc.CardBody([
-            html.Div(fa_icon("fa-database", 26, GREEN_PRIMARY), style={"marginBottom":"8px"}),
-            html.Div("Chưa có dữ liệu chi tiết", style={"fontSize":"18px", "fontWeight":"950"}),
-            html.Div(message, style={"opacity":0.78, "fontWeight":"700", "marginTop":"4px"}),
-        ]),
-        style={"border": f"1.5px solid {GREEN_BORDER}", "borderRadius":"22px", "boxShadow":f"0 12px 26px {GREEN_SHADOW}", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
-    )
-
-
-def _zoom_click_hint_panel(target: str, store: dict, theme: str):
-    return dbc.Card(
-        dbc.CardBody([
-            html.Div([
-                html.Div("CHẾ ĐỘ PHÂN TÍCH TƯƠNG TÁC", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.13em", "color":GREEN_PRIMARY}),
-                html.Div(_zoom_table_title(target, store, "BIỂU ĐỒ PHÓNG TO"), style={"fontSize":"18px", "fontWeight":"950", "marginTop":"4px"}),
-                html.Div("Click trực tiếp vào cột, điểm dữ liệu hoặc lát biểu đồ để mở bảng drill-down tương ứng ngay bên dưới.", style={"opacity":0.78, "fontWeight":"750", "marginTop":"4px"}),
-            ]),
-            html.Div([
-                _zoom_badge("Có thể cuộn / zoom", "fa-up-down-left-right", "green"),
-                _zoom_badge("Bảng chi tiết theo điểm click", "fa-table", "amber"),
-            ], style={"marginTop":"10px"}),
-        ]),
-        style={"border": f"1.5px solid {GREEN_BORDER}", "borderRadius":"22px", "boxShadow":f"0 12px 26px {GREEN_SHADOW}", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
-    )
-
-
-def _zoom_kpi_panel(target: str, store: dict, df_zoom: pd.DataFrame, theme: str):
-    df_zoom = _zoom_prepare_df(df_zoom)
-    metric_label = store.get("title", "KPI")
-    columns, data = _zoom_columns_data(df_zoom, metric_label=metric_label, max_cols=14)
-    z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
-    return dbc.Card(
-        dbc.CardBody([
-            html.Div([
-                html.Div([
-                    html.Div("KPI ĐIỀU HÀNH", style={"fontSize":"11px", "fontWeight":"900", "letterSpacing":"0.14em", "color":GREEN_PRIMARY}),
-                    html.Div(_zoom_target_label(target, store=store), style={"fontSize":"22px", "fontWeight":"950", "lineHeight":"1.25", "marginTop":"4px"}),
-                    html.Div(store.get("subtitle", ""), style={"fontSize":"13px", "opacity":0.78, "fontWeight":"800", "marginTop":"5px"}),
-                ], style={"flex":"1 1 auto", "minWidth":0}),
-                html.Div(store.get("main", "0"), style={"fontSize":"46px", "fontWeight":"950", "lineHeight":"1", "color":GREEN_PRIMARY, "textAlign":"right"}),
-            ], style={"display":"flex", "gap":"18px", "alignItems":"center", "justifyContent":"space-between", "padding":"18px", "borderRadius":"20px", "background":"linear-gradient(135deg,#f8fafc 0%,#ecfdf5 100%)" if theme == "light" else "linear-gradient(135deg,#111827 0%,#064e3b 100%)", "border":"1px solid rgba(34,197,94,0.20)", "marginBottom":"14px"}),
-            html.Div([
-                _zoom_badge(f"{fmt_vn(len(df_zoom))} khu vực", "fa-layer-group", "green"),
-                _zoom_badge("Bảng", "fa-table-columns", "amber"),
-            ], style={"marginBottom":"8px"}),
-            html.Div(
-                dash_table.DataTable(
-                    columns=columns,
-                    data=data,
-                    page_size=12,
-                    sort_action="native",
-                    fixed_rows={"headers": True},
-                    style_header=z_style_header,
-                    style_cell=z_style_cell,
-                    style_table={**z_style_table, "maxHeight":"58vh", "overflowY":"auto"},
-                    style_data_conditional=[
-                        {"if": {"row_index": "odd"}, "backgroundColor": "#f8fafc" if theme == "light" else "#111827"},
-                        {"if": {"state": "active"}, "backgroundColor": "#ecfdf5" if theme == "light" else "#064e3b", "border": f"1px solid {GREEN_BORDER}"},
-                    ],
-                ) if columns else html.Div("KPI này chưa có bảng chi tiết.", style={"opacity":0.8, "fontWeight":"800"}),
-                style=z_wrapper_style,
-            )
-        ], style={"width":"100%", "padding":"14px"}),
-        style={"border": f"1.5px solid {GREEN_BORDER if theme == 'light' else '#3b3b57'}", "boxShadow": f"0 16px 34px {GREEN_SHADOW}", "borderRadius":"24px", "width":"100%", "overflow":"hidden", "backgroundColor":"#ffffff" if theme == "light" else DARK_BG},
-    )
-
 @app.callback(
     Output("zoom-modal", "is_open"),
     Output("zoom-title", "children"),
@@ -13821,10 +13243,10 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
 
         meta = store.get("meta", {}) or {}
         rows = store.get("rows", []) or []
-        fig = _resolve_zoom_figure_from_store(store)
+        fig = store.get("figure", {}) or {}
 
         if not rows:
-            detail = _zoom_empty_panel("Biểu đồ này chưa có dữ liệu drill-down đi kèm trong store.", theme)
+            detail = html.Div("Không có dữ liệu drill-down cho biểu đồ này.", style={"opacity":0.85})
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
         pt = (clickData.get("points") or [{}])[0]
@@ -13860,20 +13282,61 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             df2 = df[df["label"].astype(str) == str(label)]
             if not df2.empty:
                 df = df2
+        if "pct" in df.columns and "pct_fmt" not in df.columns:
+            df["pct_fmt"] = pd.to_numeric(df["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
 
-        df = _zoom_prepare_df(df)
         if df.empty:
-            detail = _zoom_empty_panel("Không tìm thấy dòng dữ liệu phù hợp với điểm/cột bạn vừa click.", theme)
+            detail = html.Div("Không tìm thấy dòng dữ liệu phù hợp cho điểm bạn click.", style={"opacity":0.85})
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
+        metric_label = meta.get("metric_label", "Giá trị")
+
+        preferred_cols = [
+            ("Tháng", "thang_label"),
+            ("Khu vực", "khu_vuc"),
+            ("Nhóm", "label"),
+            ("Nhóm vòng đời", "nhom_vong_doi"),
+            (metric_label, "metric_fmt"),
+            (metric_label, "val_fmt"),
+            ("Tỷ trọng", "pct_fmt"),
+            ("Quy mô", "count_fmt"),
+            ("Đóng góp nhóm", "pct_segment_fmt"),
+        ]
+        out_cols = [(a, b) for a, b in preferred_cols if b in df.columns]
+
+        if not out_cols:
+            out_cols = [(c, c) for c in df.columns[:8]]
+
+        columns = [{"name": a, "id": b} for a, b in out_cols]
+        data = df[[b for _, b in out_cols if b in df.columns]].to_dict("records")
+
+        title = f"CHI TIẾT • {metric_label}"
         subtitle = []
         if month_label:
             subtitle.append(f"Tháng: {month_label}")
         if region:
-            subtitle.append(f"Chuỗi/Khu vực: {region}")
-        if label and str(label) != str(month_label):
-            subtitle.append(f"Nhóm: {label}")
-        detail = _zoom_table_component(target, store, df, theme, title_prefix="CHI TIẾT ĐIỂM DỮ LIỆU", subtitle_items=subtitle, dense=True, page_size=14)
+            subtitle.append(f"Trace/KV: {region}")
+
+        style_header, style_cell, style_table, wrapper_style = _zoom_table_styles(theme, dense=True)
+
+        detail = dbc.Card(
+            dbc.CardBody([
+                html.Div(title, style={"fontSize":"15px","fontWeight":"900"}),
+                html.Div(" • ".join(subtitle), style={"opacity":0.85,"marginBottom":"8px","fontWeight":"700"}),
+                html.Div(
+                    dash_table.DataTable(
+                        columns=columns,
+                        data=data,
+                        page_size=14,
+                        style_cell=style_cell,
+                        style_header=style_header,
+                        style_table=style_table,
+                    ),
+                    style=wrapper_style,
+                )
+            ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
+            style={"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+        )
         return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
     if isinstance(trig, dict) and trig.get("type") == "zoomable":
@@ -13894,28 +13357,101 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         if not store:
             raise PreventUpdate
 
-        title = _zoom_title(target, store)
+        title = f"PHÓNG TO • {target}"
+        detail_children = []
+        detail_style = {"display": "none"}
 
         if store.get("kind") == "kpi" or kind == "kpi":
-            df_zoom = _zoom_prepare_df(pd.DataFrame(store.get("rows", []) or []))
-            kpi_card = _zoom_kpi_panel(target, store, df_zoom, theme)
+            rows = store.get("rows", []) or []
+            cols = []
+            data = []
+            df_zoom = pd.DataFrame(rows)
+
+            if not df_zoom.empty and "pct" in df_zoom.columns and "pct_fmt" not in df_zoom.columns:
+                df_zoom["pct_fmt"] = pd.to_numeric(df_zoom["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+
+            preferred_cols = [
+                ("Khu vực", "khu_vuc"),
+                (store.get("title", "Giá trị"), "value_fmt"),
+                ("Trung bình", "avg_fmt"),
+                ("Tỷ trọng", "pct_fmt"),
+                ("Nhân sự", "so_luong_nhan_su_fmt"),
+                ("Vào làm", "so_vao_lam_fmt"),
+                ("Nghỉ việc", "so_nghi_viec_fmt"),
+                ("Đầu kỳ", "headcount_dau_ky_fmt"),
+                ("Giữ ổn định", "so_giu_on_dinh_fmt"),
+                ("Biến động thuần", "bien_dong_thuan_fmt"),
+                ("Dưới 1 năm", "so_duoi_1_nam_fmt"),
+                ("1 - 3 năm", "so_tu_1_den_3_nam_fmt"),
+                ("Trên 3 năm", "so_tren_3_nam_fmt"),
+                ("Tỷ lệ tăng", "ty_le_tang_fmt"),
+                ("Tỷ lệ giảm", "ty_le_giam_fmt"),
+                ("Tỷ lệ giữ chân", "ty_le_giu_chan_fmt"),
+            ]
+            if not df_zoom.empty:
+                use_cols = [(a, b) for a, b in preferred_cols if b in df_zoom.columns]
+                if not use_cols:
+                    use_cols = [(c, c) for c in df_zoom.columns[:8]]
+                cols = [{"name": a, "id": b} for a, b in use_cols]
+                data = df_zoom[[b for _, b in use_cols]].to_dict("records")
+
+            z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
+            if theme == "light":
+                z_card_style = {"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+            else:
+                z_card_style = {"border":"1px solid #3b3b57","boxShadow":"0 0 20px rgba(90,80,255,0.15)", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+
+            kpi_card = dbc.Card(
+                dbc.CardBody([
+                    html.Div(store.get("title","KPI"), style={"fontSize":"14px","fontWeight":"900","opacity":0.85}),
+                    html.Div(store.get("main","0"), style={"fontSize":"44px","fontWeight":"900","marginTop":"6px"}),
+                    html.Div(store.get("subtitle",""), style={"fontSize":"13px","opacity":0.85,"fontWeight":"800","marginTop":"4px"}),
+                    html.Hr(style={"borderColor":"#d0d7e2" if theme=="light" else "#444"}),
+                    html.Div(
+                        dash_table.DataTable(
+                            columns=cols,
+                            data=data,
+                            page_size=12,
+                            style_header=z_style_header,
+                            style_cell=z_style_cell,
+                            style_table=z_style_table,
+                        ) if cols else html.Div("Không có breakdown theo khu vực.", style={"opacity":0.8}),
+                        style=z_wrapper_style,
+                    )
+                ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
+                style=z_card_style
+            )
             return True, title, kpi_card, {}, {"display":"none"}, [], {"display":"none"}, {"kind":"kpi","target":target}
 
-        fig_dict = _resolve_zoom_figure_from_store(store)
+        fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
         if not fig_dict:
-            # A chart card should never open as a data table. If the figure is missing
-            # because an old deployment/env disabled figure storage, show a clear chart
-            # placeholder and keep drill-down hidden until the user clicks a real point
-            # after redeploying with figure storage enabled.
-            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy redeploy bản app.py mới để bật chart zoom-first.", theme).to_dict()
-            fig_dict = enhance_zoom_figure(fig_dict)
-            return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+            df_zoom = pd.DataFrame(rows)
+            if not df_zoom.empty:
+                preferred = ["thang_label", "khu_vuc", "label", "metric_fmt", "val_fmt", "rev_fmt", "trip_fmt", "pct_fmt"]
+                use_cols = [c for c in preferred if c in df_zoom.columns] or list(df_zoom.columns[:8])
+                z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
+                detail_children = html.Div([
+                    html.Div("Biểu đồ phóng to chưa sẵn sàng trong store hiện tại. Dữ liệu chi tiết vẫn hiển thị bên dưới; hãy refresh lại trang nếu vừa deploy/env mới.", style={"opacity":0.82, "fontWeight":"800", "marginBottom":"10px"}),
+                    dash_table.DataTable(
+                        columns=[{"name": c, "id": c} for c in use_cols],
+                        data=df_zoom[use_cols].to_dict("records"),
+                        page_size=14,
+                        style_header=z_style_header,
+                        style_cell=z_style_cell,
+                        style_table=z_style_table,
+                    )
+                ], style=z_wrapper_style)
+            else:
+                detail_children = html.Div("Không có dữ liệu chi tiết cho biểu đồ này.", style={"opacity":0.8, "fontWeight":"700"})
+            return True, title, None, {}, {"display":"none"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
 
         fig_dict = enhance_zoom_figure(fig_dict)
-        # Theo yêu cầu: lần click đầu vào chart chỉ phóng to đúng biểu đồ.
-        # Bảng drill-down chỉ hiện sau khi người dùng click vào cột/điểm/lát trên biểu đồ zoom.
-        return True, title, None, fig_dict, {"display":"block","height":"84vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+
+        detail_style = {"display":"block"}
+        detail_children = html.Div("Click vào 1 điểm/cột để xem chi tiết.", style={"opacity":0.8, "fontWeight":"700"})
+
+        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, detail_style, {"kind":"fig","target":target}
 
     raise PreventUpdate
 
