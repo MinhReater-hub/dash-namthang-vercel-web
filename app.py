@@ -128,13 +128,7 @@ DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip
 DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-# Zoom chart safety: chart zoom must always have a real figure unless explicitly disabled.
-# `cache`/`direct` are treated as zoom-first safe modes. Use `rows_only` only if you intentionally
-# accept table-only zoom fallback for charts.
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_ZOOM_FIGURE_STORE_POLICY = os.getenv("DASH_ZOOM_FIGURE_STORE_POLICY", "direct").strip().lower()  # direct | cache | rows_only
-DASH_GRAPH_FAST_CONFIG = str(os.getenv("DASH_GRAPH_FAST_CONFIG", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_STATIC_CACHE_SECONDS = int(os.getenv("DASH_STATIC_CACHE_SECONDS", "31536000"))
 
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
@@ -5024,21 +5018,6 @@ def make_kpi_card(title, body_id, target, icon=None, min_height="220px"):
         style={"cursor": "pointer"}
     )
 
-def _graph_config(display_mode_bar: bool = False, scroll_zoom: bool = False):
-    cfg = {"displayModeBar": bool(display_mode_bar), "responsive": True}
-    if scroll_zoom:
-        cfg["scrollZoom"] = True
-    if DASH_GRAPH_FAST_CONFIG:
-        cfg.update({
-            "displaylogo": False,
-            "showTips": False,
-            "plotGlPixelRatio": 1,
-        })
-        if not display_mode_bar:
-            cfg["modeBarButtonsToRemove"] = ["lasso2d", "select2d"]
-    return cfg
-
-
 def make_graph_card(graph_id, target, height="390px"):
     return html.Div(
         dbc.Card(
@@ -5048,7 +5027,7 @@ def make_graph_card(graph_id, target, height="390px"):
                     [
                         dcc.Graph(
                             id=graph_id,
-                            config=_graph_config(False),
+                            config={"displayModeBar": False, "responsive": True},
                             style={"height": height}
                         )
                     ],
@@ -5212,42 +5191,18 @@ def _limit_store_rows(rows, max_rows: int):
         return list(rows), False, total
     return rows, False, 0
 
-def _zoom_figure_to_store_dict(fig):
-    """Return a JSON-safe Plotly figure for chart zoom.
-
-    This is intentionally conservative: chart zoom-first must never degrade into a
-    table-only placeholder just because production env flags disabled figure storage.
-    The visible page chart still uses its normal figure; this copy is only for the
-    professional full-screen zoom modal.
-    """
-    if fig is None:
-        return {}
-    try:
-        fig_dict = fig.to_dict() if hasattr(fig, "to_dict") else fig
-    except Exception:
-        fig_dict = fig
-    try:
-        return json_safe(fig_dict)
-    except Exception:
-        return fig_dict if isinstance(fig_dict, dict) else {}
-
-
-def _zoom_should_include_figure() -> bool:
-    policy = str(DASH_ZOOM_FIGURE_STORE_POLICY or "direct").strip().lower()
-    if policy in {"rows_only", "row_only", "none", "off", "false", "0"}:
-        return bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS)
-    # direct/cache/hybrid/safe all keep a real figure payload so zoom-first is guaranteed.
-    return True
-
-
 def pack_fig_store(fig, rows=None, meta=None):
-    include_figure = _zoom_should_include_figure()
-    fig_dict = _zoom_figure_to_store_dict(fig) if include_figure else {}
+    fig_dict = {}
+    include_figure = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS)
+    if include_figure:
+        try:
+            fig_dict = fig.to_dict()
+        except Exception:
+            fig_dict = fig
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
-    meta_out["figure_included"] = bool(fig_dict)
-    meta_out["figure_policy"] = str(DASH_ZOOM_FIGURE_STORE_POLICY or "direct").strip().lower()
-    meta_out["zoom_first_enabled"] = bool(fig_dict)
+    meta_out["figure_included"] = bool(include_figure)
+    meta_out["zoom_first"] = True
     if truncated:
         meta_out["rows_truncated"] = True
         meta_out["rows_total"] = total_rows
@@ -5342,6 +5297,434 @@ def _zoom_table_styles(theme: str, dense: bool = False):
         "paddingBottom": "4px",
     }
     return style_header, style_cell, style_table, wrapper_style
+
+
+# =========================================================
+# ZOOM / DRILL-DOWN PRESENTATION CONTRACT
+# =========================================================
+# Những helper này chỉ chuẩn hoá hiển thị trong modal phóng to và bảng drill-down.
+# Không thay đổi dữ liệu nguồn, không thay đổi layout/menu/filter, không cache callback output.
+ZOOM_DETAIL_COLUMN_LABELS = {
+    "ngay_du_lieu": "Ngày dữ liệu",
+    "ngay_label": "Ngày",
+    "thang": "Tháng",
+    "thang_nam": "Tháng",
+    "thang_nam_vn": "Tháng dữ liệu",
+    "thang_label": "Tháng",
+    "nam": "Năm",
+    "khu_vuc": "Khu vực",
+    "label": "Nhóm dữ liệu",
+    "daily_lh_label": "Loại hình",
+    "loai_hinh_std": "Loại hình hợp tác",
+    "loaihinh_hoptac": "Loại hình hợp tác",
+    "loai_hinh": "Loại hình",
+    "loai_hop_dong_std": "Loại hợp đồng",
+    "loai_hopdong": "Loại hợp đồng",
+    "loai_hop_dong": "Loại hợp đồng",
+    "metric_label": "Chỉ tiêu",
+    "metric_key": "Mã chỉ tiêu",
+    "zoom_click_metric_label": "Chỉ tiêu",
+    "zoom_click_value_fmt": "Giá trị",
+    "metric_fmt": "Giá trị",
+    "value_fmt": "Giá trị",
+    "val_fmt": "Giá trị",
+    "rev_fmt": "Doanh thu",
+    "trip_fmt": "Số cuốc",
+    "avg_fmt": "Bình quân",
+    "avg_per_trip_fmt": "Doanh thu bình quân / cuốc",
+    "avg_per_trip": "Doanh thu bình quân / cuốc",
+    "rev_ma7_fmt": "Doanh thu TB 7 ngày",
+    "pct": "Tỷ trọng",
+    "pct_fmt": "Tỷ trọng",
+    "ty_trong_fmt": "Tỷ trọng",
+    "pct_segment_fmt": "Đóng góp nhóm",
+    "count_fmt": "Số lượng",
+    "bks_fmt": "Biển kiểm soát",
+    "xe_fmt": "Số xe",
+    "so_luong_xe": "Số lượng xe",
+    "so_bien_kiem_soat": "Số biển kiểm soát",
+    "so_so_tai": "Số sổ tài",
+    "tong_so_cho": "Tổng số chỗ",
+    "so_cho_binh_quan_xe": "Số chỗ bình quân / xe",
+    "so_cho_loc": "Số chỗ",
+    "nhan_so_cho": "Nhãn số chỗ",
+    "loai_xe": "Loại xe",
+    "nhom_nhien_lieu": "Nhóm nhiên liệu",
+    "tong_doanh_thu": "Tổng doanh thu",
+    "tong_so_cuoc": "Tổng số cuốc",
+    "gia_tri": "Giá trị",
+    "tong_phai_chi": "Tổng phải chi",
+    "so_diem_tiep_thi": "Số điểm tiếp thị",
+    "chi_phi_binh_quan_moi_diem": "Chi phí bình quân / điểm",
+    "so_ho_so_hoa_hong": "Số hồ sơ hoa hồng",
+    "tong_da_chi_du": "Tổng đã chi đủ",
+    "tong_chua_chi_du": "Tổng chưa chi đủ",
+    "tong_khong_chi": "Tổng không chi",
+    "so_ho_so_da_chi_du": "Hồ sơ đã chi đủ",
+    "so_ho_so_chua_chi_du": "Hồ sơ chưa chi đủ",
+    "so_ho_so_khong_chi": "Hồ sơ không chi",
+    "chi_phi_binh_quan_moi_ho_so": "Chi phí bình quân / hồ sơ",
+    "so_diem_moi_ky_hd": "Điểm mới / kỳ HĐ",
+    "so_loai_hinh_kd": "Số loại hình KD",
+    "tong_tien_de_xuat": "Tổng tiền đề xuất",
+    "so_tien_thu_duoc": "Số tiền thu được",
+    "so_tien_da_xu_ly": "Số tiền đã xử lý",
+    "so_tien_con_no": "Số tiền còn nợ",
+    "so_bien_ban": "Số biên bản",
+    "so_bien_ban_da_xu_ly": "Biên bản đã xử lý",
+    "so_bien_ban_thu_hoan_tat": "Biên bản thu hoàn tất",
+    "bo_phan": "Bộ phận",
+    "so_luong_nhan_su": "Số lượng nhân sự",
+    "so_luong_nhan_su_fmt": "Số lượng nhân sự",
+    "so_vao_lam": "Vào làm",
+    "so_vao_lam_fmt": "Vào làm",
+    "so_nghi_viec": "Nghỉ việc",
+    "so_nghi_viec_fmt": "Nghỉ việc",
+    "net_flow": "Biến động thuần",
+    "join_fmt": "Vào làm",
+    "leave_fmt": "Nghỉ việc",
+    "net_fmt": "Biến động thuần",
+    "headcount_dau_ky": "Nhân sự đầu kỳ",
+    "headcount_dau_ky_fmt": "Nhân sự đầu kỳ",
+    "so_giu_on_dinh": "Giữ ổn định",
+    "so_giu_on_dinh_fmt": "Giữ ổn định",
+    "bien_dong_thuan": "Biến động thuần",
+    "bien_dong_thuan_fmt": "Biến động thuần",
+    "so_duoi_1_nam": "Dưới 1 năm",
+    "so_duoi_1_nam_fmt": "Dưới 1 năm",
+    "so_tu_1_den_3_nam": "Từ 1 đến 3 năm",
+    "so_tu_1_den_3_nam_fmt": "Từ 1 đến 3 năm",
+    "so_tren_3_nam": "Trên 3 năm",
+    "so_tren_3_nam_fmt": "Trên 3 năm",
+    "ty_le_tang": "Tỷ lệ tăng",
+    "ty_le_tang_fmt": "Tỷ lệ tăng",
+    "ty_le_giam": "Tỷ lệ giảm",
+    "ty_le_giam_fmt": "Tỷ lệ giảm",
+    "ty_le_giu_chan": "Tỷ lệ giữ chân",
+    "ty_le_giu_chan_fmt": "Tỷ lệ giữ chân",
+    "tang_fmt": "Tỷ lệ tăng",
+    "giam_fmt": "Tỷ lệ giảm",
+    "giu_fmt": "Tỷ lệ giữ chân",
+    "nhom_vong_doi": "Nhóm vòng đời",
+    "du_lieu_nguon": "Nguồn dữ liệu",
+    "ghi_chu_nguon": "Ghi chú nguồn",
+    "fleet_bridge_metric": "Chỉ tiêu đội xe",
+}
+
+ZOOM_DETAIL_CONTEXT_ORDER = [
+    "ngay_label", "thang_label", "thang", "nam", "khu_vuc", "label", "daily_lh_label",
+    "loai_hinh_std", "loaihinh_hoptac", "loai_hinh", "loai_hop_dong_std", "loai_hopdong", "loai_hop_dong",
+    "metric_label", "loai_xe", "nhom_nhien_lieu", "nhom_vong_doi", "bo_phan",
+]
+ZOOM_DETAIL_VALUE_ORDER = [
+    "metric_fmt", "value_fmt", "val_fmt", "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "rev_ma7_fmt",
+    "avg_fmt", "pct_fmt", "ty_trong_fmt", "pct_segment_fmt", "count_fmt", "xe_fmt", "bks_fmt",
+    "join_fmt", "leave_fmt", "net_fmt", "tang_fmt", "giam_fmt", "giu_fmt",
+    "tong_doanh_thu", "tong_so_cuoc", "gia_tri", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai", "tong_so_cho",
+    "tong_phai_chi", "so_diem_tiep_thi", "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+    "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+    "so_luong_nhan_su", "so_vao_lam", "so_nghi_viec", "net_flow", "headcount_dau_ky", "so_giu_on_dinh", "bien_dong_thuan",
+    "so_duoi_1_nam", "so_tu_1_den_3_nam", "so_tren_3_nam", "ty_le_tang", "ty_le_giam", "ty_le_giu_chan",
+]
+ZOOM_DETAIL_INTERNAL_SKIP = {
+    "thang_nam_vn", "thang_nam", "ngay_du_lieu", "metric", "metric_key", "pct", "avg_per_trip",
+    # Plotly/frontend/dev-only fields must never be exposed as business columns.
+    "color", "colour", "value", "values", "x", "y", "z", "text", "hovertext", "hoverinfo",
+    "customdata", "custom_data", "curveNumber", "pointNumber", "pointIndex", "pointNumbers",
+    "bbox", "marker", "marker_color", "line_color", "legendgroup", "ids", "id", "index",
+}
+
+
+def _zoom_metric_label(meta: dict | None, default: str = "Giá trị") -> str:
+    try:
+        value = (meta or {}).get("metric_label") or default
+        value = re.sub(r"<br\s*/?>", " • ", str(value), flags=re.I)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value or default
+    except Exception:
+        return default
+
+
+def _zoom_vn_label(col, metric_label: str | None = None) -> str:
+    col = str(col)
+    metric_label = metric_label or "Giá trị"
+    if col in {"metric_fmt", "value_fmt", "val_fmt"}:
+        return metric_label
+    if col in ZOOM_DETAIL_COLUMN_LABELS:
+        return ZOOM_DETAIL_COLUMN_LABELS[col]
+    base = col
+    for suffix in ["_fmt", "_std"]:
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+    if base in ZOOM_DETAIL_COLUMN_LABELS:
+        return ZOOM_DETAIL_COLUMN_LABELS[base]
+    replacements = {
+        "ngay": "Ngày", "thang": "Tháng", "nam": "Năm", "khu": "Khu", "vuc": "vực",
+        "tong": "Tổng", "doanh": "doanh", "thu": "thu", "cuoc": "cuốc",
+        "so": "Số", "luong": "lượng", "nhan": "nhân", "su": "sự",
+        "tai": "tài", "xe": "xe", "hop": "hợp", "dong": "đồng",
+        "loai": "loại", "hinh": "hình", "chi": "chi", "phi": "phí",
+        "binh": "bình", "quan": "quân", "diem": "điểm", "tiep": "tiếp", "thi": "thị",
+        "tien": "tiền", "de": "đề", "xuat": "xuất", "xu": "xử", "ly": "lý",
+        "con": "còn", "no": "nợ", "bien": "biên", "ban": "bản",
+        "phan": "phân", "quyen": "quyền", "truc": "trực", "thuoc": "thuộc",
+        "nhien": "nhiên", "lieu": "liệu", "kiem": "kiểm", "soat": "soát",
+        "giu": "giữ", "chan": "chân", "tang": "tăng", "giam": "giảm",
+        "duoi": "dưới", "tren": "trên", "tu": "từ", "den": "đến",
+        "ty": "Tỷ", "trong": "trọng", "gia": "giá", "tri": "trị", "ma7": "TB 7 ngày",
+        "rev": "Doanh thu", "trip": "Số cuốc", "avg": "Bình quân", "pct": "Tỷ trọng",
+        "bks": "Biển kiểm soát", "fmt": "", "std": "",
+    }
+    parts = [p for p in re.split(r"_+", base) if p]
+    label = " ".join(replacements.get(p, p) for p in parts).strip()
+    return label[:1].upper() + label[1:] if label else col
+
+
+def _zoom_format_raw_value(col: str, value):
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and pd.isna(value):
+            return ""
+        if isinstance(value, (pd.Timestamp, datetime)):
+            return pd.Timestamp(value).strftime("%d/%m/%Y")
+        col_l = str(col).lower()
+        if col_l.endswith("_fmt") or isinstance(value, str):
+            return value
+        if "ty_le" in col_l or "pct" in col_l or "ty_trong" in col_l:
+            return fmt_pct(value, 1)
+        if any(k in col_l for k in ["doanh_thu", "tong", "so_", "gia_tri", "cuoc", "luong", "tien", "xe", "ban", "chi_phi"]):
+            return fmt_vn(value)
+    except Exception:
+        pass
+    return value
+
+
+def _zoom_safe_day_label(x):
+    try:
+        ts = pd.to_datetime(x, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return pd.Timestamp(ts).strftime("%d/%m/%Y")
+    except Exception:
+        return None
+
+
+def _zoom_safe_month_label(x):
+    try:
+        ts = pd.to_datetime(x, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return pd.Timestamp(ts).strftime("%m/%Y")
+    except Exception:
+        return None
+
+
+def _zoom_filter_eq(df: pd.DataFrame, col: str, value) -> pd.DataFrame:
+    if df is None or df.empty or col not in df.columns or value in [None, ""]:
+        return df
+    try:
+        value_s = str(value)
+        tmp = df[df[col].astype(str) == value_s]
+        if not tmp.empty:
+            return tmp
+        # So sánh dạng đã chuẩn hoá để bắt tiếng Việt/dấu cách khác nhau.
+        nv = norm_text(value_s)
+        tmp = df[df[col].astype(str).map(norm_text) == nv]
+        if not tmp.empty:
+            return tmp
+    except Exception:
+        return df
+    return df
+
+
+def _zoom_trace_name_from_point(fig: dict, pt: dict):
+    try:
+        curve = pt.get("curveNumber", None)
+        if curve is not None and isinstance(fig.get("data", []), list) and int(curve) < len(fig["data"]):
+            name = fig["data"][int(curve)].get("name", None)
+            return str(name).strip() if name not in [None, ""] else None
+    except Exception:
+        return None
+    return None
+
+
+def _zoom_filter_rows_for_point(df: pd.DataFrame, meta: dict, fig: dict, pt: dict):
+    """Filter drill rows by the clicked point while keeping chart/card logic unchanged."""
+    if df is None or df.empty:
+        return df, []
+    meta = meta or {}
+    pt = pt or {}
+    out = df.copy()
+    subtitles = []
+    x = pt.get("x", None)
+    y = pt.get("y", None)
+    label = pt.get("label", None)
+    text = pt.get("text", None)
+    trace_name = _zoom_trace_name_from_point(fig or {}, pt)
+    series_field = str(meta.get("series_field") or meta.get("series_key") or "").strip()
+
+    day_label = _zoom_safe_day_label(x)
+    month_label = _zoom_safe_month_label(x)
+    x_text = str(x).strip() if x not in [None, ""] else None
+    y_text = str(y).strip() if y not in [None, ""] else None
+    label_text = str(label).strip() if label not in [None, ""] else None
+    text_value = str(text).strip() if text not in [None, ""] else None
+
+    if "ngay_label" in out.columns and day_label:
+        before = len(out)
+        out2 = _zoom_filter_eq(out, "ngay_label", day_label)
+        if len(out2) < before or not out2.empty:
+            out = out2
+            subtitles.append(f"Ngày: {day_label}")
+    elif "thang_label" in out.columns and month_label:
+        before = len(out)
+        out2 = _zoom_filter_eq(out, "thang_label", month_label)
+        if len(out2) < before or not out2.empty:
+            out = out2
+            subtitles.append(f"Tháng: {month_label}")
+    elif "thang" in out.columns:
+        candidate = label_text or x_text or month_label
+        out2 = _zoom_filter_eq(out, "thang", candidate)
+        if not out2.empty and len(out2) <= len(out):
+            out = out2
+            if candidate:
+                subtitles.append(f"Tháng: {candidate}")
+
+    # Với line/bar multi-series: trace name là khu vực/chỉ tiêu/nhóm.
+    if series_field and trace_name and series_field in out.columns:
+        out2 = _zoom_filter_eq(out, series_field, trace_name)
+        if not out2.empty:
+            out = out2
+            subtitles.append(f"Nhóm: {trace_name}")
+
+    # Với pie/donut: click label thường là tên khu vực/nhóm, không phải tháng.
+    candidate_values = [label_text, text_value, y_text, x_text, trace_name]
+    candidate_cols = []
+    if series_field and series_field in out.columns:
+        candidate_cols.append(series_field)
+    candidate_cols += [
+        "khu_vuc", "label", "daily_lh_label", "loai_hinh_std", "loaihinh_hoptac", "loai_hop_dong_std",
+        "loai_hopdong", "loai_xe", "nhom_nhien_lieu", "nhom_vong_doi", "metric_label", "bo_phan",
+    ]
+    for candidate in candidate_values:
+        if not candidate:
+            continue
+        # Tránh lấy ngày ISO làm category nếu đã lọc ngày/tháng ở trên.
+        if _zoom_safe_day_label(candidate) and ("ngay_label" in df.columns or "thang_label" in df.columns):
+            continue
+        for col in candidate_cols:
+            if col in out.columns:
+                out2 = _zoom_filter_eq(out, col, candidate)
+                if not out2.empty and len(out2) <= len(out):
+                    out = out2
+                    label_name = _zoom_vn_label(col, _zoom_metric_label(meta))
+                    subtitles.append(f"{label_name}: {candidate}")
+                    return out, list(dict.fromkeys(subtitles))
+    return out, list(dict.fromkeys(subtitles))
+
+
+def _zoom_prepare_detail_df(df: pd.DataFrame, meta: dict | None = None, pt: dict | None = None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    meta = meta or {}
+    metric_label = _zoom_metric_label(meta)
+
+    # Không để lộ các field kỹ thuật của Plotly/frontend trong bảng nghiệp vụ.
+    technical_cols = [c for c in out.columns if str(c) in ZOOM_DETAIL_INTERNAL_SKIP or str(c).lower() in ZOOM_DETAIL_INTERNAL_SKIP]
+    if technical_cols:
+        # Nếu store chỉ có cột 'value' là giá trị nghiệp vụ, chuyển sang cột formatted trước khi bỏ raw field.
+        for raw_value_col in ["metric", "value", "values", "y"]:
+            if raw_value_col in out.columns and not any(c in out.columns for c in ["metric_fmt", "value_fmt", "val_fmt", "rev_fmt"]):
+                out["zoom_click_metric_label"] = metric_label
+                out["zoom_click_value_fmt"] = out[raw_value_col].map(lambda v: fmt_pct(v, 1) if ("tỷ" in metric_label.lower() or "%" in metric_label) else fmt_vn(v))
+                break
+        out = out.drop(columns=[c for c in technical_cols if c in out.columns], errors="ignore")
+
+    # Nếu store chỉ có ngữ cảnh mà thiếu giá trị, bổ sung giá trị của điểm click để bảng vẫn có ý nghĩa.
+    value_cols = [c for c in out.columns if c in ZOOM_DETAIL_VALUE_ORDER or str(c).endswith("_fmt")]
+    if not value_cols and pt:
+        y = pt.get("y", pt.get("value", None))
+        if y not in [None, ""]:
+            out["zoom_click_metric_label"] = metric_label
+            out["zoom_click_value_fmt"] = fmt_vn(y) if not ("tỷ" in metric_label.lower() or "%" in metric_label) else fmt_pct(y, 1)
+    return out
+
+
+def _zoom_order_detail_columns(df: pd.DataFrame, meta: dict | None = None, max_cols: int = 12):
+    if df is None or df.empty:
+        return []
+    meta = meta or {}
+    metric_label = _zoom_metric_label(meta)
+    columns = list(df.columns)
+    ordered = []
+    for c in ZOOM_DETAIL_CONTEXT_ORDER + ZOOM_DETAIL_VALUE_ORDER + ["zoom_click_metric_label", "zoom_click_value_fmt"]:
+        if c in columns and c not in ordered:
+            ordered.append(c)
+    # Thêm các cột còn lại nhưng bỏ cột kỹ thuật/raw trùng thông tin nếu đã có cột formatted.
+    for c in columns:
+        if c in ordered or c in ZOOM_DETAIL_INTERNAL_SKIP or str(c).lower() in ZOOM_DETAIL_INTERNAL_SKIP:
+            continue
+        if c == "tong_doanh_thu" and any(x in columns for x in ["rev_fmt", "metric_fmt", "val_fmt"]):
+            continue
+        if c == "tong_so_cuoc" and "trip_fmt" in columns:
+            continue
+        if c == "gia_tri" and any(x in columns for x in ["metric_fmt", "val_fmt"]):
+            continue
+        ordered.append(c)
+    if len(ordered) == 1 and len(columns) > 1:
+        for c in columns:
+            if c not in ordered and c not in ZOOM_DETAIL_INTERNAL_SKIP:
+                ordered.append(c)
+            if len(ordered) >= 4:
+                break
+    return ordered[:max_cols]
+
+
+def _zoom_columns_data(df: pd.DataFrame, meta: dict | None = None, max_cols: int = 12):
+    if df is None or df.empty:
+        return [], []
+    meta = meta or {}
+    metric_label = _zoom_metric_label(meta)
+    use_cols = _zoom_order_detail_columns(df, meta, max_cols=max_cols)
+    if not use_cols:
+        use_cols = list(df.columns[:max_cols])
+    display_df = df[use_cols].copy()
+    for c in use_cols:
+        display_df[c] = display_df[c].map(lambda v, col=c: _zoom_format_raw_value(col, v))
+    columns = [{"name": _zoom_vn_label(c, metric_label), "id": c} for c in use_cols]
+    return columns, display_df.to_dict("records")
+
+
+def _zoom_detail_card(df: pd.DataFrame, meta: dict | None, theme: str, title: str, subtitle_parts=None, dense: bool = True):
+    meta = meta or {}
+    subtitle_parts = [str(x) for x in (subtitle_parts or []) if str(x).strip()]
+    columns, data = _zoom_columns_data(df, meta, max_cols=12)
+    style_header, style_cell, style_table, wrapper_style = _zoom_table_styles(theme, dense=dense)
+    body_children = [
+        html.Div(title, style={"fontSize":"15px","fontWeight":"900"}),
+    ]
+    if subtitle_parts:
+        body_children.append(html.Div(" • ".join(list(dict.fromkeys(subtitle_parts))), style={"opacity":0.85,"marginBottom":"8px","fontWeight":"700"}))
+    if columns:
+        body_children.append(html.Div(
+            dash_table.DataTable(
+                columns=columns,
+                data=data,
+                page_size=14,
+                style_cell=style_cell,
+                style_header=style_header,
+                style_table=style_table,
+            ),
+            style=wrapper_style,
+        ))
+    else:
+        body_children.append(html.Div("Không có dữ liệu chi tiết phù hợp.", style={"opacity":0.8, "fontWeight":"700"}))
+    return dbc.Card(
+        dbc.CardBody(body_children, style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
+        style={"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
+    )
 
 
 COMMON_FILTER_CACHE = {}
@@ -5459,20 +5842,6 @@ server.config.update(
 )
 if _env_flag("SESSION_COOKIE_SECURE", False):
     server.config["SESSION_COOKIE_SECURE"] = True
-
-@server.after_request
-def _dash_static_cache_headers(response):
-    try:
-        path = request.path or ""
-        if DASH_STATIC_CACHE_SECONDS > 0 and (
-            path.startswith("/_dash-component-suites/") or
-            path.startswith("/assets/") or
-            path == "/favicon.ico"
-        ):
-            response.headers["Cache-Control"] = f"public, max-age={DASH_STATIC_CACHE_SECONDS}, immutable"
-    except Exception:
-        pass
-    return response
 
 @server.get("/healthz")
 def healthz():
@@ -7407,7 +7776,7 @@ def daily_latest_page():
     default_start_iso = _date_iso(_daily_default_start_date(min_d, max_d))
     hero = executive_header(
         "DOANH THU CẬP NHẬT THEO NGÀY",
-        "Theo dõi dữ liệu ngày từ dbo.doanhthungaychecker: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
+        "Theo dõi dữ liệu ngày: doanh thu, số cuốc, xe/tài xế hoạt động, KM vận doanh và KM có khách theo khu vực.",
         right_children=html.Div(id="daily-summary", className="exec-chip-row")
     )
 
@@ -7469,7 +7838,7 @@ def daily_latest_page():
 
     filters = executive_section_panel(
         "Bộ lọc doanh thu ngày",
-        "Mặc định mở 30 ngày gần nhất. Filter tài xế dùng sheet aggregate theo tài xế để phản hồi nhanh, không phải group raw data trong callback.",
+        "Mặc định mở 30 ngày gần nhất. Bộ lọc riêng của từng tài xế.",
         filter_row,
         right_children=[
             filter_panel_chip("Lọc theo ngày", fa_icon("fa-calendar-day", 12, GREEN_PRIMARY)),
@@ -7594,7 +7963,6 @@ def _detail_table_columns(prefix: str):
         "so_bien_kiem_soat": "Số biển kiểm soát",
         "so_so_tai": "Số sổ tài",
         "metric_fmt": "Giá trị",
-        "metric": "Giá trị số",
         "label": "Nhãn",
         "pct": "Tỷ trọng",
         "pct_fmt": "Tỷ trọng",
@@ -7680,8 +8048,12 @@ def _detail_table_columns(prefix: str):
             return cols
 
     fallback = []
-    for col in (list(df_src.columns)[:14] if isinstance(df_src, pd.DataFrame) else []):
+    for col in (list(df_src.columns) if isinstance(df_src, pd.DataFrame) else []):
+        if str(col) == "metric":
+            continue
         fallback.append({"name": _vn_label(col), "id": col})
+        if len(fallback) >= 14:
+            break
     return fallback
 
 
@@ -9854,7 +10226,7 @@ app.layout = dbc.Container(
                         dcc.Graph(
                             id="zoom-graph",
                             figure={},
-                            config=_graph_config(True, True),
+                            config={"displayModeBar": True, "scrollZoom": True},
                             style={"display": "none", "height": "82vh"}
                         ),
                         html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
@@ -11453,6 +11825,56 @@ def _bb_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
     return out[keep_cols].copy()
 
 
+BB_DRILL_VALUE_COLUMNS = [
+    "so_bien_ban", "so_bien_ban_da_xu_ly", "so_bien_ban_thu_hoan_tat",
+    "tong_tien_de_xuat", "so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no",
+]
+BB_DRILL_METRIC_LABELS = [BB_METRIC_LABELS[k] for k in BB_METRIC_ORDER]
+
+
+def _bb_drill_rows(dff: pd.DataFrame, group_cols, metric_labels=None, label_from: str | None = None, label_col: str | None = None) -> list:
+    """Build wide drill-down rows for Biên bản charts only.
+
+    Chart traces may be long-form, but the drill-down table must show all money
+    fields for the clicked point instead of only the selected series.
+    """
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return []
+    group_cols = [c for c in (group_cols if isinstance(group_cols, (list, tuple)) else [group_cols]) if c in dff.columns]
+    value_cols = [c for c in BB_DRILL_VALUE_COLUMNS if c in dff.columns]
+    if not group_cols or not value_cols:
+        return []
+    try:
+        g = dff.groupby(group_cols, as_index=False)[value_cols].sum()
+    except Exception:
+        return []
+
+    if "thang_nam_vn" in g.columns and "thang_label" not in g.columns:
+        try:
+            g["thang_label"] = pd.to_datetime(g["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y").fillna("")
+        except Exception:
+            g["thang_label"] = g["thang_nam_vn"].astype(str)
+    if label_col and label_from and label_from in g.columns:
+        g[label_col] = g[label_from].astype(str)
+
+    context_cols = []
+    for c in ["thang_label", "thang", "khu_vuc", "label"]:
+        if c in g.columns and c not in context_cols:
+            context_cols.append(c)
+    ordered_cols = context_cols + [c for c in BB_DRILL_VALUE_COLUMNS if c in g.columns]
+    base_rows = g[ordered_cols].to_dict("records")
+
+    if metric_labels:
+        out = []
+        for row in base_rows:
+            for metric_label in metric_labels:
+                rr = dict(row)
+                rr["metric_label"] = str(metric_label)
+                out.append(rr)
+        return out
+    return base_rows
+
+
 def callbacks(prefix: str):
     cfg = get_menu_config(prefix)
     df = cfg["df"]
@@ -11836,7 +12258,7 @@ def callbacks(prefix: str):
                 font=dict(size=11, color=(TEXT_LIGHT_UI if theme == "light" else "white")),
                 align="right"
             )
-            rows_kv = [{"khu_vuc": str(r["khu_vuc"]), "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in region_long.iterrows()]
+            rows_kv = _bb_drill_rows(dff, ["khu_vuc"], metric_labels=BB_DRILL_METRIC_LABELS)
             fig_kv_store = pack_fig_store(fig_kv, rows=rows_kv, meta={"chart": "bb_region_grouped", "metric_label": "Biên bản", "series_field": "metric_label"})
 
             monthly_long = _bb_metric_long_df(dff, ["thang_nam_vn"])
@@ -11856,7 +12278,7 @@ def callbacks(prefix: str):
             fig_line = apply_theme(fig_line, theme)
             fig_line = apply_chart_title(fig_line, f"Xu hướng 3 chỉ số tài chính biên bản theo tháng<br>{year_txt} • {mo_txt}", top=220, y_title="Giá trị")
             fig_line = _add_line_point_labels(fig_line, show_all_if_points_le=8)
-            rows_line = [{"thang_label": r["thang_label"], "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in monthly_long.iterrows()]
+            rows_line = _bb_drill_rows(dff, ["thang_nam_vn"], metric_labels=BB_DRILL_METRIC_LABELS)
             fig_line_store = pack_fig_store(fig_line, rows=rows_line, meta={"chart": "bb_monthly_lines", "metric_label": "Biên bản", "series_field": "metric_label"})
 
             fig_bar = px.bar(
@@ -11886,7 +12308,7 @@ def callbacks(prefix: str):
                 pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{year_txt} • {mo_txt}"
             fig_pie = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
             pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
-            fig_pie_store = pack_fig_store(fig_pie, rows=pie_source[["khu_vuc", "metric_fmt"]].rename(columns={"khu_vuc": "label"}).to_dict("records"), meta={"chart": "bb_region_debt", "metric_label": pie_title})
+            fig_pie_store = pack_fig_store(fig_pie, rows=_bb_drill_rows(dff, ["khu_vuc"], label_from="khu_vuc", label_col="label"), meta={"chart": "bb_region_debt", "metric_label": pie_title})
 
             return (
                 kpi1, kpi2, kpi3,
@@ -12256,7 +12678,7 @@ def callbacks(prefix: str):
                 fig1 = apply_theme(fig1, theme)
                 fig1 = apply_chart_title(fig1, f"Số tiền thu được theo tháng • So sánh khu vực<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
                 fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
-                rows1 = [{"thang_label": r["thang_label"], "khu_vuc": str(r["khu_vuc"]), "metric": float(r["so_tien_thu_duoc"]), "metric_fmt": r["metric_fmt"]} for _, r in g1.iterrows()]
+                rows1 = _bb_drill_rows(dff, ["thang_nam_vn", "khu_vuc"], metric_labels=["Số tiền thu được"])
                 fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Số tiền thu được", "series_field": "khu_vuc"})
             else:
                 monthly_long = _bb_metric_long_df(dff, ["thang_nam_vn"])
@@ -12267,7 +12689,7 @@ def callbacks(prefix: str):
                 fig1 = apply_theme(fig1, theme)
                 fig1 = apply_chart_title(fig1, f"Xu hướng 3 chỉ số tài chính biên bản theo tháng<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
                 fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
-                rows1 = [{"thang_label": r["thang_label"], "metric_label": str(r["metric_label"]), "metric": float(r["gia_tri"]), "metric_fmt": r["metric_fmt"]} for _, r in monthly_long.iterrows()]
+                rows1 = _bb_drill_rows(dff, ["thang_nam_vn"], metric_labels=BB_DRILL_METRIC_LABELS)
                 fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Biên bản", "series_field": "metric_label"})
 
             monthly_detail = _bb_metric_long_df(dff, ["thang_nam_vn", "khu_vuc"])
@@ -12301,13 +12723,7 @@ def callbacks(prefix: str):
                     font=dict(size=11, color=(TEXT_LIGHT_UI if theme == "light" else "white")),
                     align="right"
                 )
-            rows2 = [{
-                "thang_label": r["thang_label"],
-                "khu_vuc": str(r["khu_vuc"]),
-                "metric_label": str(r["metric_label"]),
-                "metric": float(r["gia_tri"]),
-                "metric_fmt": r["metric_fmt"]
-            } for _, r in monthly_detail.iterrows()]
+            rows2 = _bb_drill_rows(dff, ["thang_nam_vn", "khu_vuc"], metric_labels=BB_DRILL_METRIC_LABELS)
             fig2_store = pack_fig_store(fig2, rows=rows2, meta={"chart": "bb_bar", "metric_label": "Biên bản", "series_field": "metric_label"})
 
             if len(dims) >= 2 or not dims:
@@ -12321,7 +12737,7 @@ def callbacks(prefix: str):
                     pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
                 fig3 = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
                 pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
-                rows3 = [{"label": str(r["khu_vuc"]), "metric_fmt": r["metric_fmt"]} for _, r in pie_source.iterrows()]
+                rows3 = _bb_drill_rows(dff, ["khu_vuc"], label_from="khu_vuc", label_col="label")
             else:
                 pie_source = dff.groupby("thang_label", as_index=False)["so_tien_con_no"].sum().sort_values("so_tien_con_no", ascending=False)
                 if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
@@ -12334,7 +12750,7 @@ def callbacks(prefix: str):
                 pie_source = pie_source.rename(columns={"thang_label": "thang"})
                 fig3 = make_vn_donut(pie_source, names="thang", values=pie_value, title=pie_title, max_slices=12, color_map=None, theme=theme)
                 pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
-                rows3 = [{"label": str(r["thang"]), "metric_fmt": r["metric_fmt"]} for _, r in pie_source.iterrows()]
+                rows3 = _bb_drill_rows(dff, ["thang_label"], label_from="thang_label", label_col="label")
             fig3_store = pack_fig_store(fig3, rows=rows3, meta={"chart": "bb_pie", "metric_label": pie_title})
 
             table_df = _bb_table_frame(dff)
@@ -13250,93 +13666,16 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
         pt = (clickData.get("points") or [{}])[0]
-        x = pt.get("x", None)
-        label = pt.get("label", None)
-
-        trace_name = None
-        region = None
-        try:
-            curve = pt.get("curveNumber", None)
-            if curve is not None and isinstance(fig.get("data", []), list) and curve < len(fig["data"]):
-                trace_name = fig["data"][curve].get("name", None)
-                region = trace_name
-        except Exception:
-            trace_name = None
-            region = None
-
-        month_label = safe_month_label(x) if x is not None else (str(label) if label else None)
         df = pd.DataFrame(rows)
-        series_field = str(meta.get("series_field") or meta.get("series_key") or "").strip()
-
-        if "thang_label" in df.columns and month_label:
-            df = df[df["thang_label"].astype(str) == str(month_label)]
-        if series_field and series_field in df.columns and trace_name:
-            df2 = df[df[series_field].astype(str) == str(trace_name)]
-            if not df2.empty:
-                df = df2
-        elif "khu_vuc" in df.columns and region and region != "Khác":
-            df2 = df[df["khu_vuc"].astype(str) == str(region)]
-            if not df2.empty:
-                df = df2
-        if "label" in df.columns and label:
-            df2 = df[df["label"].astype(str) == str(label)]
-            if not df2.empty:
-                df = df2
-        if "pct" in df.columns and "pct_fmt" not in df.columns:
-            df["pct_fmt"] = pd.to_numeric(df["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+        df, subtitle = _zoom_filter_rows_for_point(df, meta, fig, pt)
+        df = _zoom_prepare_detail_df(df, meta, pt)
 
         if df.empty:
             detail = html.Div("Không tìm thấy dòng dữ liệu phù hợp cho điểm bạn click.", style={"opacity":0.85})
             return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
-        metric_label = meta.get("metric_label", "Giá trị")
-
-        preferred_cols = [
-            ("Tháng", "thang_label"),
-            ("Khu vực", "khu_vuc"),
-            ("Nhóm", "label"),
-            ("Nhóm vòng đời", "nhom_vong_doi"),
-            (metric_label, "metric_fmt"),
-            (metric_label, "val_fmt"),
-            ("Tỷ trọng", "pct_fmt"),
-            ("Quy mô", "count_fmt"),
-            ("Đóng góp nhóm", "pct_segment_fmt"),
-        ]
-        out_cols = [(a, b) for a, b in preferred_cols if b in df.columns]
-
-        if not out_cols:
-            out_cols = [(c, c) for c in df.columns[:8]]
-
-        columns = [{"name": a, "id": b} for a, b in out_cols]
-        data = df[[b for _, b in out_cols if b in df.columns]].to_dict("records")
-
-        title = f"CHI TIẾT • {metric_label}"
-        subtitle = []
-        if month_label:
-            subtitle.append(f"Tháng: {month_label}")
-        if region:
-            subtitle.append(f"Trace/KV: {region}")
-
-        style_header, style_cell, style_table, wrapper_style = _zoom_table_styles(theme, dense=True)
-
-        detail = dbc.Card(
-            dbc.CardBody([
-                html.Div(title, style={"fontSize":"15px","fontWeight":"900"}),
-                html.Div(" • ".join(subtitle), style={"opacity":0.85,"marginBottom":"8px","fontWeight":"700"}),
-                html.Div(
-                    dash_table.DataTable(
-                        columns=columns,
-                        data=data,
-                        page_size=14,
-                        style_cell=style_cell,
-                        style_header=style_header,
-                        style_table=style_table,
-                    ),
-                    style=wrapper_style,
-                )
-            ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
-            style={"border": f"1.5px solid {GREEN_BORDER}", "boxShadow": f"0 8px 18px {GREEN_SHADOW}", "width": "100%", "maxWidth": "100%", "overflow": "hidden"}
-        )
+        metric_label = _zoom_metric_label(meta)
+        detail = _zoom_detail_card(df, meta, theme, f"CHI TIẾT • {metric_label}", subtitle, dense=True)
         return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
 
     if isinstance(trig, dict) and trig.get("type") == "zoomable":
@@ -13389,11 +13728,9 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
                 ("Tỷ lệ giữ chân", "ty_le_giu_chan_fmt"),
             ]
             if not df_zoom.empty:
-                use_cols = [(a, b) for a, b in preferred_cols if b in df_zoom.columns]
-                if not use_cols:
-                    use_cols = [(c, c) for c in df_zoom.columns[:8]]
-                cols = [{"name": a, "id": b} for a, b in use_cols]
-                data = df_zoom[[b for _, b in use_cols]].to_dict("records")
+                kpi_meta = {"metric_label": store.get("title", "Giá trị")}
+                df_zoom = _zoom_prepare_detail_df(df_zoom, kpi_meta)
+                cols, data = _zoom_columns_data(df_zoom, kpi_meta, max_cols=12)
 
             z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
             if theme == "light":
@@ -13426,32 +13763,18 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
         if not fig_dict:
-            df_zoom = pd.DataFrame(rows)
-            if not df_zoom.empty:
-                preferred = ["thang_label", "khu_vuc", "label", "metric_fmt", "val_fmt", "rev_fmt", "trip_fmt", "pct_fmt"]
-                use_cols = [c for c in preferred if c in df_zoom.columns] or list(df_zoom.columns[:8])
-                z_style_header, z_style_cell, z_style_table, z_wrapper_style = _zoom_table_styles(theme, dense=False)
-                detail_children = html.Div([
-                    html.Div("Biểu đồ phóng to chưa sẵn sàng trong store hiện tại. Dữ liệu chi tiết vẫn hiển thị bên dưới; hãy refresh lại trang nếu vừa deploy/env mới.", style={"opacity":0.82, "fontWeight":"800", "marginBottom":"10px"}),
-                    dash_table.DataTable(
-                        columns=[{"name": c, "id": c} for c in use_cols],
-                        data=df_zoom[use_cols].to_dict("records"),
-                        page_size=14,
-                        style_header=z_style_header,
-                        style_cell=z_style_cell,
-                        style_table=z_style_table,
-                    )
-                ], style=z_wrapper_style)
-            else:
-                detail_children = html.Div("Không có dữ liệu chi tiết cho biểu đồ này.", style={"opacity":0.8, "fontWeight":"700"})
-            return True, title, None, {}, {"display":"none"}, detail_children, {"display":"block"}, {"kind":"fig","target":target}
+            # Chart cards must never open directly as a table. Missing figures usually mean
+            # an old env/deployment disabled figure storage; show a chart placeholder and
+            # keep drill-down hidden until a real chart figure is available.
+            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy kiểm tra DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS=1 và redeploy Production.", theme).to_dict()
+            fig_dict = enhance_zoom_figure(fig_dict)
+            return True, title, None, fig_dict, {"display":"block","height":"82vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
 
         fig_dict = enhance_zoom_figure(fig_dict)
 
-        detail_style = {"display":"block"}
-        detail_children = html.Div("Click vào 1 điểm/cột để xem chi tiết.", style={"opacity":0.8, "fontWeight":"700"})
-
-        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, detail_children, detail_style, {"kind":"fig","target":target}
+        # First click on a chart only opens the enlarged chart. Drill-down table appears
+        # only after the user clicks an actual point/bar/slice inside the zoomed chart.
+        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
 
     raise PreventUpdate
 
@@ -13514,7 +13837,7 @@ def _render_table_row_detail(table_id: str, row: dict, columns: list | None, act
     for label, cid in ordered:
         val = _stringify_table_value(row.get(cid, ""))
         items.append(html.Div([
-            html.Div(str(label), className="table-row-detail-label"),
+            html.Div(_zoom_vn_label(cid) if str(label) == str(cid) else str(label), className="table-row-detail-label"),
             html.Div(val, className="table-row-detail-value"),
         ], className="table-row-detail-item"))
 
