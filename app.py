@@ -5847,6 +5847,82 @@ if _env_flag("SESSION_COOKIE_SECURE", False):
 def healthz():
     return ("ok", 200)
 
+@server.get("/_warm")
+def warm_endpoint():
+    """
+    Lightweight warm endpoint for Vercel/UptimeRobot.
+    Chỉ chạm nhẹ vào dữ liệu đã load sẵn, không dựng chart, không chạy callback,
+    không thay đổi session/filter/UI/logic dashboard.
+    """
+    token = str(os.getenv("DASH_WARM_TOKEN", "")).strip()
+    if token:
+        incoming = str(request.args.get("token", "")).strip()
+        if not hmac.compare_digest(incoming, token):
+            return {"ok": False, "error": "forbidden"}, 403
+
+    started = time.perf_counter()
+    touched = {}
+
+    def _touch_df(name):
+        obj = globals().get(name)
+        if not isinstance(obj, pd.DataFrame):
+            return
+        info = {
+            "rows": int(len(obj)),
+            "cols": int(len(obj.columns)),
+        }
+        for col in [
+            "tong_doanh_thu",
+            "tong_so_cuoc",
+            "so_tien_thu_duoc",
+            "tong_tien_de_xuat",
+            "so_tien_da_xu_ly",
+            "so_tien_con_no",
+            "so_luong_xe",
+            "so_luong_nhan_su",
+        ]:
+            if col in obj.columns:
+                try:
+                    info[col] = float(pd.to_numeric(obj[col], errors="coerce").fillna(0).sum())
+                except Exception:
+                    pass
+        touched[name] = info
+
+    for name in [
+        "df_dt",
+        "df_lh",
+        "df_hd",
+        "df_daily_checker",
+        "df_daily_lh_checker",
+        "df_daily_hinhthuc_checker",
+        "df_daily_luong_checker",
+        "df_daily_socho_checker",
+        "df_daily_taixe_checker",
+        "df_daily_taixe_lh_checker",
+        "df_daily_taixe_hinhthuc_checker",
+        "df_daily_taixe_luong_checker",
+        "df_daily_taixe_socho_checker",
+        "df_daily_raw_checker",
+        "df_emp",
+        "df_drv",
+        "df_mkt",
+        "df_bb",
+        "df_xdt",
+        "df_xpq",
+    ]:
+        _touch_df(name)
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    return {
+        "ok": True,
+        "mode": "light",
+        "elapsed_ms": elapsed_ms,
+        "touched_count": len(touched),
+        "touched": touched,
+    }, 200, {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+    }
+
 @server.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -5890,7 +5966,7 @@ def logout():
 @server.before_request
 def protect_dash_routes():
     path = request.path or "/"
-    if path in {"/login", "/logout", "/healthz"}:
+    if path in {"/login", "/logout", "/healthz", "/_warm"}:
         return None
     if path.startswith("/assets/") or path == "/favicon.ico":
         return None
