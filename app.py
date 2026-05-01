@@ -5979,7 +5979,7 @@ def protect_dash_routes():
         next_path = next_path[:-1]
     return redirect(url_for("login", next=next_path))
 
-app = Dash(__name__, server=server, external_stylesheets=[dbc.themes.FLATLY, FA_CDN], suppress_callback_exceptions=True)
+app = Dash(__name__, server=server, external_stylesheets=[dbc.themes.FLATLY, FA_CDN], suppress_callback_exceptions=True, serve_locally=False)
 
 def fa_icon(name: str, size: int = 18, color: str = "currentColor", extra_class: str = ""):
     return html.I(
