@@ -2748,68 +2748,165 @@ def _read_daily_raw_checker_df() -> pd.DataFrame:
 
 
 
-df_daily_checker = _read_daily_checker_df(DAILY_CHECKER_SHEET_CANDIDATES, source_label="Doanh thu ngày checker")
-df_daily_lh_checker = _read_daily_checker_df(
-    DAILY_CHECKER_LH_SHEET_CANDIDATES,
-    category_candidates=["loaihinh_hoptac", "loại hình hợp tác", "loai hinh hop tac", "loai_hinh", "loại hình"],
-    category_name="loaihinh_hoptac",
-    source_label="Loại hình ngày checker",
-)
-df_daily_hinhthuc_checker = _read_daily_checker_df(
-    DAILY_CHECKER_HINHTHUC_SHEET_CANDIDATES,
-    category_candidates=["hinhthuc_kinhdoanh", "hình thức kinh doanh", "hinh thuc kinh doanh", "hinh_thuc_kinh_doanh"],
-    category_name="hinhthuc_kinhdoanh",
-    source_label="Hình thức kinh doanh ngày checker",
-)
-df_daily_luong_checker = _read_daily_checker_df(
-    DAILY_CHECKER_LUONG_SHEET_CANDIDATES,
-    category_candidates=["loai_luong", "loại lương", "loai luong"],
-    category_name="loai_luong",
-    source_label="Loại lương ngày checker",
-)
-df_daily_socho_checker = _read_daily_checker_df(
-    DAILY_CHECKER_SOCHO_SHEET_CANDIDATES,
-    category_candidates=["so_cho", "số chỗ", "so cho"],
-    category_name="so_cho",
-    source_label="Số chỗ ngày checker",
-)
-df_daily_taixe_checker = _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES)
-df_daily_taixe_lh_checker = _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES)
-df_daily_taixe_hinhthuc_checker = _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES)
-df_daily_taixe_luong_checker = _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LUONG_SHEET_CANDIDATES)
-df_daily_taixe_socho_checker = _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SOCHO_SHEET_CANDIDATES)
-df_daily_raw_checker = _read_daily_raw_checker_df()
-try:
-    print(f"[DAILY CHECKER LOAD] rows={len(df_daily_checker)} revenue={pd.to_numeric(df_daily_checker.get('tong_doanh_thu', 0), errors='coerce').fillna(0).sum():.0f} trips={pd.to_numeric(df_daily_checker.get('tong_so_cuoc', 0), errors='coerce').fillna(0).sum():.0f}")
-except Exception:
-    pass
+# =========================================================
+# LAZY BOOT DATA LOADING
+# =========================================================
+# Mặc định bật lazy boot để cold start trên Vercel không phải nạp toàn bộ
+# Daily/HR/Biz/Fleet ngay lúc import app.py. Dữ liệu vẫn được nạp đúng khi
+# người dùng mở menu tương ứng hoặc khi gọi warm endpoint với preload.
+DASH_BOOT_LAZY_DATA = str(os.getenv("DASH_BOOT_LAZY_DATA", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+_BOOT_DATA_LOADED = {"daily": False, "hr": False, "biz": False, "fleet": False}
+_BOOT_DATA_LOADING = set()
 
-_apply_real_data_cutoff_inplace_to_globals(["df_daily_checker", "df_daily_lh_checker", "df_daily_hinhthuc_checker", "df_daily_luong_checker", "df_daily_socho_checker", "df_daily_taixe_checker", "df_daily_taixe_lh_checker", "df_daily_taixe_hinhthuc_checker", "df_daily_taixe_luong_checker", "df_daily_taixe_socho_checker", "df_daily_raw_checker"])
 
-df_emp = _optional_or_proxy_hr_menu_df("emp")
-df_drv = _optional_or_proxy_hr_menu_df("drv")
-try:
-    print(f"[HR LOAD] emp_rows={len(df_emp)} drv_rows={len(df_drv)} emp_headcount={pd.to_numeric(df_emp.get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f} drv_headcount={pd.to_numeric(df_drv.get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f}")
-except Exception:
-    pass
-df_mkt = _optional_or_proxy_marketing_menu_df()
-df_bb = _optional_or_proxy_bienban_menu_df()
-df_xdt = _optional_or_proxy_vehicle_menu_df("xdt")
-df_xpq = _optional_or_proxy_vehicle_menu_df("xpq")
-try:
-    _xdt_total = pd.to_numeric(df_xdt.get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(df_xdt, pd.DataFrame) else 0
-    _xpq_total = pd.to_numeric(df_xpq.get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(df_xpq, pd.DataFrame) else 0
-    print(f"[FLEET LOAD] xdt_rows={len(df_xdt)} xdt_total={_xdt_total:.0f} xpq_rows={len(df_xpq)} xpq_total={_xpq_total:.0f}")
-    print(f"[FLEET LOAD] xdt_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xdt', [])[:4]} xpq_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xpq', [])[:4]}")
-except Exception:
-    pass
+def _df_reset_in_place(target: pd.DataFrame, source: pd.DataFrame) -> pd.DataFrame:
+    """Replace a DataFrame object in-place so existing callback closures keep seeing fresh data."""
+    if not isinstance(source, pd.DataFrame):
+        source = pd.DataFrame()
+    if isinstance(target, pd.DataFrame):
+        try:
+            pd.DataFrame.__init__(target, source.copy(deep=False))
+            return target
+        except Exception:
+            pass
+    return source.copy(deep=False)
 
-# Final safety pass for every optional/proxy dataset. Any future month is hidden
-# from cards, charts, tables, filters and Excel export.
-# Do not apply the global current-month cutoff to fleet datasets. The two
-# Phuong tien menus have no year/month UI and should show the latest real fleet
-# period available in the workbook, even when that period is outside DEFAULT_YEAR.
-_apply_real_data_cutoff_inplace_to_globals(["df_emp", "df_drv", "df_mkt", "df_bb"])
+
+def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None) -> None:
+    g = globals()
+    for name, value in frame_map.items():
+        old = g.get(name)
+        if isinstance(old, pd.DataFrame) and isinstance(value, pd.DataFrame):
+            g[name] = _df_reset_in_place(old, value)
+        else:
+            g[name] = value
+    if cutoff_names:
+        _apply_real_data_cutoff_inplace_to_globals(cutoff_names)
+    try:
+        REGION_SCOPE_DF_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        COMMON_FILTER_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        DAILY_FILTER_CACHE.clear()
+        DAILY_SOURCE_PREP_CACHE.clear()
+        DAILY_DRIVER_SOURCE_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        PAGE_LAYOUT_CACHE.clear()
+    except Exception:
+        pass
+
+
+def _load_daily_boot_frames(log: bool = True) -> dict:
+    data = {
+        "df_daily_checker": _read_daily_checker_df(DAILY_CHECKER_SHEET_CANDIDATES, source_label="Doanh thu ngày checker"),
+        "df_daily_lh_checker": _read_daily_checker_df(
+            DAILY_CHECKER_LH_SHEET_CANDIDATES,
+            category_candidates=["loaihinh_hoptac", "loại hình hợp tác", "loai hinh hop tac", "loai_hinh", "loại hình"],
+            category_name="loaihinh_hoptac",
+            source_label="Loại hình ngày checker",
+        ),
+        "df_daily_hinhthuc_checker": _read_daily_checker_df(
+            DAILY_CHECKER_HINHTHUC_SHEET_CANDIDATES,
+            category_candidates=["hinhthuc_kinhdoanh", "hình thức kinh doanh", "hinh thuc kinh doanh", "hinh_thuc_kinh_doanh"],
+            category_name="hinhthuc_kinhdoanh",
+            source_label="Hình thức kinh doanh ngày checker",
+        ),
+        "df_daily_luong_checker": _read_daily_checker_df(
+            DAILY_CHECKER_LUONG_SHEET_CANDIDATES,
+            category_candidates=["loai_luong", "loại lương", "loai luong"],
+            category_name="loai_luong",
+            source_label="Loại lương ngày checker",
+        ),
+        "df_daily_socho_checker": _read_daily_checker_df(
+            DAILY_CHECKER_SOCHO_SHEET_CANDIDATES,
+            category_candidates=["so_cho", "số chỗ", "so cho"],
+            category_name="so_cho",
+            source_label="Số chỗ ngày checker",
+        ),
+        "df_daily_taixe_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES),
+        "df_daily_taixe_lh_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES),
+        "df_daily_taixe_hinhthuc_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES),
+        "df_daily_taixe_luong_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LUONG_SHEET_CANDIDATES),
+        "df_daily_taixe_socho_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SOCHO_SHEET_CANDIDATES),
+        "df_daily_raw_checker": _read_daily_raw_checker_df(),
+    }
+    if log:
+        try:
+            d0 = data["df_daily_checker"]
+            print(f"[DAILY CHECKER LOAD] rows={len(d0)} revenue={pd.to_numeric(d0.get('tong_doanh_thu', 0), errors='coerce').fillna(0).sum():.0f} trips={pd.to_numeric(d0.get('tong_so_cuoc', 0), errors='coerce').fillna(0).sum():.0f}")
+        except Exception:
+            pass
+    return data
+
+
+def _load_hr_boot_frames(log: bool = True) -> dict:
+    data = {
+        "df_emp": _optional_or_proxy_hr_menu_df("emp"),
+        "df_drv": _optional_or_proxy_hr_menu_df("drv"),
+    }
+    if log:
+        try:
+            print(f"[HR LOAD] emp_rows={len(data['df_emp'])} drv_rows={len(data['df_drv'])} emp_headcount={pd.to_numeric(data['df_emp'].get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f} drv_headcount={pd.to_numeric(data['df_drv'].get('so_luong_nhan_su', 0), errors='coerce').fillna(0).sum():.0f}")
+        except Exception:
+            pass
+    return data
+
+
+def _load_biz_boot_frames(log: bool = True) -> dict:
+    return {
+        "df_mkt": _optional_or_proxy_marketing_menu_df(),
+        "df_bb": _optional_or_proxy_bienban_menu_df(),
+    }
+
+
+def _load_fleet_boot_frames(log: bool = True) -> dict:
+    data = {
+        "df_xdt": _optional_or_proxy_vehicle_menu_df("xdt"),
+        "df_xpq": _optional_or_proxy_vehicle_menu_df("xpq"),
+    }
+    if log:
+        try:
+            _xdt_total = pd.to_numeric(data["df_xdt"].get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(data["df_xdt"], pd.DataFrame) else 0
+            _xpq_total = pd.to_numeric(data["df_xpq"].get("so_luong_xe", 0), errors="coerce").fillna(0).sum() if isinstance(data["df_xpq"], pd.DataFrame) else 0
+            print(f"[FLEET LOAD] xdt_rows={len(data['df_xdt'])} xdt_total={_xdt_total:.0f} xpq_rows={len(data['df_xpq'])} xpq_total={_xpq_total:.0f}")
+            print(f"[FLEET LOAD] xdt_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xdt', [])[:4]} xpq_diag={VEHICLE_LOAD_DIAGNOSTICS.get('xpq', [])[:4]}")
+        except Exception:
+            pass
+    return data
+
+
+if DASH_BOOT_LAZY_DATA:
+    # Lightweight placeholders: keep layout/callback structure intact but avoid loading
+    # optional datasets during module import/cold start.
+    df_daily_checker = _daily_checker_empty_df()
+    df_daily_lh_checker = _daily_checker_empty_df(["loaihinh_hoptac"])
+    df_daily_hinhthuc_checker = _daily_checker_empty_df(["hinhthuc_kinhdoanh"])
+    df_daily_luong_checker = _daily_checker_empty_df(["loai_luong"])
+    df_daily_socho_checker = _daily_checker_empty_df(["so_cho"])
+    df_daily_taixe_checker = _prepare_daily_raw_checker_df(None)
+    df_daily_taixe_lh_checker = _prepare_daily_raw_checker_df(None)
+    df_daily_taixe_hinhthuc_checker = _prepare_daily_raw_checker_df(None)
+    df_daily_taixe_luong_checker = _prepare_daily_raw_checker_df(None)
+    df_daily_taixe_socho_checker = _prepare_daily_raw_checker_df(None)
+    df_daily_raw_checker = _prepare_daily_raw_checker_df(None)
+    df_emp = _empty_dashboard_df("dt")
+    df_drv = _empty_dashboard_df("dt")
+    df_mkt = _empty_dashboard_df("dt")
+    df_bb = _empty_dashboard_df("dt")
+    df_xdt = _empty_dashboard_df("dt")
+    df_xpq = _empty_dashboard_df("dt")
+else:
+    _assign_loaded_frames(_load_daily_boot_frames(log=True), ["df_daily_checker", "df_daily_lh_checker", "df_daily_hinhthuc_checker", "df_daily_luong_checker", "df_daily_socho_checker", "df_daily_taixe_checker", "df_daily_taixe_lh_checker", "df_daily_taixe_hinhthuc_checker", "df_daily_taixe_luong_checker", "df_daily_taixe_socho_checker", "df_daily_raw_checker"])
+    _assign_loaded_frames(_load_hr_boot_frames(log=True), ["df_emp", "df_drv"])
+    _assign_loaded_frames(_load_biz_boot_frames(log=False), ["df_mkt", "df_bb"])
+    _assign_loaded_frames(_load_fleet_boot_frames(log=True), None)
+    _BOOT_DATA_LOADED.update({"daily": True, "hr": True, "biz": True, "fleet": True})
 
 
 def _fleet_is_activity_bridge_df(dff: pd.DataFrame) -> bool:
@@ -2907,6 +3004,116 @@ VEHICLE_SEAT_OPTIONS = {
     "xpq": _build_vehicle_seat_options(df_xpq),
 }
 
+
+def _refresh_lazy_menu_bindings(prefixes=None) -> None:
+    prefixes = list(prefixes or [])
+    try:
+        if not prefixes:
+            prefixes = list(DASH_PREFIXES)
+    except Exception:
+        prefixes = list(prefixes or [])
+
+    for prefix in prefixes:
+        try:
+            df_name = f"df_{prefix}"
+            if "MENU_CONFIG" in globals() and prefix in MENU_CONFIG and df_name in globals():
+                MENU_CONFIG[prefix]["df"] = globals()[df_name]
+            if "DATAFRAME_BY_PREFIX" in globals() and df_name in globals():
+                DATAFRAME_BY_PREFIX[prefix] = globals()[df_name]
+        except Exception:
+            pass
+
+    for prefix in [p for p in prefixes if p in {"xdt", "xpq"}]:
+        try:
+            dff = globals().get(f"df_{prefix}")
+            FLEET_ACTIVITY_BRIDGE[prefix] = _fleet_is_activity_bridge_df(dff)
+            FLEET_BRIDGE_METRIC_KIND[prefix] = _fleet_bridge_metric_kind(dff)
+            VEHICLE_TYPE_OPTIONS[prefix] = _build_vehicle_type_options(dff)
+            VEHICLE_SEAT_OPTIONS[prefix] = _build_vehicle_seat_options(dff)
+            if "MENU_CONFIG" in globals() and prefix in MENU_CONFIG:
+                MENU_CONFIG[prefix]["metric_label"] = _fleet_metric_label(prefix)
+                MENU_CONFIG[prefix]["secondary_col"] = "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get(prefix) else "so_bien_kiem_soat"
+                MENU_CONFIG[prefix]["secondary_label"] = "Doanh thu phương tiện" if FLEET_ACTIVITY_BRIDGE.get(prefix) else "Khu vực có xe"
+                MENU_CONFIG[prefix]["avg_label"] = "Nhóm phương tiện hoạt động" if FLEET_ACTIVITY_BRIDGE.get(prefix) else "Loại xe hoạt động"
+                MENU_CONFIG[prefix]["avg_divisor_label"] = _fleet_unit_label(prefix)
+                MENU_CONFIG[prefix]["avg_numerator_col"] = "tong_doanh_thu" if FLEET_ACTIVITY_BRIDGE.get(prefix) else "so_luong_xe"
+                MENU_CONFIG[prefix]["avg_denominator_col"] = "so_luong_xe"
+                MENU_CONFIG[prefix]["fleet_unit"] = _fleet_unit_label(prefix)
+        except Exception:
+            pass
+
+    try:
+        HR_DEPT_OPTIONS["emp"] = [{"label": x, "value": x} for x in sorted(df_emp.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()]
+        HR_DEPT_OPTIONS["drv"] = [{"label": x, "value": x} for x in sorted(df_drv.get("bo_phan", pd.Series(dtype=str)).astype(str).dropna().unique().tolist()) if str(x).strip()]
+    except Exception:
+        pass
+
+
+def ensure_daily_data_loaded(log: bool = True) -> None:
+    if not DASH_BOOT_LAZY_DATA or _BOOT_DATA_LOADED.get("daily"):
+        return
+    if "daily" in _BOOT_DATA_LOADING:
+        return
+    _BOOT_DATA_LOADING.add("daily")
+    try:
+        _assign_loaded_frames(
+            _load_daily_boot_frames(log=log),
+            ["df_daily_checker", "df_daily_lh_checker", "df_daily_hinhthuc_checker", "df_daily_luong_checker", "df_daily_socho_checker", "df_daily_taixe_checker", "df_daily_taixe_lh_checker", "df_daily_taixe_hinhthuc_checker", "df_daily_taixe_luong_checker", "df_daily_taixe_socho_checker", "df_daily_raw_checker"]
+        )
+        _BOOT_DATA_LOADED["daily"] = True
+    finally:
+        _BOOT_DATA_LOADING.discard("daily")
+
+
+def ensure_menu_data_loaded(prefix: str, log: bool = True) -> None:
+    prefix = str(prefix or "")
+    if not DASH_BOOT_LAZY_DATA:
+        return
+    if prefix in {"dt", "lh", "hd", "home"}:
+        return
+
+    group = None
+    frame_loader = None
+    cutoff_names = None
+    refresh_prefixes = []
+
+    if prefix == "daily":
+        ensure_daily_data_loaded(log=log)
+        return
+    if prefix in {"emp", "drv"}:
+        group = "hr"
+        frame_loader = _load_hr_boot_frames
+        cutoff_names = ["df_emp", "df_drv"]
+        refresh_prefixes = ["emp", "drv"]
+    elif prefix in {"mkt", "bb"}:
+        group = "biz"
+        frame_loader = _load_biz_boot_frames
+        cutoff_names = ["df_mkt", "df_bb"]
+        refresh_prefixes = ["mkt", "bb"]
+    elif prefix in {"xdt", "xpq"}:
+        group = "fleet"
+        frame_loader = _load_fleet_boot_frames
+        cutoff_names = None
+        refresh_prefixes = ["xdt", "xpq"]
+
+    if not group or _BOOT_DATA_LOADED.get(group):
+        return
+    if group in _BOOT_DATA_LOADING:
+        return
+    _BOOT_DATA_LOADING.add(group)
+    try:
+        _assign_loaded_frames(frame_loader(log=log), cutoff_names)
+        _BOOT_DATA_LOADED[group] = True
+        _refresh_lazy_menu_bindings(refresh_prefixes)
+    finally:
+        _BOOT_DATA_LOADING.discard(group)
+
+
+def ensure_all_lazy_data_loaded(log: bool = True) -> None:
+    ensure_daily_data_loaded(log=log)
+    for _prefix in ["emp", "mkt", "xdt"]:
+        ensure_menu_data_loaded(_prefix, log=log)
+
 DASH_PREFIXES = ["dt", "lh", "hd", "emp", "drv", "mkt", "bb", "xdt", "xpq"]
 DASH_DATASETS = [df_dt, df_lh, df_hd, df_emp, df_drv, df_mkt, df_bb, df_xdt, df_xpq, df_daily_checker, df_daily_lh_checker, df_daily_hinhthuc_checker, df_daily_luong_checker, df_daily_socho_checker, df_daily_taixe_checker, df_daily_taixe_lh_checker, df_daily_taixe_hinhthuc_checker, df_daily_taixe_luong_checker, df_daily_taixe_socho_checker, df_daily_raw_checker]
 
@@ -3002,6 +3209,7 @@ def get_scoped_regions_from_df(dff: pd.DataFrame) -> list[str]:
     return sorted(scoped["khu_vuc"].astype(str).dropna().unique().tolist())
 
 def get_scoped_menu_df(prefix: str) -> pd.DataFrame:
+    ensure_menu_data_loaded(prefix)
     cfg = get_menu_config(prefix)
     return apply_region_scope_to_df(cfg["df"])
 
@@ -5791,6 +5999,7 @@ def _make_summary_for_export(dff: pd.DataFrame, menu: str) -> pd.DataFrame:
     return g
 
 def _apply_export_filters(menu: str, page: int, filt: dict) -> pd.DataFrame:
+    ensure_menu_data_loaded(menu)
     if menu not in DATAFRAME_BY_PREFIX:
         return pd.DataFrame()
     base = DATAFRAME_BY_PREFIX[menu].copy()
@@ -5859,6 +6068,19 @@ def warm_endpoint():
         incoming = str(request.args.get("token", "")).strip()
         if not hmac.compare_digest(incoming, token):
             return {"ok": False, "error": "forbidden"}, 403
+
+    preload = str(request.args.get("preload", "") or request.args.get("mode", "")).strip().lower()
+    deep = str(request.args.get("deep", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+    if deep or preload in {"all", "full"}:
+        ensure_all_lazy_data_loaded(log=True)
+    elif preload in {"daily", "ngay"}:
+        ensure_daily_data_loaded(log=True)
+    elif preload in {"hr", "nhansu", "nhan-su"}:
+        ensure_menu_data_loaded("emp", log=True)
+    elif preload in {"biz", "business", "kinhdoanh", "kinh-doanh"}:
+        ensure_menu_data_loaded("mkt", log=True)
+    elif preload in {"fleet", "phuongtien", "phuong-tien"}:
+        ensure_menu_data_loaded("xdt", log=True)
 
     started = time.perf_counter()
     touched = {}
@@ -7450,14 +7672,7 @@ def home_page():
     ])
 
 
-    home_lazy_trigger = dcc.Interval(
-        id="home-lazy-trigger",
-        interval=350,
-        n_intervals=0,
-        max_intervals=1,
-    )
-
-    return dbc.Container(fluid=True, children=[home_lazy_trigger, hero, quick_nav, filters, kpis, charts1, charts2, table])
+    return dbc.Container(fluid=True, children=[hero, quick_nav, filters, kpis, charts1, charts2, table])
 
 
 DAILY_DATE_COL_CANDIDATES = [
@@ -7612,16 +7827,19 @@ def _filter_daily_frame(source_df: pd.DataFrame, start_date=None, end_date=None,
     return _return_df_cached(out)
 
 def _daily_primary_source_df() -> pd.DataFrame:
+    ensure_daily_data_loaded()
     return df_daily_checker if isinstance(df_daily_checker, pd.DataFrame) and not df_daily_checker.empty else df_dt
 
 
 def _daily_lh_source_df() -> pd.DataFrame:
+    ensure_daily_data_loaded()
     if isinstance(df_daily_lh_checker, pd.DataFrame) and not df_daily_lh_checker.empty:
         return df_daily_lh_checker
     return df_lh
 
 
 def _daily_mix_source_df() -> pd.DataFrame:
+    ensure_daily_data_loaded()
     if isinstance(df_daily_hinhthuc_checker, pd.DataFrame) and not df_daily_hinhthuc_checker.empty:
         return df_daily_hinhthuc_checker
     if isinstance(df_daily_luong_checker, pd.DataFrame) and not df_daily_luong_checker.empty:
@@ -7632,11 +7850,13 @@ def _daily_mix_source_df() -> pd.DataFrame:
 
 
 def _daily_source_label() -> str:
+    ensure_daily_data_loaded()
     if isinstance(df_daily_checker, pd.DataFrame) and not df_daily_checker.empty:
         return "SQL Doanh thu theo ngày"
     return "Dữ liệu tổng hợp hiện có"
 
 def _daily_driver_options():
+    ensure_daily_data_loaded()
     source = df_daily_taixe_checker if isinstance(df_daily_taixe_checker, pd.DataFrame) and not df_daily_taixe_checker.empty else df_daily_raw_checker
     if source is None or not isinstance(source, pd.DataFrame) or source.empty or "ho_ten" not in source.columns:
         return []
@@ -7666,6 +7886,7 @@ def _first_non_empty_df(*frames):
 
 
 def _daily_sources_for_driver_filter(drivers=None):
+    ensure_daily_data_loaded()
     drivers_norm = _normalize_multi_value(drivers)
     if drivers_norm:
         driver_key = (tuple(sorted(drivers_norm)), _daily_filter_cache_scope_key())
@@ -7693,6 +7914,7 @@ def _daily_sources_for_driver_filter(drivers=None):
 
 
 def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None, drivers=None):
+    ensure_daily_data_loaded()
     source = _first_non_empty_df(df_daily_taixe_checker, df_daily_raw_checker)
     if source is None or not isinstance(source, pd.DataFrame) or source.empty:
         return None
@@ -7711,6 +7933,7 @@ def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None,
 
 
 def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, drivers=None, limit: int = 10):
+    ensure_daily_data_loaded()
     source = _first_non_empty_df(df_daily_taixe_checker, df_daily_raw_checker)
     if source is None or not isinstance(source, pd.DataFrame) or source.empty:
         return pd.DataFrame()
@@ -7729,6 +7952,7 @@ def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, driver
 
 
 def _daily_date_bounds():
+    ensure_daily_data_loaded()
     dates = []
     cutoff_day = _current_vn_day_start()
     for dff in [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]:
@@ -7853,6 +8077,7 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
 
 
 def daily_latest_page():
+    ensure_daily_data_loaded()
     min_d, max_d = _daily_date_bounds()
     latest_iso = _date_iso(max_d)
     min_iso = _date_iso(min_d)
@@ -8421,6 +8646,7 @@ def _fleet_kpi_lines_type(type_df: pd.DataFrame, max_lines: int = 4, unit: str =
 
 
 def page_1(prefix, title=None):
+    ensure_menu_data_loaded(prefix)
     cfg = get_menu_config(prefix)
     title = title or cfg["page1_title"]
     if prefix in FLEET_MENU_PREFIXES:
@@ -8542,6 +8768,7 @@ def page_1(prefix, title=None):
 
 
 def page_2(prefix, title=None, df=None, dim="khu_vuc"):
+    ensure_menu_data_loaded(prefix)
     cfg = get_menu_config(prefix)
     df = apply_region_scope_to_df(df if df is not None else cfg["df"])
     title = title or cfg["page2_title"]
@@ -10367,8 +10594,10 @@ def _build_active_page_layout(menu, page):
     if menu == "home":
         layout = home_page()
     elif menu == "daily":
+        ensure_daily_data_loaded()
         layout = daily_latest_page()
     elif menu in DASH_PREFIXES:
+        ensure_menu_data_loaded(menu)
         cfg = get_menu_config(menu)
         if p == 2:
             layout = page_2(menu, cfg["page2_title"], cfg["df"], "khu_vuc")
@@ -11298,16 +11527,13 @@ def _delta_class(v):
     Output({"type":"zoom-store","target":"home-lh-donut"}, "data"),
     Output({"type":"zoom-store","target":"home-hd-bar"}, "data"),
 
-    Input("home-lazy-trigger", "n_intervals"),
     Input("home-year", "value"),
     Input("home-month", "value"),
     Input("home-region", "value"),
     Input("theme", "data"),
 )
 @timed_callback("home")
-def update_home(home_lazy_n, year_val, months, regions, theme):
-    if not home_lazy_n:
-        raise PreventUpdate
+def update_home(year_val, months, regions, theme):
     regions = regions if isinstance(regions, list) else ([regions] if regions else [])
     dff_dt = apply_common_filters(df_dt, year_val=year_val, months=months or [], dims=regions or [])
     dff_lh = apply_common_filters(df_lh, year_val=year_val, months=months or [], dims=regions or [])
@@ -11644,6 +11870,7 @@ def update_home(home_lazy_n, year_val, months, regions, theme):
 )
 @timed_callback("daily_latest")
 def update_daily_latest(start_date, end_date, regions, drivers, theme):
+    ensure_daily_data_loaded()
     theme = theme or "light"
     regions = _normalize_multi_value(regions)
     drivers = _normalize_multi_value(drivers)
@@ -12071,6 +12298,22 @@ def callbacks(prefix: str):
     @timed_callback(f"{prefix}.p1")
     @timed_callback(f"{prefix}.hr_p1")
     def p1(*args):
+        nonlocal cfg, df, value_col, metric_label, metric_axis, secondary_col, secondary_label, avg_label, avg_mode, avg_divisor_label, avg_numerator_col, avg_denominator_col, fleet_unit, type_filter_kind
+        ensure_menu_data_loaded(prefix)
+        cfg = get_menu_config(prefix)
+        df = cfg["df"]
+        value_col = cfg["value_col"]
+        metric_label = cfg.get("metric_label", "Giá trị")
+        metric_axis = metric_label
+        secondary_col = cfg.get("secondary_col", "tong_so_cuoc")
+        secondary_label = cfg.get("secondary_label", "Quy mô")
+        avg_label = cfg.get("avg_label", "Trung bình")
+        avg_mode = cfg.get("avg_mode", "per_secondary")
+        avg_divisor_label = cfg.get("avg_divisor_label", secondary_label.lower())
+        avg_numerator_col = cfg.get("avg_numerator_col", value_col)
+        avg_denominator_col = cfg.get("avg_denominator_col", secondary_col)
+        fleet_unit = cfg.get("fleet_unit", "xe")
+        type_filter_kind = cfg.get("type_filter_kind")
         if type_filter_kind == "fleet":
             idx = 0
             theme = args[idx]; idx += 1
@@ -12558,6 +12801,22 @@ def callbacks(prefix: str):
     @timed_callback(f"{prefix}.p2")
     @timed_callback(f"{prefix}.hr_p2")
     def p2(*args):
+        nonlocal cfg, df, value_col, metric_label, metric_axis, secondary_col, secondary_label, avg_label, avg_mode, avg_divisor_label, avg_numerator_col, avg_denominator_col, fleet_unit, type_filter_kind
+        ensure_menu_data_loaded(prefix)
+        cfg = get_menu_config(prefix)
+        df = cfg["df"]
+        value_col = cfg["value_col"]
+        metric_label = cfg.get("metric_label", "Giá trị")
+        metric_axis = metric_label
+        secondary_col = cfg.get("secondary_col", "tong_so_cuoc")
+        secondary_label = cfg.get("secondary_label", "Quy mô")
+        avg_label = cfg.get("avg_label", "Trung bình")
+        avg_mode = cfg.get("avg_mode", "per_secondary")
+        avg_divisor_label = cfg.get("avg_divisor_label", secondary_label.lower())
+        avg_numerator_col = cfg.get("avg_numerator_col", value_col)
+        avg_denominator_col = cfg.get("avg_denominator_col", secondary_col)
+        fleet_unit = cfg.get("fleet_unit", "xe")
+        type_filter_kind = cfg.get("type_filter_kind")
         if type_filter_kind == "fleet":
             idx = 0
             dim = args[idx]; idx += 1
@@ -13472,6 +13731,13 @@ def hr_callbacks(prefix: str):
         State("page", "data"),
     )
     def hr_p1(year_val, months, regions, departments, theme, menu, page):
+        nonlocal cfg, df, metric_label, join_label, leave_label
+        ensure_menu_data_loaded(prefix)
+        cfg = get_menu_config(prefix)
+        df = cfg["df"]
+        metric_label = cfg["metric_label"]
+        join_label = cfg["secondary_label"]
+        leave_label = cfg["avg_label"]
         if menu != prefix or int(page) != 1:
             raise PreventUpdate
         regions = regions if isinstance(regions, list) else ([regions] if regions else [])
@@ -13588,6 +13854,13 @@ def hr_callbacks(prefix: str):
         State("page", "data"),
     )
     def hr_p2(dims, year_val, months, departments, theme, menu, page):
+        nonlocal cfg, df, metric_label, join_label, leave_label
+        ensure_menu_data_loaded(prefix)
+        cfg = get_menu_config(prefix)
+        df = cfg["df"]
+        metric_label = cfg["metric_label"]
+        join_label = cfg["secondary_label"]
+        leave_label = cfg["avg_label"]
         if menu != prefix or int(page) != 2:
             raise PreventUpdate
         dims = dims if isinstance(dims, list) else ([dims] if dims else [])
@@ -14038,6 +14311,8 @@ def choose_dataset(question: str):
     for prefix in DASH_PREFIXES:
         cfg = get_menu_config(prefix)
         if any(norm_q(k) in q for k in cfg.get("dataset_keywords", [])):
+            ensure_menu_data_loaded(prefix)
+            cfg = get_menu_config(prefix)
             return prefix, apply_region_scope_to_df(cfg["df"]), cfg["value_col"]
     if "hop dong" in q or "so cuoc" in q or "số cuốc" in question.lower():
         return "hd", apply_region_scope_to_df(df_hd), "tong_so_cuoc"
@@ -14247,6 +14522,7 @@ def answer_question(question: str, context: dict | None = None) -> str:
             return ds_key0, dfx0
         default_menu = context.get("menu")
         if default_menu in DASH_PREFIXES:
+            ensure_menu_data_loaded(default_menu)
             cfg_menu = get_menu_config(default_menu)
             return default_menu, apply_region_scope_to_df(cfg_menu["df"])
         if default_menu == "home":
