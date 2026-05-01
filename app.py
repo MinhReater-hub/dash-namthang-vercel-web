@@ -7450,7 +7450,14 @@ def home_page():
     ])
 
 
-    return dbc.Container(fluid=True, children=[hero, quick_nav, filters, kpis, charts1, charts2, table])
+    home_lazy_trigger = dcc.Interval(
+        id="home-lazy-trigger",
+        interval=350,
+        n_intervals=0,
+        max_intervals=1,
+    )
+
+    return dbc.Container(fluid=True, children=[home_lazy_trigger, hero, quick_nav, filters, kpis, charts1, charts2, table])
 
 
 DAILY_DATE_COL_CANDIDATES = [
@@ -11291,13 +11298,16 @@ def _delta_class(v):
     Output({"type":"zoom-store","target":"home-lh-donut"}, "data"),
     Output({"type":"zoom-store","target":"home-hd-bar"}, "data"),
 
+    Input("home-lazy-trigger", "n_intervals"),
     Input("home-year", "value"),
     Input("home-month", "value"),
     Input("home-region", "value"),
     Input("theme", "data"),
 )
 @timed_callback("home")
-def update_home(year_val, months, regions, theme):
+def update_home(home_lazy_n, year_val, months, regions, theme):
+    if not home_lazy_n:
+        raise PreventUpdate
     regions = regions if isinstance(regions, list) else ([regions] if regions else [])
     dff_dt = apply_common_filters(df_dt, year_val=year_val, months=months or [], dims=regions or [])
     dff_lh = apply_common_filters(df_lh, year_val=year_val, months=months or [], dims=regions or [])
