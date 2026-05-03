@@ -114,14 +114,15 @@ ALLOW_SYNTHETIC_PROXY_DATA = str(os.getenv("DASH_ALLOW_SYNTHETIC_PROXY_DATA", "0
 # GLOBAL PERFORMANCE SWITCHES
 # =========================================================
 DASH_FAST_MODE = str(os.getenv("DASH_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_SERVERLESS_FAST_PRESET = str(os.getenv("DASH_SERVERLESS_FAST_PRESET", os.getenv("VERCEL", "0"))).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DF_COPY_MODE = os.getenv("DASH_CACHE_DF_COPY_MODE", "shallow" if DASH_FAST_MODE else "deep").strip().lower()
 DASH_GLOBAL_FILTER_CACHE = str(os.getenv("DASH_GLOBAL_FILTER_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_GLOBAL_FILTER_CACHE_MAX = int(os.getenv("DASH_GLOBAL_FILTER_CACHE_MAX", "768"))
-DASH_REGION_SCOPE_CACHE_MAX = int(os.getenv("DASH_REGION_SCOPE_CACHE_MAX", "384"))
-DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "200"))
-DASH_FIGURE_STORE_MAX_ROWS = int(os.getenv("DASH_FIGURE_STORE_MAX_ROWS", str(DASH_ZOOM_STORE_MAX_ROWS)))
-DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "80"))
-DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX = int(os.getenv("DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX", "256"))
+DASH_GLOBAL_FILTER_CACHE_MAX = int(os.getenv("DASH_GLOBAL_FILTER_CACHE_MAX", "512" if DASH_SERVERLESS_FAST_PRESET else "768"))
+DASH_REGION_SCOPE_CACHE_MAX = int(os.getenv("DASH_REGION_SCOPE_CACHE_MAX", "256" if DASH_SERVERLESS_FAST_PRESET else "384"))
+DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "120" if DASH_SERVERLESS_FAST_PRESET else "200"))
+DASH_FIGURE_STORE_MAX_ROWS = int(os.getenv("DASH_FIGURE_STORE_MAX_ROWS", "80" if DASH_SERVERLESS_FAST_PRESET else str(DASH_ZOOM_STORE_MAX_ROWS)))
+DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "50" if DASH_SERVERLESS_FAST_PRESET else "80"))
+DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX = int(os.getenv("DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX", "192" if DASH_SERVERLESS_FAST_PRESET else "256"))
 DASH_LOG_BOOT_TIMING = str(os.getenv("DASH_LOG_BOOT_TIMING", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("DASH_LOG_BOOT_TIMING", "0"))).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_EXCEL_AUTO_DISCOVER = str(os.getenv("DASH_EXCEL_AUTO_DISCOVER", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -129,7 +130,21 @@ DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).str
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_GRAPH_LEAN_CONFIG = {
+    "displayModeBar": False,
+    "responsive": True,
+    "staticPlot": False,
+}
+DASH_CLIENT_PRELOAD_AFTER_BOOT = str(os.getenv("DASH_CLIENT_PRELOAD_AFTER_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "interactive").strip().lower()
 
+
+def _graph_config(extra: dict | None = None) -> dict:
+    """Small browser-side performance default for normal dashboard graphs."""
+    cfg = dict(DASH_GRAPH_LEAN_CONFIG)
+    if isinstance(extra, dict):
+        cfg.update(extra)
+    return cfg
 
 def _return_df_cached(dff: pd.DataFrame) -> pd.DataFrame:
     """Return cached DataFrames quickly while keeping caller isolation for new columns."""
@@ -5161,6 +5176,27 @@ def empty_figure(message: str = "Không có dữ liệu", theme: str = "light"):
     )
     return fig
 
+
+def _zoom_graph_hidden_style() -> dict:
+    """Keep zoom Graph mounted but visually hidden to avoid Plotly.react/_doPlot warnings."""
+    return {
+        "visibility": "hidden",
+        "height": "1px",
+        "minHeight": "1px",
+        "maxHeight": "1px",
+        "overflow": "hidden",
+        "pointerEvents": "none",
+    }
+
+
+def _zoom_graph_visible_style() -> dict:
+    return {
+        "display": "block",
+        "visibility": "visible",
+        "height": "82vh",
+        "pointerEvents": "auto",
+    }
+
 def card_top_accent():
     return html.Div(className="kpi-top-accent", style={"borderTopLeftRadius": "22px", "borderTopRightRadius": "22px"})
 
@@ -5235,7 +5271,7 @@ def make_graph_card(graph_id, target, height="390px"):
                     [
                         dcc.Graph(
                             id=graph_id,
-                            config={"displayModeBar": False, "responsive": True},
+                            config=_graph_config(),
                             style={"height": height}
                         )
                     ],
@@ -6056,6 +6092,33 @@ if _env_flag("SESSION_COOKIE_SECURE", False):
 def healthz():
     return ("ok", 200)
 
+
+def _run_warm_preload(preload: str, deep: bool = False) -> str:
+    """Shared warm/preload logic used by token endpoint and authenticated browser ping."""
+    mode = str(preload or "").strip().lower()
+    if deep or mode in {"all", "full"}:
+        ensure_all_lazy_data_loaded(log=True)
+        return "all"
+    if mode in {"interactive", "ui", "first-click", "first_click"}:
+        ensure_daily_data_loaded(log=True)
+        for _menu_key in ["emp", "mkt", "xdt"]:
+            ensure_menu_data_loaded(_menu_key, log=True)
+        return "interactive"
+    if mode in {"daily", "ngay"}:
+        ensure_daily_data_loaded(log=True)
+        return "daily"
+    if mode in {"hr", "nhansu", "nhan-su"}:
+        ensure_menu_data_loaded("emp", log=True)
+        return "hr"
+    if mode in {"biz", "business", "kinhdoanh", "kinh-doanh"}:
+        ensure_menu_data_loaded("mkt", log=True)
+        return "biz"
+    if mode in {"fleet", "phuongtien", "phuong-tien"}:
+        ensure_menu_data_loaded("xdt", log=True)
+        return "fleet"
+    return "light"
+
+
 @server.get("/_warm")
 def warm_endpoint():
     """
@@ -6071,16 +6134,7 @@ def warm_endpoint():
 
     preload = str(request.args.get("preload", "") or request.args.get("mode", "")).strip().lower()
     deep = str(request.args.get("deep", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-    if deep or preload in {"all", "full"}:
-        ensure_all_lazy_data_loaded(log=True)
-    elif preload in {"daily", "ngay"}:
-        ensure_daily_data_loaded(log=True)
-    elif preload in {"hr", "nhansu", "nhan-su"}:
-        ensure_menu_data_loaded("emp", log=True)
-    elif preload in {"biz", "business", "kinhdoanh", "kinh-doanh"}:
-        ensure_menu_data_loaded("mkt", log=True)
-    elif preload in {"fleet", "phuongtien", "phuong-tien"}:
-        ensure_menu_data_loaded("xdt", log=True)
+    preload_done = _run_warm_preload(preload, deep=deep)
 
     started = time.perf_counter()
     touched = {}
@@ -6139,8 +6193,33 @@ def warm_endpoint():
         "ok": True,
         "mode": "light",
         "elapsed_ms": elapsed_ms,
+        "preload_done": preload_done,
         "touched_count": len(touched),
         "touched": touched,
+        "perf": {
+            "serverless_fast_preset": bool(DASH_SERVERLESS_FAST_PRESET),
+            "prefer_cache": bool(DASH_PREFER_PARQUET_CACHE),
+            "cache_dir": str(DASH_CACHE_DIR),
+            "zoom_store_max_rows": int(DASH_ZOOM_STORE_MAX_ROWS),
+            "figure_store_max_rows": int(DASH_FIGURE_STORE_MAX_ROWS),
+            "kpi_store_max_rows": int(DASH_KPI_STORE_MAX_ROWS),
+        },
+    }, 200, {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+    }
+
+
+@server.get("/_warm_user")
+def warm_user_endpoint():
+    """Authenticated browser-side warm ping; no public token is exposed to JS."""
+    started = time.perf_counter()
+    preload = str(request.args.get("preload", DASH_CLIENT_PRELOAD_MODE) or DASH_CLIENT_PRELOAD_MODE).strip().lower()
+    deep = str(request.args.get("deep", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+    preload_done = _run_warm_preload(preload, deep=deep)
+    return {
+        "ok": True,
+        "preload_done": preload_done,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
     }, 200, {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
     }
@@ -10261,7 +10340,9 @@ app.layout = dbc.Container(
         *[dcc.Store(id=f"filters-{p}-p2", data=({"year": None, "months": []} if p in FLEET_MENU_PREFIXES else {"year": DEFAULT_YEAR, "months": []})) for p in DASH_PREFIXES],
 
         dcc.Store(id="ai-chat-history", data=[]),
+        dcc.Store(id="client-warm-sent", data=None),
         dcc.Interval(id="refresh-meta", interval=5 * 60 * 1000, n_intervals=0),
+        dcc.Interval(id="client-warm-ping", interval=2200, n_intervals=0, max_intervals=1),
 
         dbc.Row([
             dbc.Col(
@@ -10498,7 +10579,12 @@ app.layout = dbc.Container(
             ]
         ),
 
-        html.Div(id="content", className="page-content-shell", children=build_premium_loading_shell()),
+        dcc.Loading(
+            id="content-loading",
+            type="default",
+            delay_show=180,
+            children=html.Div(id="content", className="page-content-shell", children=build_premium_loading_shell()),
+        ),
 
         dbc.Button(ICON_CHEV_L, id="prev-page", className="page-nav-btn page-nav-left", title="Trang trước", style=PAGE_NAV_LEFT_BASE),
         dbc.Button(ICON_CHEV_R, id="next-page", className="page-nav-btn page-nav-right", title="Trang sau", style=PAGE_NAV_RIGHT_BASE),
@@ -10535,9 +10621,9 @@ app.layout = dbc.Container(
                         html.Div(id="zoom-kpi-render", style={"width": "100%", "maxWidth": "100%"}),
                         dcc.Graph(
                             id="zoom-graph",
-                            figure={},
+                            figure=empty_figure("Sẵn sàng phóng to biểu đồ", "light"),
                             config={"displayModeBar": True, "scrollZoom": True},
-                            style={"display": "none", "height": "82vh"}
+                            style=_zoom_graph_hidden_style()
                         ),
                         html.Hr(style={"borderColor": "#444", "marginTop": "10px", "marginBottom": "10px"}),
                         html.Div(id="zoom-detail", style={"display": "none", "width": "100%", "maxWidth": "100%", "overflowX": "hidden"})
@@ -11016,7 +11102,34 @@ def download_excel(n, menu, page, f_home, daily_start, daily_end, daily_regions,
     except Exception:
         return no_update
 
-@app.callback(
+
+# =========================================================
+# CLIENTSIDE UI CALLBACKS
+# =========================================================
+# Các callback dưới đây chỉ đổi state UI/navigation thuần trình duyệt.
+# Chúng không tính toán dữ liệu, không đổi chart/filter/RBAC/warm endpoint.
+# Mục tiêu: bấm menu 3 gạch, AI, page nav phản hồi ngay trên Vercel,
+# không phải chờ Python serverless function thức dậy.
+
+_CLIENT_MENU_TITLE_MAP = {
+    "home": "HOME  •  TRANG CHÍNH",
+    "daily": "DOANH THU CẬP NHẬT  •  THEO NGÀY",
+}
+for _client_prefix, _client_cfg in MENU_CONFIG.items():
+    _client_group_label = next((g["label"] for g in MENU_GROUPS if g["key"] == _client_cfg.get("group")), "Dashboard")
+    _client_menu_label = str(_client_cfg.get("menu_label", _client_prefix))
+    _CLIENT_MENU_TITLE_MAP[_client_prefix] = f"{_client_group_label.upper()}  •  {_client_menu_label.upper()}  •  PAGE {{page}}"
+
+app.clientside_callback(
+    """
+    function(n_open, menuClicks, g0, g1, g2, isOpen) {
+        const trig = dash_clientside.callback_context.triggered_id;
+        if (trig === "open-menu") {
+            return !Boolean(isOpen);
+        }
+        return false;
+    }
+    """,
     Output("sidebar", "is_open"),
     Input("open-menu", "n_clicks"),
     Input({"type": "menu-nav", "menu": ALL, "source": ALL}, "n_clicks"),
@@ -11026,21 +11139,57 @@ def download_excel(n, menu, page, f_home, daily_start, daily_end, daily_regions,
     State("sidebar", "is_open"),
     prevent_initial_call=True
 )
-def toggle_sidebar(n_open, _menu_clicks, g0, g1, g2, is_open):
-    if ctx.triggered_id == "open-menu":
-        return not is_open
-    return False
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(n, isOpen) {
+        return !Boolean(isOpen);
+    }
+    """,
     Output("ai-box", "is_open"),
     Input("open-ai", "n_clicks"),
     State("ai-box", "is_open"),
     prevent_initial_call=True
 )
-def toggle_ai(n, is_open):
-    return not is_open
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(menuClicks, nNext, nPrev, g0, g1, g2, currentMenu, currentPage) {
+        const noUpdate = dash_clientside.no_update;
+        const trig = dash_clientside.callback_context.triggered_id;
+        let menu = currentMenu || "home";
+        let page = parseInt(currentPage, 10);
+        if (Number.isNaN(page)) {
+            page = (menu === "home" || menu === "daily") ? 0 : 1;
+        }
+        if (trig && typeof trig === "object" && trig.type === "menu-nav") {
+            const newMenu = trig.menu || "home";
+            return [newMenu, (newMenu === "home" || newMenu === "daily") ? 0 : 1];
+        }
+        if (trig === "go-home") {
+            return ["home", 0];
+        }
+        if (trig === "go-page-1") {
+            return [menu, (menu === "home" || menu === "daily") ? 0 : 1];
+        }
+        if (trig === "go-page-2") {
+            if (menu === "home" || menu === "daily") {
+                return [noUpdate, noUpdate];
+            }
+            return [menu, 2];
+        }
+        if (menu === "home" || menu === "daily") {
+            return [noUpdate, noUpdate];
+        }
+        if (trig === "next-page") {
+            return [menu, (page !== 2) ? 2 : 1];
+        }
+        if (trig === "prev-page") {
+            return [menu, (page !== 1) ? 1 : 2];
+        }
+        return [menu, page];
+    }
+    """,
     Output("menu","data"),
     Output("page","data"),
     Input({"type": "menu-nav", "menu": ALL, "source": ALL}, "n_clicks"),
@@ -11053,71 +11202,83 @@ def toggle_ai(n, is_open):
     State("page","data"),
     prevent_initial_call=True
 )
-def navigate_dashboard(_menu_clicks, n_next, n_prev, g0, g1, g2, current_menu, current_page):
-    trig = ctx.triggered_id
-    menu = current_menu or "home"
-    try:
-        page = int(current_page) if current_page is not None else (0 if menu in ["home", "daily"] else 1)
-    except Exception:
-        page = 0 if menu in ["home", "daily"] else 1
 
-    if isinstance(trig, dict) and trig.get("type") == "menu-nav":
-        new_menu = trig.get("menu", "home")
-        return new_menu, (0 if new_menu in ["home", "daily"] else 1)
-    if trig == "go-home":
-        return "home", 0
-    if trig == "go-page-1":
-        return menu, (0 if menu in ["home", "daily"] else 1)
-    if trig == "go-page-2":
-        if menu in ["home", "daily"]:
-            raise PreventUpdate
-        return menu, 2
-    if menu in ["home", "daily"]:
-        raise PreventUpdate
-    if trig == "next-page":
-        return menu, (2 if page != 2 else 1)
-    if trig == "prev-page":
-        return menu, (1 if page != 1 else 2)
-    return menu, page
-
-@app.callback(
+app.clientside_callback(
+    """
+    function(n, theme) {
+        return "light";
+    }
+    """,
     Output("theme","data"),
     Input("toggle-theme","n_clicks"),
     State("theme","data"),
     prevent_initial_call=True
 )
-def toggle_theme(n, theme):
-    return "light"
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(menu, page) {
+        const titles = CLIENT_MENU_TITLE_MAP;
+        const key = menu || "home";
+        let value = titles[key] || titles["home"];
+        return String(value).replace("{page}", page || 1);
+    }
+    """.replace("CLIENT_MENU_TITLE_MAP", json.dumps(_CLIENT_MENU_TITLE_MAP, ensure_ascii=False)),
     Output("top-title", "children"),
     Input("menu", "data"),
     Input("page", "data"),
 )
-def update_top_title(menu, page):
-    if menu == "home":
-        return "HOME  •  TRANG CHÍNH"
-    if menu == "daily":
-        return "DOANH THU CẬP NHẬT  •  THEO NGÀY"
-    cfg = get_menu_config(menu)
-    group_label = next((g["label"] for g in MENU_GROUPS if g["key"] == cfg.get("group")), "Dashboard")
-    return f"{group_label.upper()}  •  {cfg['menu_label'].upper()}  •  PAGE {page}"
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(menu) {
+        const hiddenLeft = Object.assign({}, PAGE_NAV_LEFT_BASE_JS, {display: "none"});
+        const hiddenRight = Object.assign({}, PAGE_NAV_RIGHT_BASE_JS, {display: "none"});
+        if (menu === "home" || menu === "daily") {
+            return [hiddenLeft, hiddenRight];
+        }
+        return [PAGE_NAV_LEFT_BASE_JS, PAGE_NAV_RIGHT_BASE_JS];
+    }
+    """.replace("PAGE_NAV_LEFT_BASE_JS", json.dumps(PAGE_NAV_LEFT_BASE, ensure_ascii=False))
+          .replace("PAGE_NAV_RIGHT_BASE_JS", json.dumps(PAGE_NAV_RIGHT_BASE, ensure_ascii=False)),
     Output("prev-page", "style"),
     Output("next-page", "style"),
     Input("menu", "data")
 )
-def toggle_page_nav_visibility(menu):
-    if menu in ["home", "daily"]:
-        return {**PAGE_NAV_LEFT_BASE, "display": "none"}, {**PAGE_NAV_RIGHT_BASE, "display": "none"}
-    return PAGE_NAV_LEFT_BASE, PAGE_NAV_RIGHT_BASE
+
+app.clientside_callback(
+    """
+    function(n) {
+        if (!n) {
+            return dash_clientside.no_update;
+        }
+        const enabled = CLIENT_PRELOAD_ENABLED_JS;
+        const mode = CLIENT_PRELOAD_MODE_JS;
+        if (!enabled || !mode) {
+            return {sent: false, reason: "disabled"};
+        }
+        try {
+            fetch("/_warm_user?preload=" + encodeURIComponent(mode), {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                keepalive: true
+            }).catch(function(){ return null; });
+        } catch (e) {}
+        return {sent: true, mode: mode, ts: Date.now()};
+    }
+    """.replace("CLIENT_PRELOAD_ENABLED_JS", json.dumps(bool(DASH_CLIENT_PRELOAD_AFTER_BOOT)))
+          .replace("CLIENT_PRELOAD_MODE_JS", json.dumps(DASH_CLIENT_PRELOAD_MODE)),
+    Output("client-warm-sent", "data"),
+    Input("client-warm-ping", "n_intervals"),
+    prevent_initial_call=True
+)
 
 @app.callback(
     Output("filters-home", "data"),
-    Input("home-year", "value"),
-    Input("home-month", "value"),
-    Input("home-region", "value"),
+    Input("home-year", "value", allow_optional=True),
+    Input("home-month", "value", allow_optional=True),
+    Input("home-region", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def store_filters_home(year_val, months, regions):
@@ -11126,8 +11287,8 @@ def store_filters_home(year_val, months, regions):
 
 @app.callback(
     Output("filters-dt-p1", "data"),
-    Input("dt-year", "value"),
-    Input("dt-month", "value"),
+    Input("dt-year", "value", allow_optional=True),
+    Input("dt-month", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_dt_p1(year_val, months):
@@ -11135,9 +11296,9 @@ def _store_filters_dt_p1(year_val, months):
 
 @app.callback(
     Output("filters-lh-p1", "data"),
-    Input("lh-year", "value"),
-    Input("lh-month", "value"),
-    Input("lh-type-p1", "value"),
+    Input("lh-year", "value", allow_optional=True),
+    Input("lh-month", "value", allow_optional=True),
+    Input("lh-type-p1", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_lh_p1(year_val, months, type_filter):
@@ -11145,9 +11306,9 @@ def _store_filters_lh_p1(year_val, months, type_filter):
 
 @app.callback(
     Output("filters-hd-p1", "data"),
-    Input("hd-year", "value"),
-    Input("hd-month", "value"),
-    Input("hd-type-p1", "value"),
+    Input("hd-year", "value", allow_optional=True),
+    Input("hd-month", "value", allow_optional=True),
+    Input("hd-type-p1", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_hd_p1(year_val, months, type_filter):
@@ -11155,9 +11316,9 @@ def _store_filters_hd_p1(year_val, months, type_filter):
 
 @app.callback(
     Output("filters-dt-p2", "data"),
-    Input("dt-dim", "value"),
-    Input("dt-year-p2", "value"),
-    Input("dt-month-p2", "value"),
+    Input("dt-dim", "value", allow_optional=True),
+    Input("dt-year-p2", "value", allow_optional=True),
+    Input("dt-month-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_dt_p2(dims, year_val, months):
@@ -11166,10 +11327,10 @@ def _store_filters_dt_p2(dims, year_val, months):
 
 @app.callback(
     Output("filters-lh-p2", "data"),
-    Input("lh-dim", "value"),
-    Input("lh-year-p2", "value"),
-    Input("lh-month-p2", "value"),
-    Input("lh-type-p2", "value"),
+    Input("lh-dim", "value", allow_optional=True),
+    Input("lh-year-p2", "value", allow_optional=True),
+    Input("lh-month-p2", "value", allow_optional=True),
+    Input("lh-type-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_lh_p2(dims, year_val, months, type_filter):
@@ -11178,10 +11339,10 @@ def _store_filters_lh_p2(dims, year_val, months, type_filter):
 
 @app.callback(
     Output("filters-hd-p2", "data"),
-    Input("hd-dim", "value"),
-    Input("hd-year-p2", "value"),
-    Input("hd-month-p2", "value"),
-    Input("hd-type-p2", "value"),
+    Input("hd-dim", "value", allow_optional=True),
+    Input("hd-year-p2", "value", allow_optional=True),
+    Input("hd-month-p2", "value", allow_optional=True),
+    Input("hd-type-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def _store_filters_hd_p2(dims, year_val, months, type_filter):
@@ -11211,8 +11372,8 @@ def _month_options_for_year(year_val):
 @app.callback(
     Output("home-month", "options"),
     Output("home-month", "value"),
-    Input("home-year", "value"),
-    State("home-month", "value"),
+    Input("home-year", "value", allow_optional=True),
+    State("home-month", "value", allow_optional=True),
     prevent_initial_call=False
 )
 def home_month_depends_on_year(year_val, cur_months):
@@ -11224,8 +11385,8 @@ def home_month_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("dt-month", "options"),
     Output("dt-month", "value"),
-    Input("dt-year", "value"),
-    State("dt-month", "value"),
+    Input("dt-year", "value", allow_optional=True),
+    State("dt-month", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def dt_month_depends_on_year(year_val, cur_months):
@@ -11237,8 +11398,8 @@ def dt_month_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("lh-month", "options"),
     Output("lh-month", "value"),
-    Input("lh-year", "value"),
-    State("lh-month", "value"),
+    Input("lh-year", "value", allow_optional=True),
+    State("lh-month", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def lh_month_depends_on_year(year_val, cur_months):
@@ -11250,8 +11411,8 @@ def lh_month_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("hd-month", "options"),
     Output("hd-month", "value"),
-    Input("hd-year", "value"),
-    State("hd-month", "value"),
+    Input("hd-year", "value", allow_optional=True),
+    State("hd-month", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def hd_month_depends_on_year(year_val, cur_months):
@@ -11263,8 +11424,8 @@ def hd_month_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("dt-month-p2", "options"),
     Output("dt-month-p2", "value"),
-    Input("dt-year-p2", "value"),
-    State("dt-month-p2", "value"),
+    Input("dt-year-p2", "value", allow_optional=True),
+    State("dt-month-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def dt_month_p2_depends_on_year(year_val, cur_months):
@@ -11276,8 +11437,8 @@ def dt_month_p2_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("lh-month-p2", "options"),
     Output("lh-month-p2", "value"),
-    Input("lh-year-p2", "value"),
-    State("lh-month-p2", "value"),
+    Input("lh-year-p2", "value", allow_optional=True),
+    State("lh-month-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def lh_month_p2_depends_on_year(year_val, cur_months):
@@ -11289,8 +11450,8 @@ def lh_month_p2_depends_on_year(year_val, cur_months):
 @app.callback(
     Output("hd-month-p2", "options"),
     Output("hd-month-p2", "value"),
-    Input("hd-year-p2", "value"),
-    State("hd-month-p2", "value"),
+    Input("hd-year-p2", "value", allow_optional=True),
+    State("hd-month-p2", "value", allow_optional=True),
     prevent_initial_call=True
 )
 def hd_month_p2_depends_on_year(year_val, cur_months):
@@ -11311,10 +11472,10 @@ def _store_filters_hr(prefix: str, page_key: str, year_val, months, regions, dep
 for _hr_prefix in HR_MENU_PREFIXES:
     @app.callback(
         Output(f"filters-{_hr_prefix}-p1", "data"),
-        Input(f"{_hr_prefix}-year", "value"),
-        Input(f"{_hr_prefix}-month", "value"),
-        Input(f"{_hr_prefix}-region", "value"),
-        Input(f"{_hr_prefix}-dept", "value"),
+        Input(f"{_hr_prefix}-year", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-month", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-region", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-dept", "value", allow_optional=True),
         prevent_initial_call=True
     )
     def _store_filters_hr_p1(year_val, months, regions, departments, _prefix=_hr_prefix):
@@ -11322,10 +11483,10 @@ for _hr_prefix in HR_MENU_PREFIXES:
 
     @app.callback(
         Output(f"filters-{_hr_prefix}-p2", "data"),
-        Input(f"{_hr_prefix}-dim", "value"),
-        Input(f"{_hr_prefix}-year-p2", "value"),
-        Input(f"{_hr_prefix}-month-p2", "value"),
-        Input(f"{_hr_prefix}-dept-p2", "value"),
+        Input(f"{_hr_prefix}-dim", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-year-p2", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-month-p2", "value", allow_optional=True),
+        Input(f"{_hr_prefix}-dept-p2", "value", allow_optional=True),
         prevent_initial_call=True
     )
     def _store_filters_hr_p2(dims, year_val, months, departments, _prefix=_hr_prefix):
@@ -11336,8 +11497,8 @@ for _hr_prefix in HR_MENU_PREFIXES:
     @app.callback(
         Output(f"{_hr_prefix}-month", "options"),
         Output(f"{_hr_prefix}-month", "value"),
-        Input(f"{_hr_prefix}-year", "value"),
-        State(f"{_hr_prefix}-month", "value"),
+        Input(f"{_hr_prefix}-year", "value", allow_optional=True),
+        State(f"{_hr_prefix}-month", "value", allow_optional=True),
         prevent_initial_call=True
     )
     def _month_depends_on_year_hr_p1(year_val, cur_months, _prefix=_hr_prefix):
@@ -11349,8 +11510,8 @@ for _hr_prefix in HR_MENU_PREFIXES:
     @app.callback(
         Output(f"{_hr_prefix}-month-p2", "options"),
         Output(f"{_hr_prefix}-month-p2", "value"),
-        Input(f"{_hr_prefix}-year-p2", "value"),
-        State(f"{_hr_prefix}-month-p2", "value"),
+        Input(f"{_hr_prefix}-year-p2", "value", allow_optional=True),
+        State(f"{_hr_prefix}-month-p2", "value", allow_optional=True),
         prevent_initial_call=True
     )
     def _month_depends_on_year_hr_p2(year_val, cur_months, _prefix=_hr_prefix):
@@ -11527,10 +11688,10 @@ def _delta_class(v):
     Output({"type":"zoom-store","target":"home-lh-donut"}, "data"),
     Output({"type":"zoom-store","target":"home-hd-bar"}, "data"),
 
-    Input("home-year", "value"),
-    Input("home-month", "value"),
-    Input("home-region", "value"),
-    Input("theme", "data"),
+    Input("home-year", "value", allow_optional=True),
+    Input("home-month", "value", allow_optional=True),
+    Input("home-region", "value", allow_optional=True),
+    State("theme", "data"),
 )
 @timed_callback("home")
 def update_home(year_val, months, regions, theme):
@@ -11862,11 +12023,11 @@ def update_home(year_val, months, regions, theme):
     Output({"type":"zoom-store","target":"daily-region-bar"}, "data"),
     Output({"type":"zoom-store","target":"daily-lh-donut"}, "data"),
     Output({"type":"zoom-store","target":"daily-hd-bar"}, "data"),
-    Input("daily-date-range", "start_date"),
-    Input("daily-date-range", "end_date"),
-    Input("daily-region", "value"),
-    Input("daily-driver", "value"),
-    Input("theme", "data"),
+    Input("daily-date-range", "start_date", allow_optional=True),
+    Input("daily-date-range", "end_date", allow_optional=True),
+    Input("daily-region", "value", allow_optional=True),
+    Input("daily-driver", "value", allow_optional=True),
+    State("theme", "data"),
 )
 @timed_callback("daily_latest")
 def update_daily_latest(start_date, end_date, regions, drivers, theme):
@@ -12264,12 +12425,11 @@ def callbacks(prefix: str):
         return avg_payload, avg_lines
 
     if type_filter_kind == "fleet":
-        inputs_p1 = [Input("theme", "data")]
+        inputs_p1 = []
     else:
         inputs_p1 = [
             Input(f"{prefix}-year", "value", allow_optional=True),
             Input(f"{prefix}-month", "value", allow_optional=True),
-            Input("theme", "data"),
         ]
     if p1_filter_input is not None:
         inputs_p1.append(p1_filter_input)
@@ -12292,6 +12452,7 @@ def callbacks(prefix: str):
         Output({"type":"zoom-store","target": f"{prefix}-p1-bar"}, "data"),
         Output({"type":"zoom-store","target": f"{prefix}-p1-pie"}, "data"),
         *inputs_p1,
+        State("theme", "data"),
         State("menu", "data"),
         State("page", "data"),
     )
@@ -12316,19 +12477,19 @@ def callbacks(prefix: str):
         type_filter_kind = cfg.get("type_filter_kind")
         if type_filter_kind == "fleet":
             idx = 0
-            theme = args[idx]; idx += 1
             type_filter = args[idx] if p1_filter_input is not None else None
             if p1_filter_input is not None:
                 idx += 1
             seat_filter = args[idx] if p1_seat_filter_input is not None else None
             if p1_seat_filter_input is not None:
                 idx += 1
+            theme = args[idx]; idx += 1
             menu, page = args[idx], args[idx + 1]
             year_val = None
             months = []
         else:
             if p1_filter_input is not None:
-                year_val, months, theme, type_filter, menu, page = args
+                year_val, months, type_filter, theme, menu, page = args
             else:
                 year_val, months, theme, menu, page = args
                 type_filter = None
@@ -12763,14 +12924,12 @@ def callbacks(prefix: str):
     if type_filter_kind == "fleet":
         inputs_p2 = [
             Input(f"{prefix}-dim","value", allow_optional=True),
-            Input("theme","data"),
         ]
     else:
         inputs_p2 = [
             Input(f"{prefix}-dim","value", allow_optional=True),
             Input(f"{prefix}-year-p2","value", allow_optional=True),
             Input(f"{prefix}-month-p2","value", allow_optional=True),
-            Input("theme","data"),
         ]
     if p2_filter_input is not None:
         inputs_p2.append(p2_filter_input)
@@ -12795,6 +12954,7 @@ def callbacks(prefix: str):
         Output({"type":"zoom-store","target": f"{prefix}-p2-bar"}, "data"),
         Output({"type":"zoom-store","target": f"{prefix}-p2-pie"}, "data"),
         *inputs_p2,
+        State("theme", "data"),
         State("menu", "data"),
         State("page", "data"),
     )
@@ -12820,19 +12980,19 @@ def callbacks(prefix: str):
         if type_filter_kind == "fleet":
             idx = 0
             dim = args[idx]; idx += 1
-            theme = args[idx]; idx += 1
             type_filter = args[idx] if p2_filter_input is not None else None
             if p2_filter_input is not None:
                 idx += 1
             seat_filter = args[idx] if p2_seat_filter_input is not None else None
             if p2_seat_filter_input is not None:
                 idx += 1
+            theme = args[idx]; idx += 1
             menu, page = args[idx], args[idx + 1]
             year_val = None
             months = []
         else:
             if p2_filter_input is not None:
-                dim, year_val, months, theme, type_filter, menu, page = args
+                dim, year_val, months, type_filter, theme, menu, page = args
             else:
                 dim, year_val, months, theme, menu, page = args
                 type_filter = None
@@ -13726,7 +13886,7 @@ def hr_callbacks(prefix: str):
         Input(f"{prefix}-month", "value", allow_optional=True),
         Input(f"{prefix}-region", "value", allow_optional=True),
         Input(f"{prefix}-dept", "value", allow_optional=True),
-        Input("theme", "data"),
+        State("theme", "data"),
         State("menu", "data"),
         State("page", "data"),
     )
@@ -13849,7 +14009,7 @@ def hr_callbacks(prefix: str):
         Input(f"{prefix}-year-p2","value", allow_optional=True),
         Input(f"{prefix}-month-p2","value", allow_optional=True),
         Input(f"{prefix}-dept-p2","value", allow_optional=True),
-        Input("theme", "data"),
+        State("theme", "data"),
         State("menu", "data"),
         State("page", "data"),
     )
@@ -14003,7 +14163,7 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
     trig = ctx.triggered_id
 
     if trig == "zoom-modal":
-        return False, no_update, no_update, no_update, {"display":"none"}, no_update, {"display":"none"}, None
+        return False, no_update, no_update, no_update, _zoom_graph_hidden_style(), no_update, {"display":"none"}, None
 
     if trig == "zoom-graph":
         if not is_open or not zoom_target:
@@ -14117,7 +14277,7 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
                 ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
                 style=z_card_style
             )
-            return True, title, kpi_card, {}, {"display":"none"}, [], {"display":"none"}, {"kind":"kpi","target":target}
+            return True, title, kpi_card, no_update, _zoom_graph_hidden_style(), [], {"display":"none"}, {"kind":"kpi","target":target}
 
         fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
@@ -14127,13 +14287,13 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             # keep drill-down hidden until a real chart figure is available.
             fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy kiểm tra DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS=1 và redeploy Production.", theme).to_dict()
             fig_dict = enhance_zoom_figure(fig_dict)
-            return True, title, None, fig_dict, {"display":"block","height":"82vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+            return True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target}
 
         fig_dict = enhance_zoom_figure(fig_dict)
 
         # First click on a chart only opens the enlarged chart. Drill-down table appears
         # only after the user clicks an actual point/bar/slice inside the zoomed chart.
-        return True, title, None, fig_dict, {"display":"block","height":"82vh"}, [], {"display":"none"}, {"kind":"fig","target":target}
+        return True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target}
 
     raise PreventUpdate
 
