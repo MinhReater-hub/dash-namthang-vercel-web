@@ -119,9 +119,9 @@ DASH_CACHE_DF_COPY_MODE = os.getenv("DASH_CACHE_DF_COPY_MODE", "shallow" if DASH
 DASH_GLOBAL_FILTER_CACHE = str(os.getenv("DASH_GLOBAL_FILTER_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_GLOBAL_FILTER_CACHE_MAX = int(os.getenv("DASH_GLOBAL_FILTER_CACHE_MAX", "512" if DASH_SERVERLESS_FAST_PRESET else "768"))
 DASH_REGION_SCOPE_CACHE_MAX = int(os.getenv("DASH_REGION_SCOPE_CACHE_MAX", "256" if DASH_SERVERLESS_FAST_PRESET else "384"))
-DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "120" if DASH_SERVERLESS_FAST_PRESET else "200"))
-DASH_FIGURE_STORE_MAX_ROWS = int(os.getenv("DASH_FIGURE_STORE_MAX_ROWS", "80" if DASH_SERVERLESS_FAST_PRESET else str(DASH_ZOOM_STORE_MAX_ROWS)))
-DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "50" if DASH_SERVERLESS_FAST_PRESET else "80"))
+DASH_ZOOM_STORE_MAX_ROWS = int(os.getenv("DASH_ZOOM_STORE_MAX_ROWS", "80" if DASH_SERVERLESS_FAST_PRESET else "200"))
+DASH_FIGURE_STORE_MAX_ROWS = int(os.getenv("DASH_FIGURE_STORE_MAX_ROWS", "40" if DASH_SERVERLESS_FAST_PRESET else str(DASH_ZOOM_STORE_MAX_ROWS)))
+DASH_KPI_STORE_MAX_ROWS = int(os.getenv("DASH_KPI_STORE_MAX_ROWS", "32" if DASH_SERVERLESS_FAST_PRESET else "80"))
 DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX = int(os.getenv("DASH_OPTIONAL_SHEET_RESOLVE_CACHE_MAX", "192" if DASH_SERVERLESS_FAST_PRESET else "256"))
 DASH_LOG_BOOT_TIMING = str(os.getenv("DASH_LOG_BOOT_TIMING", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_LOG_CALLBACK_TIMING = str(os.getenv("DASH_LOG_CALLBACK_TIMING", os.getenv("DASH_LOG_BOOT_TIMING", "0"))).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -136,7 +136,7 @@ DASH_GRAPH_LEAN_CONFIG = {
     "staticPlot": False,
 }
 DASH_CLIENT_PRELOAD_AFTER_BOOT = str(os.getenv("DASH_CLIENT_PRELOAD_AFTER_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "interactive").strip().lower()
+DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "daily" if DASH_SERVERLESS_FAST_PRESET else "interactive").strip().lower()
 
 
 def _graph_config(extra: dict | None = None) -> dict:
@@ -2809,6 +2809,9 @@ def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None
         DAILY_FILTER_CACHE.clear()
         DAILY_SOURCE_PREP_CACHE.clear()
         DAILY_DRIVER_SOURCE_CACHE.clear()
+        DAILY_LATEST_OUTPUT_CACHE.clear()
+        DAILY_TABLE_FRAME_CACHE.clear()
+        DAILY_DATE_BOUNDS_CACHE.clear()
     except Exception:
         pass
     try:
@@ -7836,6 +7839,11 @@ DAILY_SOURCE_PREP_CACHE = {}
 DAILY_SOURCE_PREP_CACHE_MAX = 48
 DAILY_DRIVER_SOURCE_CACHE = {}
 DAILY_DRIVER_SOURCE_CACHE_MAX = 120
+DAILY_LATEST_OUTPUT_CACHE = {}
+DAILY_LATEST_OUTPUT_CACHE_MAX = int(os.getenv("DASH_DAILY_OUTPUT_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DAILY_TABLE_FRAME_CACHE = {}
+DAILY_TABLE_FRAME_CACHE_MAX = int(os.getenv("DASH_DAILY_TABLE_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DAILY_DATE_BOUNDS_CACHE = {"key": None, "value": None}
 
 
 def _normalize_multi_value(values) -> list[str]:
@@ -7851,6 +7859,39 @@ def _daily_filter_cache_scope_key():
         return tuple(sorted(str(x) for x in scope))
     except Exception:
         return "__na__"
+
+
+def _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd):
+    return (
+        str(start_date or ""),
+        str(end_date or ""),
+        tuple(sorted(_normalize_multi_value(regions))),
+        tuple(sorted(_normalize_multi_value(drivers))),
+        str(theme or "light"),
+        _daily_filter_cache_scope_key(),
+        _df_cache_signature(source_dt),
+        _df_cache_signature(source_lh),
+        _df_cache_signature(source_hd),
+        bool(DASH_ZOOM_STORE_INCLUDE_FIGURE),
+        bool(DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS),
+        int(DASH_FIGURE_STORE_MAX_ROWS),
+        int(DASH_KPI_STORE_MAX_ROWS),
+    )
+
+
+def _daily_output_cache_get(cache_key):
+    cached = DAILY_LATEST_OUTPUT_CACHE.get(cache_key)
+    return cached if cached is not None else None
+
+
+def _daily_output_cache_set(cache_key, value):
+    try:
+        if len(DAILY_LATEST_OUTPUT_CACHE) > DAILY_LATEST_OUTPUT_CACHE_MAX:
+            DAILY_LATEST_OUTPUT_CACHE.clear()
+        DAILY_LATEST_OUTPUT_CACHE[cache_key] = value
+    except Exception:
+        pass
+    return value
 
 
 def _prepared_daily_source_cached(source_df: pd.DataFrame, source_label: str) -> pd.DataFrame:
@@ -8032,9 +8073,13 @@ def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, driver
 
 def _daily_date_bounds():
     ensure_daily_data_loaded()
+    frames = [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]
+    cache_key = tuple(_df_cache_signature(f) for f in frames) + (_daily_filter_cache_scope_key(), str(_current_vn_day_start()))
+    if DAILY_DATE_BOUNDS_CACHE.get("key") == cache_key:
+        return DAILY_DATE_BOUNDS_CACHE.get("value", (None, None))
     dates = []
     cutoff_day = _current_vn_day_start()
-    for dff in [_daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df(), df_daily_taixe_checker]:
+    for dff in frames:
         try:
             s = _coerce_daily_date_series(dff).dropna()
             if not s.empty:
@@ -8044,10 +8089,14 @@ def _daily_date_bounds():
         except Exception:
             continue
     if not dates:
-        return None, None
-    mn = pd.Timestamp(min(dates)).normalize()
-    mx = min(pd.Timestamp(max(dates)).normalize(), cutoff_day)
-    return mn, mx
+        value = (None, None)
+    else:
+        mn = pd.Timestamp(min(dates)).normalize()
+        mx = min(pd.Timestamp(max(dates)).normalize(), cutoff_day)
+        value = (mn, mx)
+    DAILY_DATE_BOUNDS_CACHE["key"] = cache_key
+    DAILY_DATE_BOUNDS_CACHE["value"] = value
+    return value
 
 
 def _date_iso(ts):
@@ -8096,9 +8145,14 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         "tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh", "sokm_cokhach",
         "so_xe", "so_tai_xe",
     ]
+    cache_key = None
     if dff is None or dff.empty:
         out = pd.DataFrame(columns=cols)
     else:
+        cache_key = (_df_cache_signature(dff), _daily_filter_cache_scope_key())
+        cached = DAILY_TABLE_FRAME_CACHE.get(cache_key)
+        if isinstance(cached, pd.DataFrame):
+            return _return_df_cached(cached)
         temp = dff.copy()
         for c in ["sokm_vandoanh", "sokm_cokhach"]:
             if c not in temp.columns:
@@ -8152,7 +8206,12 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         0,
     )
     out["km_co_khach_ratio_fmt"] = pd.to_numeric(out["km_co_khach_ratio"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
-    return out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
+    result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
+    if cache_key is not None:
+        if len(DAILY_TABLE_FRAME_CACHE) > DAILY_TABLE_FRAME_CACHE_MAX:
+            DAILY_TABLE_FRAME_CACHE.clear()
+        DAILY_TABLE_FRAME_CACHE[cache_key] = result.copy(deep=False)
+    return _return_df_cached(result)
 
 
 def daily_latest_page():
@@ -10342,7 +10401,7 @@ app.layout = dbc.Container(
         dcc.Store(id="ai-chat-history", data=[]),
         dcc.Store(id="client-warm-sent", data=None),
         dcc.Interval(id="refresh-meta", interval=5 * 60 * 1000, n_intervals=0),
-        dcc.Interval(id="client-warm-ping", interval=2200, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="client-warm-ping", interval=650, n_intervals=0, max_intervals=1),
 
         dbc.Row([
             dbc.Col(
@@ -10680,7 +10739,6 @@ def _build_active_page_layout(menu, page):
     if menu == "home":
         layout = home_page()
     elif menu == "daily":
-        ensure_daily_data_loaded()
         layout = daily_latest_page()
     elif menu in DASH_PREFIXES:
         ensure_menu_data_loaded(menu)
@@ -12037,6 +12095,10 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
     drivers = _normalize_multi_value(drivers)
     daily_source_label = _daily_source_label()
     source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers)
+    daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd)
+    cached_daily_output = _daily_output_cache_get(daily_cache_key)
+    if cached_daily_output is not None:
+        return cached_daily_output
     dff_dt = _filter_daily_frame(source_dt, start_date, end_date, regions, source_label=daily_source_label, drivers=drivers)
     dff_lh = _filter_daily_frame(source_lh, start_date, end_date, regions, source_label="Loại hình ngày", drivers=drivers)
     dff_hd = _filter_daily_frame(source_hd, start_date, end_date, regions, source_label="Cơ cấu vận hành ngày", drivers=drivers)
@@ -12093,13 +12155,14 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
     if dff_dt.empty:
         fig_empty = empty_figure("Không có dữ liệu theo ngày", theme)
         empty_store = pack_fig_store(fig_empty, rows=[], meta={"chart": "daily_empty", "metric_label": "Dữ liệu theo ngày"})
-        return (
+        result = (
             summary_children, daily_kpi1, daily_kpi2, daily_kpi3, daily_kpi4,
             fig_empty, fig_empty, fig_empty, fig_empty, fig_empty,
             [], style_cell, style_header,
             daily_kpi1_store, daily_kpi2_store, daily_kpi3_store, daily_kpi4_store,
             empty_store, empty_store, empty_store, empty_store, empty_store,
         )
+        return _daily_output_cache_set(daily_cache_key, result)
 
     g_day = dff_dt.groupby("ngay_du_lieu", as_index=False).agg(
         tong_doanh_thu=("tong_doanh_thu", "sum"),
@@ -12224,7 +12287,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
 
     daily_table_data = _daily_table_frame(dff_dt).to_dict("records")
 
-    return (
+    result = (
         summary_children,
         daily_kpi1,
         daily_kpi2,
@@ -12248,6 +12311,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         daily_lh_store,
         daily_hd_store,
     )
+    return _daily_output_cache_set(daily_cache_key, result)
 
 
 BB_METRIC_ORDER = ["so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]
@@ -14369,7 +14433,116 @@ def _render_table_row_detail(table_id: str, row: dict, columns: list | None, act
     ])
 
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(n_close) {
+        const ids = TABLE_DETAIL_IDS_JS;
+        const titleMap = TABLE_TITLE_MAP_JS;
+        const labelMap = TABLE_LABEL_MAP_JS;
+        const noUpdate = dash_clientside.no_update;
+        const ctx = dash_clientside.callback_context || {};
+        const trig = ctx.triggered_id;
+        if (trig === "table-row-close") {
+            return [false, noUpdate, noUpdate];
+        }
+        if (!trig || ids.indexOf(trig) === -1) {
+            return [noUpdate, noUpdate, noUpdate];
+        }
+
+        const args = Array.prototype.slice.call(arguments, 1);
+        const n = ids.length;
+        const activeCells = args.slice(0, n);
+        const viewportRows = args.slice(n, 2 * n);
+        const rawRows = args.slice(2 * n, 3 * n);
+        const columnsList = args.slice(3 * n, 4 * n);
+        const idx = ids.indexOf(trig);
+        const activeCell = activeCells[idx] || {};
+        if (activeCell.row === undefined || activeCell.row === null) {
+            return [noUpdate, noUpdate, noUpdate];
+        }
+        const rows = viewportRows[idx] || rawRows[idx] || [];
+        if (!rows || !rows.length) {
+            return [noUpdate, noUpdate, noUpdate];
+        }
+        const rowIndex = parseInt(activeCell.row || 0, 10);
+        if (rowIndex < 0 || rowIndex >= rows.length) {
+            return [noUpdate, noUpdate, noUpdate];
+        }
+        const row = rows[rowIndex] || {};
+        const cols = columnsList[idx] || [];
+
+        function comp(type, props, children) {
+            const p = Object.assign({}, props || {});
+            p.children = children;
+            return {namespace: "dash_html_components", type: type, props: p};
+        }
+        function stringify(value) {
+            if (value === null || value === undefined) { return ""; }
+            return String(value);
+        }
+        function autoLabel(cid) {
+            if (labelMap[cid]) { return labelMap[cid]; }
+            return String(cid || "")
+                .replace(/_fmt$/g, "")
+                .replace(/_std$/g, "")
+                .replace(/_/g, " ")
+                .replace(/\\s+/g, " ")
+                .trim()
+                .replace(/^./, function(ch){ return ch.toUpperCase(); });
+        }
+
+        let ordered = [];
+        let used = {};
+        if (Array.isArray(cols) && cols.length) {
+            cols.forEach(function(c) {
+                const cid = c && c.id;
+                if (cid !== undefined && cid !== null && Object.prototype.hasOwnProperty.call(row, cid)) {
+                    let name = c.name || cid;
+                    if (Array.isArray(name)) { name = name.join(" "); }
+                    ordered.push([String(name), cid]);
+                    used[cid] = true;
+                }
+            });
+        }
+        Object.keys(row).forEach(function(cid) {
+            if (!used[cid]) { ordered.push([cid, cid]); }
+        });
+
+        const clickedCol = activeCell.column_id;
+        let subtitle = "Click dòng bất kỳ trong bảng để mở thẻ xem nhanh; dữ liệu hiển thị theo đúng dòng/cột đang chọn.";
+        if (clickedCol) {
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i][1] === clickedCol) {
+                    subtitle = "Ô vừa chọn: " + autoLabel(ordered[i][1]);
+                    break;
+                }
+            }
+        }
+
+        const items = ordered.map(function(pair) {
+            const label = pair[0];
+            const cid = pair[1];
+            const displayLabel = (String(label) === String(cid)) ? autoLabel(cid) : String(label);
+            return comp("Div", {className: "table-row-detail-item"}, [
+                comp("Div", {className: "table-row-detail-label"}, displayLabel),
+                comp("Div", {className: "table-row-detail-value"}, stringify(row[cid]))
+            ]);
+        });
+
+        const title = titleMap[trig] || "CHI TIẾT DÒNG DỮ LIỆU";
+        const body = comp("Div", {}, [
+            comp("Div", {className: "table-row-detail-hero"}, [
+                comp("Div", {className: "table-row-detail-title"}, title),
+                comp("Div", {className: "table-row-detail-subtitle"}, subtitle)
+            ]),
+            comp("Div", {className: "table-row-detail-grid"}, items)
+        ]);
+        return [true, title, body];
+    }
+    """
+      .replace("TABLE_DETAIL_IDS_JS", json.dumps(TABLE_DETAIL_IDS, ensure_ascii=False))
+      .replace("TABLE_TITLE_MAP_JS", json.dumps({tid: _table_detail_title(tid) for tid in TABLE_DETAIL_IDS}, ensure_ascii=False))
+      .replace("TABLE_LABEL_MAP_JS", json.dumps(ZOOM_DETAIL_COLUMN_LABELS, ensure_ascii=False)),
     Output("table-row-modal", "is_open"),
     Output("table-row-title", "children"),
     Output("table-row-body", "children"),
@@ -14380,41 +14553,6 @@ def _render_table_row_detail(table_id: str, row: dict, columns: list | None, act
     *[State(tid, "columns", allow_optional=True) for tid in TABLE_DETAIL_IDS],
     prevent_initial_call=True,
 )
-def open_table_row_modal(n_close, *args):
-    trig = ctx.triggered_id
-    if trig == "table-row-close":
-        return False, no_update, no_update
-    if trig not in TABLE_DETAIL_IDS:
-        raise PreventUpdate
-
-    n = len(TABLE_DETAIL_IDS)
-    vals = list(args)
-    active_cells = vals[:n]
-    viewport_rows = vals[n:2*n]
-    raw_rows = vals[2*n:3*n]
-    columns_list = vals[3*n:4*n]
-
-    idx = TABLE_DETAIL_IDS.index(trig)
-    active_cell = active_cells[idx] or {}
-    if not isinstance(active_cell, dict) or active_cell.get("row") is None:
-        raise PreventUpdate
-
-    rows = viewport_rows[idx] or raw_rows[idx] or []
-    if not rows:
-        raise PreventUpdate
-    try:
-        row_index = int(active_cell.get("row", 0))
-    except Exception:
-        row_index = 0
-    if row_index < 0 or row_index >= len(rows):
-        raise PreventUpdate
-    row = rows[row_index]
-    if not isinstance(row, dict):
-        raise PreventUpdate
-
-    title = _table_detail_title(trig)
-    body = _render_table_row_detail(trig, row, columns_list[idx], active_cell)
-    return True, title, body
 
 
 def strip_accents(s: str) -> str:
