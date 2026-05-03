@@ -22,6 +22,7 @@ import os
 import json
 import hmac
 import time
+import hashlib
 from functools import wraps
 from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
 from werkzeug.security import check_password_hash
@@ -137,6 +138,9 @@ DASH_GRAPH_LEAN_CONFIG = {
 }
 DASH_CLIENT_PRELOAD_AFTER_BOOT = str(os.getenv("DASH_CLIENT_PRELOAD_AFTER_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "daily" if DASH_SERVERLESS_FAST_PRESET else "interactive").strip().lower()
+DASH_ZOOM_COMPACT_FIGURE = str(os.getenv("DASH_ZOOM_COMPACT_FIGURE", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_ZOOM_OPEN_CACHE_MAX = int(os.getenv("DASH_ZOOM_OPEN_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DASH_ZOOM_DRILL_CACHE_MAX = int(os.getenv("DASH_ZOOM_DRILL_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
 
 
 def _graph_config(extra: dict | None = None) -> dict:
@@ -5438,6 +5442,142 @@ def _limit_store_rows(rows, max_rows: int):
         return list(rows), False, total
     return rows, False, 0
 
+def _compact_zoom_figure_dict(fig_dict):
+    """Reduce dcc.Store payload for zoom figures without changing the visible chart."""
+    if not DASH_ZOOM_COMPACT_FIGURE or not isinstance(fig_dict, dict):
+        return fig_dict
+    try:
+        f = copy.deepcopy(fig_dict)
+        layout = f.get("layout")
+        if isinstance(layout, dict):
+            # Plotly templates are often the largest part of a figure dict and are not
+            # needed for an already styled dashboard figure.
+            layout.pop("template", None)
+            for volatile_key in ["uirevision", "selectionrevision", "editrevision"]:
+                if volatile_key in layout and layout.get(volatile_key) in [None, ""]:
+                    layout.pop(volatile_key, None)
+        data = f.get("data")
+        if isinstance(data, list):
+            for tr in data:
+                if not isinstance(tr, dict):
+                    continue
+                # These fields are useful while constructing charts but expensive to
+                # keep inside every zoom-store. They do not affect the enlarged view.
+                for key in [
+                    "customdata", "custom_data", "ids", "id", "meta",
+                    "selectedpoints", "selected", "unselected", "transforms",
+                ]:
+                    tr.pop(key, None)
+                # Very long hovertemplates also add payload. Keep normal hover text,
+                # but drop generated templates for compact serverless payloads.
+                if isinstance(tr.get("hovertemplate"), str) and len(tr.get("hovertemplate", "")) > 240:
+                    tr.pop("hovertemplate", None)
+        return f
+    except Exception:
+        return fig_dict
+
+
+def _zoom_trace_names_from_fig(fig_dict):
+    try:
+        data = fig_dict.get("data", []) if isinstance(fig_dict, dict) else []
+        if not isinstance(data, list):
+            return []
+        return [str(tr.get("name", "")).strip() if isinstance(tr, dict) and tr.get("name", None) not in [None, ""] else None for tr in data]
+    except Exception:
+        return []
+
+
+def _zoom_cache_fingerprint(value, max_chars: int = 12000):
+    try:
+        raw = json.dumps(json_safe(value), ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = str(value)
+    if len(raw) > max_chars:
+        raw = raw[:max_chars] + raw[-1024:]
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+ZOOM_OPEN_RENDER_CACHE = {}
+ZOOM_DRILL_RENDER_CACHE = {}
+
+
+def _zoom_open_cache_get(key):
+    return ZOOM_OPEN_RENDER_CACHE.get(key)
+
+
+def _zoom_open_cache_set(key, value):
+    try:
+        if len(ZOOM_OPEN_RENDER_CACHE) > DASH_ZOOM_OPEN_CACHE_MAX:
+            ZOOM_OPEN_RENDER_CACHE.clear()
+        ZOOM_OPEN_RENDER_CACHE[key] = value
+    except Exception:
+        pass
+    return value
+
+
+def _zoom_drill_cache_get(key):
+    return ZOOM_DRILL_RENDER_CACHE.get(key)
+
+
+def _zoom_drill_cache_set(key, value):
+    try:
+        if len(ZOOM_DRILL_RENDER_CACHE) > DASH_ZOOM_DRILL_CACHE_MAX:
+            ZOOM_DRILL_RENDER_CACHE.clear()
+        ZOOM_DRILL_RENDER_CACHE[key] = value
+    except Exception:
+        pass
+    return value
+
+
+def _zoom_open_cache_key(target, store, theme):
+    """Fast cache key for zoom-open without serializing the entire Plotly figure."""
+    try:
+        store = store or {}
+        meta = store.get("meta", {}) if isinstance(store, dict) else {}
+        rows = store.get("rows", []) if isinstance(store, dict) else []
+        fig = store.get("figure", {}) if isinstance(store, dict) else {}
+        data = fig.get("data", []) if isinstance(fig, dict) else []
+        layout = fig.get("layout", {}) if isinstance(fig, dict) else {}
+        title_obj = layout.get("title", {}) if isinstance(layout, dict) else {}
+        if isinstance(title_obj, dict):
+            title_text = title_obj.get("text", "")
+        else:
+            title_text = str(title_obj or "")
+        fig_sig = {
+            "kind": store.get("kind") if isinstance(store, dict) else None,
+            "data_n": len(data) if isinstance(data, list) else 0,
+            "title": title_text,
+            "trace_names": meta.get("trace_names", []),
+            "figure_included": meta.get("figure_included"),
+            "figure_compacted": meta.get("figure_compacted"),
+        }
+        return (
+            str(target),
+            str(theme or "light"),
+            _zoom_cache_fingerprint(meta, max_chars=5000),
+            len(rows) if isinstance(rows, list) else 0,
+            _zoom_cache_fingerprint(rows, max_chars=9000),
+            _zoom_cache_fingerprint(fig_sig, max_chars=3000),
+        )
+    except Exception:
+        return (str(target), str(theme or "light"), str(time.time()))
+
+
+def _zoom_drill_cache_key(target, store, clickData, theme):
+    meta = (store or {}).get("meta", {}) if isinstance(store, dict) else {}
+    rows = (store or {}).get("rows", []) if isinstance(store, dict) else []
+    pt = ((clickData or {}).get("points") or [{}])[0]
+    point_key = {k: pt.get(k) for k in ["x", "y", "label", "text", "curveNumber", "pointNumber", "pointIndex"]}
+    return (
+        str(target),
+        str(theme or "light"),
+        _zoom_cache_fingerprint(meta, max_chars=4000),
+        len(rows) if isinstance(rows, list) else 0,
+        _zoom_cache_fingerprint(rows, max_chars=10000),
+        _zoom_cache_fingerprint(point_key, max_chars=2000),
+    )
+
+
 def pack_fig_store(fig, rows=None, meta=None):
     fig_dict = {}
     include_figure = bool(DASH_ZOOM_STORE_INCLUDE_FIGURE or DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS)
@@ -5446,9 +5586,13 @@ def pack_fig_store(fig, rows=None, meta=None):
             fig_dict = fig.to_dict()
         except Exception:
             fig_dict = fig
+    trace_names = _zoom_trace_names_from_fig(fig_dict)
+    fig_dict = _compact_zoom_figure_dict(fig_dict)
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
     meta_out = dict(meta or {})
     meta_out["figure_included"] = bool(include_figure)
+    meta_out["figure_compacted"] = bool(include_figure and DASH_ZOOM_COMPACT_FIGURE)
+    meta_out["trace_names"] = trace_names
     meta_out["zoom_first"] = True
     if truncated:
         meta_out["rows_truncated"] = True
@@ -5785,11 +5929,16 @@ def _zoom_filter_eq(df: pd.DataFrame, col: str, value) -> pd.DataFrame:
     return df
 
 
-def _zoom_trace_name_from_point(fig: dict, pt: dict):
+def _zoom_trace_name_from_point(fig: dict, pt: dict, meta: dict | None = None):
     try:
         curve = pt.get("curveNumber", None)
         if curve is not None and isinstance(fig.get("data", []), list) and int(curve) < len(fig["data"]):
             name = fig["data"][int(curve)].get("name", None)
+            if name not in [None, ""]:
+                return str(name).strip()
+        trace_names = (meta or {}).get("trace_names", [])
+        if curve is not None and isinstance(trace_names, list) and int(curve) < len(trace_names):
+            name = trace_names[int(curve)]
             return str(name).strip() if name not in [None, ""] else None
     except Exception:
         return None
@@ -5808,7 +5957,7 @@ def _zoom_filter_rows_for_point(df: pd.DataFrame, meta: dict, fig: dict, pt: dic
     y = pt.get("y", None)
     label = pt.get("label", None)
     text = pt.get("text", None)
-    trace_name = _zoom_trace_name_from_point(fig or {}, pt)
+    trace_name = _zoom_trace_name_from_point(fig or {}, pt, meta)
     series_field = str(meta.get("series_field") or meta.get("series_key") or "").strip()
 
     day_label = _zoom_safe_day_label(x)
@@ -10707,6 +10856,8 @@ app.layout = dbc.Container(
         ),
 
         dcc.Store(id="zoom-target", data=None),
+        dcc.Store(id="zoom-open-request", data=None),
+        dcc.Store(id="zoom-selected-store", data=None),
         html.Div([dcc.Store(id={"type": "zoom-store", "target": t}, data=None) for t in ZOOM_TARGETS], style={"display": "none"}),
         dcc.Download(id="download-excel")
     ]
@@ -14203,6 +14354,77 @@ for _prefix in [p for p in DASH_PREFIXES if p not in HR_MENU_PREFIXES]:
 for _prefix in HR_MENU_PREFIXES:
     hr_callbacks(_prefix)
 
+app.clientside_callback(
+    """
+    function(_clicks, allStoreData) {
+        const noUpdate = dash_clientside.no_update;
+        const ctx = dash_clientside.callback_context || {};
+        const trig = ctx.triggered_id;
+        if (!trig || typeof trig !== "object" || trig.type !== "zoomable") {
+            return [noUpdate, noUpdate];
+        }
+        const target = trig.target;
+        const kind = trig.kind;
+        if (!target) {
+            return [noUpdate, noUpdate];
+        }
+        let nclick = 0;
+        try {
+            const tv = (ctx.triggered && ctx.triggered.length) ? ctx.triggered[0].value : null;
+            nclick = parseInt(tv || 0, 10);
+        } catch(e) { nclick = 0; }
+        if (!nclick || nclick <= 0) {
+            return [noUpdate, noUpdate];
+        }
+
+        const targetOrder = ZOOM_TARGETS_JS;
+        let selectedStore = null;
+
+        function flattenStates(items, out) {
+            out = out || [];
+            if (!items) { return out; }
+            if (Array.isArray(items)) {
+                items.forEach(function(x){ flattenStates(x, out); });
+                return out;
+            }
+            if (items && typeof items === "object") { out.push(items); }
+            return out;
+        }
+
+        try {
+            const statesFlat = flattenStates(ctx.states_list || []);
+            for (let i = 0; i < statesFlat.length; i++) {
+                const item = statesFlat[i] || {};
+                const id = item.id || {};
+                if (id && id.type === "zoom-store" && id.target === target) {
+                    selectedStore = item.value;
+                    break;
+                }
+            }
+        } catch(e) {}
+
+        if (!selectedStore && Array.isArray(allStoreData)) {
+            const idx = targetOrder.indexOf(target);
+            if (idx >= 0 && idx < allStoreData.length) {
+                selectedStore = allStoreData[idx];
+            }
+        }
+
+        if (!selectedStore) {
+            return [noUpdate, noUpdate];
+        }
+
+        return [{target: target, kind: kind, ts: Date.now(), n: nclick}, selectedStore];
+    }
+    """.replace("ZOOM_TARGETS_JS", json.dumps(ZOOM_TARGETS, ensure_ascii=False)),
+    Output("zoom-open-request", "data"),
+    Output("zoom-selected-store", "data"),
+    Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
+    State({"type":"zoom-store","target":ALL}, "data"),
+    prevent_initial_call=True,
+)
+
+
 @app.callback(
     Output("zoom-modal", "is_open"),
     Output("zoom-title", "children"),
@@ -14213,17 +14435,17 @@ for _prefix in HR_MENU_PREFIXES:
     Output("zoom-detail", "style"),
     Output("zoom-target", "data"),
 
-    Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
+    Input("zoom-open-request", "data"),
     Input("zoom-modal", "n_dismiss"),
     Input("zoom-graph", "clickData"),
 
     State("zoom-modal", "is_open"),
     State("zoom-target", "data"),
-    State({"type":"zoom-store","target":ALL}, "data"),
+    State("zoom-selected-store", "data"),
     State("theme", "data"),
     prevent_initial_call=True
 )
-def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_data, theme):
+def zoom_all(zoom_request, n_dismiss, clickData, is_open, zoom_target, selected_store, theme):
     trig = ctx.triggered_id
 
     if trig == "zoom-modal":
@@ -14236,9 +14458,14 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
         if not target:
             raise PreventUpdate
 
-        store = _get_store_for_target(target, _all_store_data) or {}
+        store = selected_store or {}
         if not store or store.get("kind") != "fig":
             raise PreventUpdate
+
+        detail_cache_key = _zoom_drill_cache_key(target, store, clickData, theme)
+        cached_detail = _zoom_drill_cache_get(detail_cache_key)
+        if cached_detail is not None:
+            return cached_detail
 
         meta = store.get("meta", {}) or {}
         rows = store.get("rows", []) or []
@@ -14246,7 +14473,8 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
 
         if not rows:
             detail = html.Div("Không có dữ liệu drill-down cho biểu đồ này.", style={"opacity":0.85})
-            return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+            result = (True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target)
+            return _zoom_drill_cache_set(detail_cache_key, result)
 
         pt = (clickData.get("points") or [{}])[0]
         df = pd.DataFrame(rows)
@@ -14255,29 +14483,29 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
 
         if df.empty:
             detail = html.Div("Không tìm thấy dòng dữ liệu phù hợp cho điểm bạn click.", style={"opacity":0.85})
-            return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+            result = (True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target)
+            return _zoom_drill_cache_set(detail_cache_key, result)
 
         metric_label = _zoom_metric_label(meta)
         detail = _zoom_detail_card(df, meta, theme, f"CHI TIẾT • {metric_label}", subtitle, dense=True)
-        return True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target
+        result = (True, no_update, no_update, no_update, no_update, detail, {"display":"block"}, zoom_target)
+        return _zoom_drill_cache_set(detail_cache_key, result)
 
-    if isinstance(trig, dict) and trig.get("type") == "zoomable":
-        nclick = None
-        try:
-            nclick = (ctx.triggered[0] or {}).get("value", None)
-        except Exception:
-            nclick = None
-        if not nclick or int(nclick) <= 0:
-            raise PreventUpdate
-
-        kind = trig.get("kind")
-        target = trig.get("target")
+    if trig == "zoom-open-request":
+        req = zoom_request or {}
+        kind = req.get("kind")
+        target = req.get("target")
         if not target:
             raise PreventUpdate
 
-        store = _get_store_for_target(target, _all_store_data) or {}
+        store = selected_store or {}
         if not store:
             raise PreventUpdate
+
+        open_cache_key = _zoom_open_cache_key(target, store, theme)
+        cached_open = _zoom_open_cache_get(open_cache_key)
+        if cached_open is not None:
+            return cached_open
 
         title = f"PHÓNG TO • {target}"
         detail_children = []
@@ -14292,24 +14520,6 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             if not df_zoom.empty and "pct" in df_zoom.columns and "pct_fmt" not in df_zoom.columns:
                 df_zoom["pct_fmt"] = pd.to_numeric(df_zoom["pct"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
 
-            preferred_cols = [
-                ("Khu vực", "khu_vuc"),
-                (store.get("title", "Giá trị"), "value_fmt"),
-                ("Trung bình", "avg_fmt"),
-                ("Tỷ trọng", "pct_fmt"),
-                ("Nhân sự", "so_luong_nhan_su_fmt"),
-                ("Vào làm", "so_vao_lam_fmt"),
-                ("Nghỉ việc", "so_nghi_viec_fmt"),
-                ("Đầu kỳ", "headcount_dau_ky_fmt"),
-                ("Giữ ổn định", "so_giu_on_dinh_fmt"),
-                ("Biến động thuần", "bien_dong_thuan_fmt"),
-                ("Dưới 1 năm", "so_duoi_1_nam_fmt"),
-                ("1 - 3 năm", "so_tu_1_den_3_nam_fmt"),
-                ("Trên 3 năm", "so_tren_3_nam_fmt"),
-                ("Tỷ lệ tăng", "ty_le_tang_fmt"),
-                ("Tỷ lệ giảm", "ty_le_giam_fmt"),
-                ("Tỷ lệ giữ chân", "ty_le_giu_chan_fmt"),
-            ]
             if not df_zoom.empty:
                 kpi_meta = {"metric_label": store.get("title", "Giá trị")}
                 df_zoom = _zoom_prepare_detail_df(df_zoom, kpi_meta)
@@ -14341,7 +14551,8 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
                 ], style={"width": "100%", "maxWidth": "100%", "overflowX": "hidden"}),
                 style=z_card_style
             )
-            return True, title, kpi_card, no_update, _zoom_graph_hidden_style(), [], {"display":"none"}, {"kind":"kpi","target":target}
+            result = (True, title, kpi_card, no_update, _zoom_graph_hidden_style(), [], {"display":"none"}, {"kind":"kpi","target":target})
+            return _zoom_open_cache_set(open_cache_key, result)
 
         fig_dict = store.get("figure", {}) or {}
         rows = store.get("rows", []) or []
@@ -14351,15 +14562,18 @@ def zoom_all(_clicks, n_dismiss, clickData, is_open, zoom_target, _all_store_dat
             # keep drill-down hidden until a real chart figure is available.
             fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy kiểm tra DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS=1 và redeploy Production.", theme).to_dict()
             fig_dict = enhance_zoom_figure(fig_dict)
-            return True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target}
+            result = (True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target})
+            return _zoom_open_cache_set(open_cache_key, result)
 
         fig_dict = enhance_zoom_figure(fig_dict)
 
         # First click on a chart only opens the enlarged chart. Drill-down table appears
         # only after the user clicks an actual point/bar/slice inside the zoomed chart.
-        return True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target}
+        result = (True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target})
+        return _zoom_open_cache_set(open_cache_key, result)
 
     raise PreventUpdate
+
 
 
 TABLE_DETAIL_IDS = ["home-table", "daily-table"] + [f"{p}-table" for p in DASH_PREFIXES]
