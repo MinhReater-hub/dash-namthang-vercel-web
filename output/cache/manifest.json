@@ -1,0 +1,475 @@
+{
+  "source": "output\\bao_cao_doanh_thu_tong_hop.xlsx",
+  "cache_dir": "output\\cache",
+  "formats": [
+    "parquet",
+    "pkl"
+  ],
+  "sheets": {
+    "DoanhThu_Thang_KhuVuc": {
+      "rows": 156,
+      "cols": 4,
+      "written": {
+        "DoanhThu_Thang_KhuVuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Thang_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.029
+    },
+    "Tong_DoanhThu_KhuVuc": {
+      "rows": 9,
+      "cols": 3,
+      "written": {
+        "Tong_DoanhThu_KhuVuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\Tong_DoanhThu_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.003
+    },
+    "DoanhThu_LoaiHinh": {
+      "rows": 5,
+      "cols": 3,
+      "written": {
+        "DoanhThu_LoaiHinh": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_LoaiHinh.pkl"
+        }
+      },
+      "elapsed_s": 0.003
+    },
+    "DoanhThu_LH_KhuVuc": {
+      "rows": 26,
+      "cols": 4,
+      "written": {
+        "DoanhThu_LH_KhuVuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_LH_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.007
+    },
+    "DoanhThu_LH_Thang": {
+      "rows": 75,
+      "cols": 4,
+      "written": {
+        "DoanhThu_LH_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_LH_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "DoanhThu_LH_KV_Thang": {
+      "rows": 318,
+      "cols": 5,
+      "written": {
+        "DoanhThu_LH_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_LH_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.021
+    },
+    "DoanhThu_Ngay_Checker": {
+      "rows": 236,
+      "cols": 19,
+      "written": {
+        "DoanhThu_Ngay_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.04
+    },
+    "DoanhThu_Ngay_LH_Checker": {
+      "rows": 575,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_LH_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_LH_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.152
+    },
+    "DoanhThu_Ngay_HinhThuc": {
+      "rows": 372,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_HinhThuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_HinhThuc.pkl"
+        }
+      },
+      "elapsed_s": 0.067
+    },
+    "DoanhThu_Ngay_Luong": {
+      "rows": 352,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_Luong": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Luong.pkl"
+        }
+      },
+      "elapsed_s": 0.065
+    },
+    "DoanhThu_Ngay_SoCho": {
+      "rows": 495,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_SoCho": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_SoCho.pkl"
+        }
+      },
+      "elapsed_s": 0.095
+    },
+    "DoanhThu_Ngay_TaiXe": {
+      "rows": 29138,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_TaiXe": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe.pkl"
+        }
+      },
+      "elapsed_s": 4.809
+    },
+    "DoanhThu_Ngay_TaiXe_LH": {
+      "rows": 29138,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_LH": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_LH.pkl"
+        }
+      },
+      "elapsed_s": 4.858
+    },
+    "DoanhThu_Ngay_TaiXe_HinhThuc": {
+      "rows": 29138,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_HinhThuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_HinhThuc.pkl"
+        }
+      },
+      "elapsed_s": 5.179
+    },
+    "DoanhThu_Ngay_TaiXe_Luong": {
+      "rows": 29138,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_Luong": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_Luong.pkl"
+        }
+      },
+      "elapsed_s": 4.863
+    },
+    "DoanhThu_Ngay_TaiXe_SoCho": {
+      "rows": 29138,
+      "cols": 22,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_SoCho": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_SoCho.pkl"
+        }
+      },
+      "elapsed_s": 5.15
+    },
+    "DoanhThu_Ngay_Raw_Checker": {
+      "rows": 0,
+      "cols": 16,
+      "written": {
+        "DoanhThu_Ngay_Raw_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Raw_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "HopDong_Tong": {
+      "rows": 3,
+      "cols": 2,
+      "written": {
+        "HopDong_Tong": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\HopDong_Tong.pkl"
+        }
+      },
+      "elapsed_s": 0.004
+    },
+    "HopDong_KhuVuc": {
+      "rows": 28,
+      "cols": 3,
+      "written": {
+        "HopDong_KhuVuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\HopDong_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "HopDong_Thang": {
+      "rows": 79,
+      "cols": 3,
+      "written": {
+        "HopDong_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\HopDong_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.01
+    },
+    "HopDong_KV_Thang": {
+      "rows": 400,
+      "cols": 4,
+      "written": {
+        "HopDong_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\HopDong_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.02
+    },
+    "NhanSu_NhanVien_KV_Thang": {
+      "rows": 1413,
+      "cols": 20,
+      "written": {
+        "NhanSu_NhanVien_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\NhanSu_NhanVien_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.191
+    },
+    "NhanSu_TaiXe_KV_Thang": {
+      "rows": 322,
+      "cols": 20,
+      "written": {
+        "NhanSu_TaiXe_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\NhanSu_TaiXe_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.045
+    },
+    "KinhDoanh_DiemTiepThi_KV_Thang": {
+      "rows": 109,
+      "cols": 18,
+      "written": {
+        "KinhDoanh_DiemTiepThi_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\KinhDoanh_DiemTiepThi_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.02
+    },
+    "DiemTiepThi_KV_Thang": {
+      "rows": 109,
+      "cols": 18,
+      "written": {
+        "DiemTiepThi_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\DiemTiepThi_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.022
+    },
+    "PhuongTien_XeTrucThuoc_KV_Thang": {
+      "rows": 48,
+      "cols": 12,
+      "written": {
+        "PhuongTien_XeTrucThuoc_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\PhuongTien_XeTrucThuoc_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.008
+    },
+    "XeTrucThuoc_KV_Thang": {
+      "rows": 48,
+      "cols": 12,
+      "written": {
+        "XeTrucThuoc_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\XeTrucThuoc_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.011
+    },
+    "PhuongTien_XePhanQuyen_KV_Thang": {
+      "rows": 37,
+      "cols": 12,
+      "written": {
+        "PhuongTien_XePhanQuyen_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.008
+    },
+    "XePhanQuyen_KV_Thang": {
+      "rows": 37,
+      "cols": 12,
+      "written": {
+        "XePhanQuyen_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\XePhanQuyen_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "KinhDoanh_BienBan_KV_Thang": {
+      "rows": 158,
+      "cols": 11,
+      "written": {
+        "KinhDoanh_BienBan_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\KinhDoanh_BienBan_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.022
+    },
+    "BienBan_KV_Thang": {
+      "rows": 158,
+      "cols": 11,
+      "written": {
+        "BienBan_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\BienBan_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.021
+    },
+    "TOP10_An Giang": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_An Giang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_An Giang.pkl"
+        },
+        "TOP10_An_Giang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_An_Giang.pkl"
+        }
+      },
+      "elapsed_s": 0.008
+    },
+    "TOP10_Bạc Liêu": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_Bạc Liêu": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Bạc Liêu.pkl"
+        },
+        "TOP10_B_c_Li_u": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_B_c_Li_u.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "TOP10_CT": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_CT": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_CT.pkl"
+        }
+      },
+      "elapsed_s": 0.004
+    },
+    "TOP10_Cà Mau": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_Cà Mau": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Cà Mau.pkl"
+        },
+        "TOP10_C_Mau": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_C_Mau.pkl"
+        }
+      },
+      "elapsed_s": 0.008
+    },
+    "TOP10_HG": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_HG": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_HG.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+    },
+    "TOP10_Phú Quốc": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_Phú Quốc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Phú Quốc.pkl"
+        },
+        "TOP10_Ph_Qu_c": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Ph_Qu_c.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    },
+    "TOP10_Rạch Giá": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_Rạch Giá": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Rạch Giá.pkl"
+        },
+        "TOP10_R_ch_Gi": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_R_ch_Gi.pkl"
+        }
+      },
+      "elapsed_s": 0.007
+    },
+    "TOP10_ST": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_ST": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_ST.pkl"
+        }
+      },
+      "elapsed_s": 0.004
+    },
+    "TOP10_Vĩnh Long": {
+      "rows": 10,
+      "cols": 4,
+      "written": {
+        "TOP10_Vĩnh Long": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_Vĩnh Long.pkl"
+        },
+        "TOP10_V_nh_Long": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+          "pkl": "output\\cache\\TOP10_V_nh_Long.pkl"
+        }
+      },
+      "elapsed_s": 0.006
+    }
+  },
+  "elapsed_s": 26.068
+}
