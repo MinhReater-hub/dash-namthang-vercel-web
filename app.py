@@ -141,15 +141,12 @@ DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "daily" if DASH
 DASH_ZOOM_COMPACT_FIGURE = str(os.getenv("DASH_ZOOM_COMPACT_FIGURE", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_OPEN_CACHE_MAX = int(os.getenv("DASH_ZOOM_OPEN_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DASH_ZOOM_DRILL_CACHE_MAX = int(os.getenv("DASH_ZOOM_DRILL_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
-<<<<<<< HEAD
-=======
 DASH_DAILY_LOAD_SEAT_DATA = str(os.getenv("DASH_DAILY_LOAD_SEAT_DATA", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Daily menu speed mode: avoid duplicated Plotly figure payloads in hidden zoom stores.
 # The browser already has the visible graph figure, so zoom retrieves it lazily on click.
 DASH_DAILY_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_DAILY_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Driver-specific breakdown sheets are heavy and only needed after a driver filter is selected.
 DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
->>>>>>> d4ecea7 (Update dashboard app and data)
 
 
 def _graph_config(extra: dict | None = None) -> dict:
@@ -2855,10 +2852,7 @@ def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None
         DAILY_LATEST_OUTPUT_CACHE.clear()
         DAILY_TABLE_FRAME_CACHE.clear()
         DAILY_DATE_BOUNDS_CACHE.clear()
-<<<<<<< HEAD
-=======
         DAILY_FLEET_AVAILABLE_CACHE.clear()
->>>>>>> d4ecea7 (Update dashboard app and data)
     except Exception:
         pass
     try:
@@ -8076,8 +8070,6 @@ DAILY_LATEST_OUTPUT_CACHE_MAX = int(os.getenv("DASH_DAILY_OUTPUT_CACHE_MAX", "96
 DAILY_TABLE_FRAME_CACHE = {}
 DAILY_TABLE_FRAME_CACHE_MAX = int(os.getenv("DASH_DAILY_TABLE_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DAILY_DATE_BOUNDS_CACHE = {"key": None, "value": None}
-<<<<<<< HEAD
-=======
 DAILY_FLEET_AVAILABLE_CACHE = {}
 DAILY_FLEET_AVAILABLE_CACHE_MAX = int(os.getenv("DASH_DAILY_FLEET_AVAILABLE_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DAILY_DRIVER_OPTIONS_CACHE = {"key": None, "value": None}
@@ -8093,7 +8085,6 @@ DAILY_VEHICLE_KPI_PAYLOAD_CACHE_MAX = int(os.getenv("DASH_DAILY_VEHICLE_KPI_PAYL
 DASH_DAILY_RESPONSIVE_CACHE = str(os.getenv("DASH_DAILY_RESPONSIVE_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DAILY_AGG_VIEW_CACHE = {}
 DAILY_AGG_VIEW_CACHE_MAX = int(os.getenv("DASH_DAILY_AGG_VIEW_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
->>>>>>> d4ecea7 (Update dashboard app and data)
 
 
 def _normalize_multi_value(values) -> list[str]:
@@ -8111,21 +8102,14 @@ def _daily_filter_cache_scope_key():
         return "__na__"
 
 
-<<<<<<< HEAD
-def _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd):
-=======
 def _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_types, seat_filter, theme, source_dt, source_lh, source_hd):
->>>>>>> d4ecea7 (Update dashboard app and data)
     return (
         str(start_date or ""),
         str(end_date or ""),
         tuple(sorted(_normalize_multi_value(regions))),
         tuple(sorted(_normalize_multi_value(drivers))),
-<<<<<<< HEAD
-=======
         tuple(sorted(_normalize_multi_value(vehicle_types))),
         tuple(sorted(_normalize_multi_value(seat_filter))),
->>>>>>> d4ecea7 (Update dashboard app and data)
         str(theme or "light"),
         _daily_filter_cache_scope_key(),
         _df_cache_signature(source_dt),
@@ -9456,11 +9440,7 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         0,
     )
     out["km_co_khach_ratio_fmt"] = pd.to_numeric(out["km_co_khach_ratio"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
-<<<<<<< HEAD
-    result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
-=======
     result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
->>>>>>> d4ecea7 (Update dashboard app and data)
     if cache_key is not None:
         if len(DAILY_TABLE_FRAME_CACHE) > DAILY_TABLE_FRAME_CACHE_MAX:
             DAILY_TABLE_FRAME_CACHE.clear()
@@ -13358,10 +13338,7 @@ def update_home(year_val, months, regions, theme):
     Input("daily-date-range", "end_date", allow_optional=True),
     Input("daily-region", "value", allow_optional=True),
     Input("daily-driver", "value", allow_optional=True),
-<<<<<<< HEAD
-=======
     Input("daily-vehicle-type", "value", allow_optional=True),
->>>>>>> d4ecea7 (Update dashboard app and data)
     State("theme", "data"),
 )
 @timed_callback("daily_latest")
@@ -13373,11 +13350,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, t
     vehicle_types = _normalize_multi_value(vehicle_types)
     daily_source_label = _daily_source_label()
     source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers)
-<<<<<<< HEAD
-    daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd)
-=======
     daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_types, None, theme, source_dt, source_lh, source_hd)
->>>>>>> d4ecea7 (Update dashboard app and data)
     cached_daily_output = _daily_output_cache_get(daily_cache_key)
     if cached_daily_output is not None:
         return cached_daily_output
@@ -13476,11 +13449,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, t
 
     if dff_dt.empty:
         fig_empty = empty_figure("Không có dữ liệu theo ngày", theme)
-<<<<<<< HEAD
-        empty_store = pack_fig_store(fig_empty, rows=[], meta={"chart": "daily_empty", "metric_label": "Dữ liệu theo ngày"})
-=======
         empty_store = pack_daily_fig_store(fig_empty, rows=[], meta={"chart": "daily_empty", "metric_label": "Dữ liệu theo ngày"})
->>>>>>> d4ecea7 (Update dashboard app and data)
         result = (
             summary_children, daily_kpi1, daily_kpi2, daily_kpi3, daily_kpi4,
             fig_empty, fig_empty, fig_empty, fig_empty, fig_empty,
@@ -15520,11 +15489,7 @@ for _prefix in HR_MENU_PREFIXES:
 
 app.clientside_callback(
     """
-<<<<<<< HEAD
-    function(_clicks, allStoreData) {
-=======
     function(_clicks, allStoreData, dailyMainFigure, dailyRegionDonutFigure, dailyRegionBarFigure, dailyLhDonutFigure, dailyHdBarFigure) {
->>>>>>> d4ecea7 (Update dashboard app and data)
         const noUpdate = dash_clientside.no_update;
         const ctx = dash_clientside.callback_context || {};
         const trig = ctx.triggered_id;
@@ -15582,8 +15547,6 @@ app.clientside_callback(
             return [noUpdate, noUpdate];
         }
 
-<<<<<<< HEAD
-=======
         // Daily charts keep their figure out of hidden dcc.Store for fast page load.
         // When zoom is opened, reuse the visible dcc.Graph figure that is already in the browser.
         try {
@@ -15607,7 +15570,6 @@ app.clientside_callback(
             }
         } catch(e) {}
 
->>>>>>> d4ecea7 (Update dashboard app and data)
         return [{target: target, kind: kind, ts: Date.now(), n: nclick}, selectedStore];
     }
     """.replace("ZOOM_TARGETS_JS", json.dumps(ZOOM_TARGETS, ensure_ascii=False)),
@@ -15615,14 +15577,11 @@ app.clientside_callback(
     Output("zoom-selected-store", "data"),
     Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
     State({"type":"zoom-store","target":ALL}, "data"),
-<<<<<<< HEAD
-=======
     State("daily-main", "figure", allow_optional=True),
     State("daily-region-donut", "figure", allow_optional=True),
     State("daily-region-bar", "figure", allow_optional=True),
     State("daily-lh-donut", "figure", allow_optional=True),
     State("daily-hd-bar", "figure", allow_optional=True),
->>>>>>> d4ecea7 (Update dashboard app and data)
     prevent_initial_call=True,
 )
 
