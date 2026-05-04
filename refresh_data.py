@@ -35,6 +35,19 @@ DAILY_CHECKER_EXPORT_RAW = str(os.getenv("DAILY_CHECKER_EXPORT_RAW", "0")).strip
 DAILY_CHECKER_SQL_TABLE_HINT = os.getenv("DAILY_CHECKER_SQL_TABLE_HINT", "").strip()
 DAILY_CHECKER_TABLE_EXPR = "dbo.doanhthungaychecker" + (f" WITH ({DAILY_CHECKER_SQL_TABLE_HINT})" if DAILY_CHECKER_SQL_TABLE_HINT else "")
 
+# Daily fleet availability source. dbo.danhSachLenCa is used to compute
+# "Xe đang có-ngày" from real daily rows. Business rule:
+# - count both "Lên ca" and "Xuống ca" rows
+# - keep electric taxi business rows (Taxi điện / Khoán điện / Điện ăn chia), exclude Xe công vụ
+# - if hinhthuc_kinhdoanh is blank and trangthai_len_xuong_ca is Xuống ca,
+#   still count the vehicle because these rows represent available / parked / no-revenue vehicles
+# - exclude VF3 service vehicles in the transform
+LENCA_EXPORT_DAILY_FLEET = str(os.getenv("LENCA_EXPORT_DAILY_FLEET", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+LENCA_SQL_TABLE = os.getenv("LENCA_SQL_TABLE", "dbo.danhSachLenCa").strip() or "dbo.danhSachLenCa"
+LENCA_SQL_TABLE_HINT = os.getenv("LENCA_SQL_TABLE_HINT", "").strip()
+LENCA_DATE_COLUMN = os.getenv("LENCA_DATE_COLUMN", "").strip()
+LENCA_TABLE_EXPR = LENCA_SQL_TABLE + (f" WITH ({LENCA_SQL_TABLE_HINT})" if LENCA_SQL_TABLE_HINT else "")
+
 
 missing_env = [name for name, value in {
     "SQL_SERVER": SERVER,
@@ -200,6 +213,29 @@ except Exception as e:
     print(f"[FLEET LOAD] khong doc duoc dbo.thongtinphuongtien: {e}")
     df_vehicle = pd.DataFrame()
 
+if LENCA_EXPORT_DAILY_FLEET:
+    try:
+        _lenca_base_sql = f"SELECT * FROM {LENCA_TABLE_EXPR}"
+        _lenca_sql = _lenca_base_sql
+        _lenca_params = None
+        # Optional pushdown when the exact date column is known. If not set, read
+        # the table and filter in pandas because dbo.danhSachLenCa schemas vary.
+        if SQL_ENABLE_DATE_PUSHDOWN and LENCA_DATE_COLUMN:
+            safe_date_col = LENCA_DATE_COLUMN.replace("]", "")
+            _lenca_sql = _lenca_base_sql + f" WHERE [{safe_date_col}] >= ? AND [{safe_date_col}] < DATEADD(day, 1, ?)"
+            _lenca_params = [start_param, end_param]
+        df_lenca = _read_sql_fast(
+            "danhSachLenCa",
+            _lenca_sql,
+            params=_lenca_params,
+            fallback_sql=_lenca_base_sql,
+        )
+    except Exception as e:
+        print(f"[LENCA LOAD] khong doc duoc {LENCA_SQL_TABLE}: {e}")
+        df_lenca = pd.DataFrame()
+else:
+    df_lenca = pd.DataFrame()
+
 _daily_checker_sql = f"""
         SELECT
             id,
@@ -277,6 +313,24 @@ def _norm_key(value):
     s = re.sub(r"[^a-z0-9]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+def _compact_norm_key(value):
+    return re.sub(r"[^a-z0-9]+", "", _norm_key(value))
+
+
+def _is_phu_quoc_value(value) -> bool:
+    key = _compact_norm_key(value)
+    return key in {"phuquoc", "pq"}
+
+
+def _is_phu_quoc_series(series_like) -> pd.Series:
+    return pd.Series(series_like).map(_is_phu_quoc_value).fillna(False).astype(bool)
+
+
+def _is_khoan_dien_series(series_like) -> pd.Series:
+    s = pd.Series(series_like).apply(_norm_text)
+    return s.str.contains("khoan dien", regex=False, na=False) | s.str.contains("khoang dien", regex=False, na=False)
 
 
 def _find_first_existing_col(df_source, candidates):
@@ -572,6 +626,225 @@ def _prepare_vehicle_monthly_summary(df_vehicle_raw: pd.DataFrame):
 
 
 
+def _classify_lenca_vehicle_prefix(series_like) -> pd.Series:
+    """Classify dbo.danhSachLenCa rows into dashboard fleet prefixes."""
+    s = pd.Series(series_like).fillna("").astype(str).apply(_norm_text)
+    out = pd.Series("", index=s.index, dtype=object)
+    xdt_mask = s.str.contains("xe cong ty|truc thuoc|xdt|xe dt|xe dien|cong ty|so huu", regex=True, na=False)
+    xpq_mask = s.str.contains("thuong quyen|tra gop|hop tac|phan quyen|xpq|xe pq|nhuong quyen|doi tac|xe xang", regex=True, na=False)
+    out.loc[xdt_mask] = "xdt"
+    out.loc[xpq_mask] = "xpq"
+    return out
+
+
+def _lenca_vf3_mask(df_source: pd.DataFrame) -> pd.Series:
+    """Detect VF3 service vehicles across likely text columns."""
+    if df_source is None or df_source.empty:
+        return pd.Series(dtype=bool)
+    preferred = [
+        "dong_xe", "dong xe", "model", "ten_dong_xe", "ten dong xe", "loai_xe", "loai xe",
+        "nhan_hieu", "nhan hieu", "hang_xe", "hang xe", "ghi_chu", "ghi chu",
+        "muc_dich_su_dung", "muc dich su dung",
+    ]
+    cols = []
+    for cand in preferred:
+        col = _find_first_existing_col(df_source, [cand])
+        if col and col in df_source.columns and col not in cols:
+            cols.append(col)
+    if not cols:
+        for col in df_source.columns:
+            try:
+                if pd.api.types.is_object_dtype(df_source[col]) or pd.api.types.is_string_dtype(df_source[col]):
+                    cols.append(col)
+            except Exception:
+                continue
+    if not cols:
+        return pd.Series(False, index=df_source.index)
+    joined = df_source[cols].fillna("").astype(str).agg(" ".join, axis=1).apply(_norm_key)
+    compact = joined.str.replace(" ", "", regex=False)
+    return compact.str.contains("vf3", na=False)
+
+
+def _prepare_lenca_daily_fleet_snapshot(df_lenca_raw: pd.DataFrame):
+    """Build daily available fleet snapshots from dbo.danhSachLenCa.
+
+    Output is split into XDT/XPQ daily sheets so the Dash app can sum the two
+    prefixes without double-counting. It includes parked/inactive/no-revenue
+    vehicles if they are present in dbo.danhSachLenCa, excludes VF3, and never
+    multiplies a monthly/latest snapshot by the number of days.
+    """
+    expected_cols = [
+        "ngay_du_lieu", "khu_vuc", "bien_kiem_soat", "so_tai", "loai_hinh",
+        "so_cho", "dong_xe", "trang_thai", "hinhthuc_kinhdoanh", "fleet_prefix", "so_luong_xe"
+    ]
+    empty = pd.DataFrame(columns=expected_cols)
+    if df_lenca_raw is None or df_lenca_raw.empty:
+        return empty.copy(), empty.copy()
+
+    raw = df_lenca_raw.copy()
+    date_col = _find_first_existing_col(raw, [
+        "ngay_du_lieu", "ngay du lieu", "ngay", "date", "report_date", "ngay_bao_cao", "ngay bao cao",
+        "ngay_len_ca", "ngay len ca", "ngay_lenca", "ngay lenca", "ngay_lam_viec", "ngay lam viec",
+        "ngay_ca", "ngay ca", "ngay_ghi_nhan", "ngay ghi nhan", "ngay_cap_nhat", "ngay cap nhat",
+        "createdat", "created_at", "updatedat", "updated_at", "thoi_gian_tao", "thoi gian tao",
+        "thoigian_tao", "time", "timestamp",
+    ])
+    if date_col is None:
+        print("[LENCA PIPELINE] khong tim thay cot ngay trong dbo.danhSachLenCa, bo qua XeDangCo_*_KV_Ngay")
+        return empty.copy(), empty.copy()
+
+    region_col = _find_first_existing_col(raw, [
+        "khu_vuc", "khu vuc", "region", "area", "chi_nhanh", "chi nhanh", "don_vi", "don vi",
+        "dia_ban", "dia ban", "tram", "tuyen",
+    ])
+    plate_col = _find_first_existing_col(raw, [
+        "bien_kiem_soat", "bien kiem soat", "bien_so", "bien so", "bks", "license_plate", "plate",
+    ])
+    id_col = _find_first_existing_col(raw, ["id", "ma", "record_id", "vehicle_id", "ma_xe", "ma xe"])
+    sotai_col = _find_first_existing_col(raw, ["so_tai", "so tai", "ma_tai", "ma tai", "vehicle_no", "taxi_no", "fleet_code"])
+    type_col = _find_first_existing_col(raw, [
+        "loaihinh_hoptac", "loai hinh hop tac", "loai_hinh_hop_tac", "loai_hinh", "loai hinh",
+        "loai_xe", "loai xe", "nhom_xe", "nhom xe", "hinh_thuc_so_huu", "hinh thuc so huu",
+        "hinh_thuc_quan_ly", "hinh thuc quan ly", "nguon_xe", "nguon xe",
+    ])
+    hinhthuc_col = _find_first_existing_col(raw, [
+        "hinhthuc_kinhdoanh", "hinh thuc kinh doanh", "hinh_thuc_kinh_doanh",
+        "hinh thuc kd", "hinh_thuc_kd", "kinh_doanh", "loai_kinh_doanh",
+    ])
+    seat_col = _find_first_existing_col(raw, ["so_cho", "so cho", "seat", "seats", "cho_ngoi", "cho ngoi", "suc_chua", "suc chua"])
+    model_col = _find_first_existing_col(raw, [
+        "dong_xe", "dong xe", "model", "ten_dong_xe", "ten dong xe", "loai_xe", "loai xe", "nhan_hieu", "nhan hieu", "hang_xe", "hang xe",
+    ])
+    status_col = _find_first_existing_col(raw, [
+        "trangthai_len_xuong_ca", "trang thai len xuong ca", "trang_thai_len_xuong_ca",
+        "trang_thai_lenca", "trang thai lenca", "trang_thai_len_ca", "trang thai len ca",
+        "trang_thai", "trang thai", "tinh_trang", "tinh trang", "trang_thai_xe", "trang thai xe",
+        "ghi_chu", "ghi chu",
+    ])
+    count_col = _find_first_existing_col(raw, ["so_luong_xe", "so luong xe", "so_xe", "so xe", "tong_so_xe", "tong so xe", "so_luong", "so luong", "quantity", "count"])
+    sotai_text_col = _find_first_existing_col(raw, [
+        "sotai_hoten_msnv", "so tai ho ten msnv", "so_tai_hoten_msnv",
+        "sotai hoten", "so_tai_hoten", "ma_tai_hoten",
+    ])
+
+    work = pd.DataFrame(index=raw.index)
+    work["ngay_du_lieu"] = pd.to_datetime(raw[date_col], errors="coerce").dt.normalize()
+    work["khu_vuc"] = raw[region_col] if region_col else "Tổng hợp"
+    work["bien_kiem_soat"] = raw[plate_col] if plate_col else pd.Series(index=raw.index, dtype=object)
+    work["so_tai"] = raw[sotai_col] if sotai_col else pd.Series(index=raw.index, dtype=object)
+    work["loai_hinh"] = raw[type_col] if type_col else ""
+    work["hinhthuc_kinhdoanh"] = raw[hinhthuc_col] if hinhthuc_col else ""
+    work["so_cho"] = raw[seat_col] if seat_col else pd.Series(index=raw.index, dtype=object)
+    work["dong_xe"] = raw[model_col] if model_col else pd.Series(index=raw.index, dtype=object)
+    work["trang_thai"] = raw[status_col] if status_col else ""
+    work["so_luong_xe"] = pd.to_numeric(raw[count_col], errors="coerce").fillna(0) if count_col else 1
+
+    # Build the strongest possible vehicle key. The app counts distinct
+    # bien_kiem_soat when that column exists, so fill it from so_tai /
+    # sotai_hoten_msnv when BKS is blank instead of leaving it empty.
+    if sotai_text_col and sotai_text_col in raw.columns:
+        sotai_from_text = raw[sotai_text_col].fillna("").astype(str).str.extract(r"([A-Za-z]{1,4}\d{2,6})")[0]
+        work["so_tai"] = work["so_tai"].where(work["so_tai"].fillna("").astype(str).str.strip().ne(""), sotai_from_text)
+    work["bien_kiem_soat"] = work["bien_kiem_soat"].where(work["bien_kiem_soat"].fillna("").astype(str).str.strip().ne(""), work["so_tai"])
+    if id_col and id_col in raw.columns:
+        work["bien_kiem_soat"] = work["bien_kiem_soat"].where(work["bien_kiem_soat"].fillna("").astype(str).str.strip().ne(""), raw[id_col])
+    work["bien_kiem_soat"] = work["bien_kiem_soat"].where(work["bien_kiem_soat"].fillna("").astype(str).str.strip().ne(""), raw.index.astype(str))
+
+    work = work[work["ngay_du_lieu"].notna()].copy()
+    if pd.notna(START_DATE):
+        work = work[work["ngay_du_lieu"] >= START_DATE.normalize()]
+    if pd.notna(END_DATE):
+        work = work[work["ngay_du_lieu"] <= END_DATE.normalize()]
+    if work.empty:
+        return empty.copy(), empty.copy()
+
+    for col in ["khu_vuc", "bien_kiem_soat", "so_tai", "loai_hinh", "so_cho", "dong_xe", "trang_thai", "hinhthuc_kinhdoanh"]:
+        work[col] = work[col].fillna("").astype(str).str.strip()
+    work.loc[work["khu_vuc"].eq(""), "khu_vuc"] = "Tổng hợp"
+    # Normalize common branch aliases before export so Dash merges revenue and fleet rows correctly.
+    _region_alias = {
+        "phuquoc": "Phú Quốc", "phu quoc": "Phú Quốc", "pq": "Phú Quốc",
+        "rachgia": "Rạch Giá", "rach gia": "Rạch Giá", "rg": "Rạch Giá",
+        "baclieu": "Bạc Liêu", "bac lieu": "Bạc Liêu", "bl": "Bạc Liêu",
+        "camau": "Cà Mau", "ca mau": "Cà Mau", "cm": "Cà Mau",
+        "vinhlong": "Vĩnh Long", "vinh long": "Vĩnh Long", "vl": "Vĩnh Long",
+        "angiang": "An Giang", "an giang": "An Giang", "ag": "An Giang",
+        "cantho": "Cần Thơ", "can tho": "Cần Thơ", "ct": "Cần Thơ",
+        "haugiang": "Hậu Giang", "hau giang": "Hậu Giang", "hg": "Hậu Giang",
+        "soctrang": "Sóc Trăng", "soc trang": "Sóc Trăng", "st": "Sóc Trăng",
+    }
+    work["khu_vuc"] = work["khu_vuc"].apply(lambda x: _region_alias.get(_norm_key(x).replace(" ", ""), _region_alias.get(_norm_key(x), x)))
+
+    # Business rule from operations:
+    # - count both len ca and xuong ca records
+    # - never keep Xe cong vu
+    # - outside Phu Quoc, exclude Khoan dien from both xe dang co and xe kinh doanh denominators
+    # - Phu Quoc is the exception: Khoan dien / Dien an chia are still valid electric taxi operations
+    # - if hinhthuc_kinhdoanh is blank AND the row is Xuong ca, keep it too
+    #   because these rows represent xe dang co / nam bai / no-revenue vehicles.
+    ht_norm = work["hinhthuc_kinhdoanh"].apply(_norm_text)
+    status_norm = work["trang_thai"].apply(_norm_text)
+    is_len_ca = status_norm.str.contains("len ca", regex=False, na=False)
+    is_xuong_ca = status_norm.str.contains("xuong ca", regex=False, na=False)
+    is_cong_vu = ht_norm.str.contains("cong vu", regex=False, na=False)
+    # In danhSachLenCa, blank hinhthuc_kinhdoanh may arrive as empty string
+    # or as Excel time-like placeholders such as 00:00:00 / 05:00:00.
+    is_blank_ht = ht_norm.eq("") | ht_norm.str.fullmatch(r"\d{1,2}[:\s]\d{2}([:\s]\d{2})?", na=False)
+    is_phu_quoc = _is_phu_quoc_series(work["khu_vuc"])
+    is_khoan_dien = _is_khoan_dien_series(work["hinhthuc_kinhdoanh"])
+    is_taxi_dien = ht_norm.str.contains("taxi dien", regex=False, na=False)
+    is_dien_an_chia = ht_norm.str.contains("dien an chia", regex=False, na=False)
+    keep_electric_business = is_taxi_dien | is_dien_an_chia | (is_khoan_dien & is_phu_quoc)
+    keep_business = (is_len_ca | is_xuong_ca) & (~is_cong_vu) & (keep_electric_business | (is_blank_ht & is_xuong_ca))
+    work = work.loc[keep_business].copy()
+    if work.empty:
+        print("[LENCA PIPELINE] khong co row xe dien / Xuong ca hop le sau khi loai Xe cong vu")
+        return empty.copy(), empty.copy()
+
+    # When loaihinh_hoptac is blank on kept Xuong ca rows, treat it as Xe Cong ty
+    # so parked/down vehicles are still counted in the available fleet denominator.
+    blank_type = work["loai_hinh"].apply(_norm_text).eq("")
+    xuong_type = work["trang_thai"].apply(_norm_text).str.contains("xuong ca", regex=False, na=False)
+    work.loc[blank_type & xuong_type, "loai_hinh"] = "Xe Công ty"
+
+    # Exclude VF3 service vehicles before snapshot aggregation.
+    vf3_mask = _lenca_vf3_mask(raw.loc[work.index])
+    if len(vf3_mask) == len(work):
+        work = work.loc[~vf3_mask.values].copy()
+    if work.empty:
+        return empty.copy(), empty.copy()
+
+    # Classify by real vehicle type/source. Rows that cannot be classified are not
+    # forced into a bucket, because that would distort XDT/XPQ denominators.
+    classify_text = (
+        work["loai_hinh"].fillna("").astype(str) + " " +
+        work["dong_xe"].fillna("").astype(str) + " " +
+        work["trang_thai"].fillna("").astype(str)
+    )
+    work["fleet_prefix"] = _classify_lenca_vehicle_prefix(classify_text)
+    work = work[work["fleet_prefix"].isin(["xdt", "xpq"])].copy()
+    if work.empty:
+        print("[LENCA PIPELINE] co du lieu danhSachLenCa nhung khong phan loai duoc XDT/XPQ, bo qua")
+        return empty.copy(), empty.copy()
+
+    # If plate is available, one vehicle can appear multiple times per day/shift;
+    # keep one row per vehicle-day-region-prefix. If there is only a count column,
+    # aggregate counts by day/region/prefix.
+    if work["bien_kiem_soat"].astype(str).str.strip().ne("").any():
+        work = work[work["bien_kiem_soat"].astype(str).str.strip().ne("")].copy()
+        work = work.drop_duplicates(subset=["ngay_du_lieu", "khu_vuc", "bien_kiem_soat", "fleet_prefix"], keep="last")
+        work["so_luong_xe"] = 1
+    else:
+        work["so_luong_xe"] = pd.to_numeric(work["so_luong_xe"], errors="coerce").fillna(0)
+        work = work[work["so_luong_xe"] > 0].copy()
+
+    work = work[expected_cols].sort_values(["ngay_du_lieu", "khu_vuc", "fleet_prefix", "bien_kiem_soat"]).reset_index(drop=True)
+    return (
+        work[work["fleet_prefix"].eq("xdt")].reset_index(drop=True),
+        work[work["fleet_prefix"].eq("xpq")].reset_index(drop=True),
+    )
+
+
 def _first_series_or_default(df_source: pd.DataFrame, col_name, default_value=None):
     if col_name and col_name in df_source.columns:
         return df_source[col_name]
@@ -616,7 +889,7 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     empty_raw = pd.DataFrame(columns=[
         "id", "ngay_du_lieu", "thang_nam", "bks", "so_tai", "ho_ten", "doanh_thu", "so_cuoc",
         "sokm_vandoanh", "sokm_cokhach", "loaihinh_hoptac", "hinhthuc_kinhdoanh", "loai_luong",
-        "so_cho", "so_cho_num", "khu_vuc",
+        "so_cho", "so_cho_num", "khu_vuc", "bks_xe_kinh_doanh",
     ])
 
     empty_tuple = (
@@ -688,6 +961,18 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
         if col in work.columns:
             work[col] = work[col].fillna("").astype(str).str.strip()
 
+    # Daily revenue business rule:
+    # Outside Phu Quoc, Khoan dien must be removed from every Daily metric
+    # (revenue, trips, KM, active vehicles, averages, charts and detail tables).
+    # Phu Quoc is the only exception where Khoan dien remains valid.
+    is_pq_daily = _is_phu_quoc_series(work["khu_vuc"])
+    is_khoan_daily = _is_khoan_dien_series(work["hinhthuc_kinhdoanh"])
+    khoan_outside_pq = is_khoan_daily & ~is_pq_daily
+    if bool(khoan_outside_pq.any()):
+        print(f"[DAILY CHECKER PIPELINE] drop Khoan dien outside Phu Quoc rows={int(khoan_outside_pq.sum())}")
+        work = work.loc[~khoan_outside_pq].copy()
+    work["bks_xe_kinh_doanh"] = work["bks"]
+
     def _nunique_clean(series):
         return series.fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique()
 
@@ -709,7 +994,7 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
             "tong_so_cuoc": ("so_cuoc", "sum"),
             "sokm_vandoanh": ("sokm_vandoanh", "sum"),
             "sokm_cokhach": ("sokm_cokhach", "sum"),
-            "so_xe": ("bks", _nunique_clean),
+            "so_xe": ("bks_xe_kinh_doanh", _nunique_clean),
             "so_tai_xe": ("ho_ten", _nunique_clean),
         }
         if "so_tai" not in keys:
@@ -738,7 +1023,7 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     raw_cols = [
         "id", "ngay_du_lieu", "thang_nam", "bks", "so_tai", "ho_ten", "doanh_thu", "so_cuoc",
         "sokm_vandoanh", "sokm_cokhach", "loaihinh_hoptac", "hinhthuc_kinhdoanh", "loai_luong",
-        "so_cho", "so_cho_num", "khu_vuc"
+        "so_cho", "so_cho_num", "khu_vuc", "bks_xe_kinh_doanh"
     ]
     raw_out = work[raw_cols].copy() if DAILY_CHECKER_EXPORT_RAW else empty_raw
     return (
@@ -997,11 +1282,18 @@ print(
 )
 
 xe_truc_thuoc_kv_thang, xe_phan_quyen_kv_thang = _prepare_vehicle_monthly_summary(df_vehicle)
+xe_dang_co_xdt_kv_ngay, xe_dang_co_xpq_kv_ngay = _prepare_lenca_daily_fleet_snapshot(df_lenca)
 print(
     "[FLEET PIPELINE] "
     f"raw_rows={len(df_vehicle)} xdt_rows={len(xe_truc_thuoc_kv_thang)} xpq_rows={len(xe_phan_quyen_kv_thang)} "
     f"xdt_so_xe={pd.to_numeric(xe_truc_thuoc_kv_thang.get('so_luong_xe', 0), errors='coerce').fillna(0).sum():.0f} "
     f"xpq_so_xe={pd.to_numeric(xe_phan_quyen_kv_thang.get('so_luong_xe', 0), errors='coerce').fillna(0).sum():.0f}"
+)
+print(
+    "[LENCA DAILY FLEET PIPELINE] "
+    f"raw_rows={len(df_lenca)} xdt_rows={len(xe_dang_co_xdt_kv_ngay)} xpq_rows={len(xe_dang_co_xpq_kv_ngay)} "
+    f"xdt_vehicle_days={pd.to_numeric(xe_dang_co_xdt_kv_ngay.get('so_luong_xe', 0), errors='coerce').fillna(0).sum():.0f} "
+    f"xpq_vehicle_days={pd.to_numeric(xe_dang_co_xpq_kv_ngay.get('so_luong_xe', 0), errors='coerce').fillna(0).sum():.0f}"
 )
 
 (
@@ -1178,6 +1470,10 @@ with _excel_writer as writer:
     _write_sheet(writer, xe_truc_thuoc_kv_thang, "XeTrucThuoc_KV_Thang")
     _write_sheet(writer, xe_phan_quyen_kv_thang, "PhuongTien_XePhanQuyen_KV_Thang")
     _write_sheet(writer, xe_phan_quyen_kv_thang, "XePhanQuyen_KV_Thang")
+    _write_sheet(writer, xe_dang_co_xdt_kv_ngay, "XeDangCo_XeTrucThuoc_KV_Ngay")
+    _write_sheet(writer, xe_dang_co_xdt_kv_ngay, "PhuongTien_XeTrucThuoc_KV_Ngay")
+    _write_sheet(writer, xe_dang_co_xpq_kv_ngay, "XeDangCo_XePhanQuyen_KV_Ngay")
+    _write_sheet(writer, xe_dang_co_xpq_kv_ngay, "PhuongTien_XePhanQuyen_KV_Ngay")
 
     _write_sheet(writer, bienban_kv_thang, "KinhDoanh_BienBan_KV_Thang")
     _write_sheet(writer, bienban_kv_thang, "BienBan_KV_Thang")

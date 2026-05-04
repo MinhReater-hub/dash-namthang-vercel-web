@@ -11,29 +11,49 @@
       "cols": 4,
       "written": {
         "DoanhThu_Thang_KhuVuc": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\DoanhThu_Thang_KhuVuc.pkl"
         }
       },
       "elapsed_s": 0.029
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Thang_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.011
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "Tong_DoanhThu_KhuVuc": {
       "rows": 9,
       "cols": 3,
       "written": {
         "Tong_DoanhThu_KhuVuc": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\Tong_DoanhThu_KhuVuc.pkl"
         }
       },
       "elapsed_s": 0.003
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\Tong_DoanhThu_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.004
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "DoanhThu_LoaiHinh": {
       "rows": 5,
       "cols": 3,
       "written": {
         "DoanhThu_LoaiHinh": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\DoanhThu_LoaiHinh.pkl"
         }
       },
@@ -44,28 +64,45 @@
       "cols": 4,
       "written": {
         "DoanhThu_LH_KhuVuc": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\DoanhThu_LH_KhuVuc.pkl"
         }
       },
       "elapsed_s": 0.007
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_LH_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "DoanhThu_LH_Thang": {
       "rows": 75,
       "cols": 4,
       "written": {
         "DoanhThu_LH_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\DoanhThu_LH_Thang.pkl"
         }
       },
       "elapsed_s": 0.006
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_LH_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.01
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "DoanhThu_LH_KV_Thang": {
       "rows": 318,
       "cols": 5,
       "written": {
         "DoanhThu_LH_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\DoanhThu_LH_KV_Thang.pkl"
         }
@@ -192,13 +229,145 @@
         }
       },
       "elapsed_s": 0.006
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_LH_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.02
+    },
+    "DoanhThu_Ngay_Checker": {
+      "rows": 271,
+      "cols": 19,
+      "written": {
+        "DoanhThu_Ngay_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.046
+    },
+    "DoanhThu_Ngay_LH_Checker": {
+      "rows": 666,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_LH_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_LH_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.102
+    },
+    "DoanhThu_Ngay_HinhThuc": {
+      "rows": 397,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_HinhThuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_HinhThuc.pkl"
+        }
+      },
+      "elapsed_s": 0.083
+    },
+    "DoanhThu_Ngay_Luong": {
+      "rows": 402,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_Luong": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Luong.pkl"
+        }
+      },
+      "elapsed_s": 0.067
+    },
+    "DoanhThu_Ngay_SoCho": {
+      "rows": 570,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_SoCho": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_SoCho.pkl"
+        }
+      },
+      "elapsed_s": 0.094
+    },
+    "DoanhThu_Ngay_TaiXe": {
+      "rows": 33482,
+      "cols": 20,
+      "written": {
+        "DoanhThu_Ngay_TaiXe": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe.pkl"
+        }
+      },
+      "elapsed_s": 5.778
+    },
+    "DoanhThu_Ngay_TaiXe_LH": {
+      "rows": 33482,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_LH": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_LH.pkl"
+        }
+      },
+      "elapsed_s": 5.865
+    },
+    "DoanhThu_Ngay_TaiXe_HinhThuc": {
+      "rows": 33482,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_HinhThuc": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_HinhThuc.pkl"
+        }
+      },
+      "elapsed_s": 5.255
+    },
+    "DoanhThu_Ngay_TaiXe_Luong": {
+      "rows": 33482,
+      "cols": 21,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_Luong": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_Luong.pkl"
+        }
+      },
+      "elapsed_s": 5.71
+    },
+    "DoanhThu_Ngay_TaiXe_SoCho": {
+      "rows": 33482,
+      "cols": 22,
+      "written": {
+        "DoanhThu_Ngay_TaiXe_SoCho": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_SoCho.pkl"
+        }
+      },
+      "elapsed_s": 5.467
+    },
+    "DoanhThu_Ngay_Raw_Checker": {
+      "rows": 0,
+      "cols": 17,
+      "written": {
+        "DoanhThu_Ngay_Raw_Checker": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DoanhThu_Ngay_Raw_Checker.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "HopDong_Tong": {
       "rows": 3,
       "cols": 2,
       "written": {
         "HopDong_Tong": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\HopDong_Tong.pkl"
         }
       },
@@ -209,62 +378,106 @@
       "cols": 3,
       "written": {
         "HopDong_KhuVuc": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\HopDong_KhuVuc.pkl"
         }
       },
       "elapsed_s": 0.006
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\HopDong_KhuVuc.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "HopDong_Thang": {
       "rows": 79,
       "cols": 3,
       "written": {
         "HopDong_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\HopDong_Thang.pkl"
         }
       },
       "elapsed_s": 0.01
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\HopDong_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.013
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "HopDong_KV_Thang": {
       "rows": 400,
       "cols": 4,
       "written": {
         "HopDong_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\HopDong_KV_Thang.pkl"
         }
       },
       "elapsed_s": 0.02
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\HopDong_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.019
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "NhanSu_NhanVien_KV_Thang": {
       "rows": 1413,
       "cols": 20,
       "written": {
         "NhanSu_NhanVien_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\NhanSu_NhanVien_KV_Thang.pkl"
         }
       },
       "elapsed_s": 0.191
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\NhanSu_NhanVien_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.189
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "NhanSu_TaiXe_KV_Thang": {
       "rows": 322,
       "cols": 20,
       "written": {
         "NhanSu_TaiXe_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\NhanSu_TaiXe_KV_Thang.pkl"
         }
       },
       "elapsed_s": 0.045
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\NhanSu_TaiXe_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.05
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "KinhDoanh_DiemTiepThi_KV_Thang": {
       "rows": 109,
       "cols": 18,
       "written": {
         "KinhDoanh_DiemTiepThi_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\KinhDoanh_DiemTiepThi_KV_Thang.pkl"
         }
       },
@@ -275,6 +488,7 @@
       "cols": 18,
       "written": {
         "DiemTiepThi_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\DiemTiepThi_KV_Thang.pkl"
         }
@@ -298,6 +512,31 @@
       "written": {
         "XeTrucThuoc_KV_Thang": {
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\DiemTiepThi_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.02
+    },
+    "PhuongTien_XeTrucThuoc_KV_Thang": {
+      "rows": 49,
+      "cols": 12,
+      "written": {
+        "PhuongTien_XeTrucThuoc_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\PhuongTien_XeTrucThuoc_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.007
+    },
+    "XeTrucThuoc_KV_Thang": {
+      "rows": 49,
+      "cols": 12,
+      "written": {
+        "XeTrucThuoc_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\XeTrucThuoc_KV_Thang.pkl"
         }
       },
@@ -308,17 +547,26 @@
       "cols": 12,
       "written": {
         "PhuongTien_XePhanQuyen_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Thang.pkl"
         }
       },
       "elapsed_s": 0.008
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.007
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "XePhanQuyen_KV_Thang": {
       "rows": 37,
       "cols": 12,
       "written": {
         "XePhanQuyen_KV_Thang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\XePhanQuyen_KV_Thang.pkl"
         }
@@ -346,12 +594,86 @@
         }
       },
       "elapsed_s": 0.021
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\XePhanQuyen_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.009
+    },
+    "XeDangCo_XeTrucThuoc_KV_Ngay": {
+      "rows": 257667,
+      "cols": 11,
+      "written": {
+        "XeDangCo_XeTrucThuoc_KV_Ngay": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\XeDangCo_XeTrucThuoc_KV_Ngay.pkl"
+        }
+      },
+      "elapsed_s": 18.894
+    },
+    "PhuongTien_XeTrucThuoc_KV_Ngay": {
+      "rows": 257667,
+      "cols": 11,
+      "written": {
+        "PhuongTien_XeTrucThuoc_KV_Ngay": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\PhuongTien_XeTrucThuoc_KV_Ngay.pkl"
+        }
+      },
+      "elapsed_s": 18.701
+    },
+    "XeDangCo_XePhanQuyen_KV_Ngay": {
+      "rows": 38465,
+      "cols": 11,
+      "written": {
+        "XeDangCo_XePhanQuyen_KV_Ngay": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\XeDangCo_XePhanQuyen_KV_Ngay.pkl"
+        }
+      },
+      "elapsed_s": 2.737
+    },
+    "PhuongTien_XePhanQuyen_KV_Ngay": {
+      "rows": 38465,
+      "cols": 11,
+      "written": {
+        "PhuongTien_XePhanQuyen_KV_Ngay": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Ngay.pkl"
+        }
+      },
+      "elapsed_s": 2.763
+    },
+    "KinhDoanh_BienBan_KV_Thang": {
+      "rows": 163,
+      "cols": 11,
+      "written": {
+        "KinhDoanh_BienBan_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\KinhDoanh_BienBan_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.023
+    },
+    "BienBan_KV_Thang": {
+      "rows": 163,
+      "cols": 11,
+      "written": {
+        "BienBan_KV_Thang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\BienBan_KV_Thang.pkl"
+        }
+      },
+      "elapsed_s": 0.018
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_An Giang": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_An Giang": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_An Giang.pkl"
         },
@@ -361,12 +683,24 @@
         }
       },
       "elapsed_s": 0.008
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_An Giang.pkl"
+        },
+        "TOP10_An_Giang": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_An_Giang.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_Bạc Liêu": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_Bạc Liêu": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_Bạc Liêu.pkl"
         },
@@ -376,23 +710,43 @@
         }
       },
       "elapsed_s": 0.006
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_Bạc Liêu.pkl"
+        },
+        "TOP10_B_c_Li_u": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_B_c_Li_u.pkl"
+        }
+      },
+      "elapsed_s": 0.008
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_CT": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_CT": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_CT.pkl"
         }
       },
       "elapsed_s": 0.004
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_CT.pkl"
+        }
+      },
+      "elapsed_s": 0.003
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_Cà Mau": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_Cà Mau": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_Cà Mau.pkl"
         },
@@ -402,13 +756,28 @@
         }
       },
       "elapsed_s": 0.008
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_Cà Mau.pkl"
+        },
+        "TOP10_C_Mau": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_C_Mau.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_HG": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_HG": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\TOP10_HG.pkl"
         }
       },
@@ -419,11 +788,19 @@
       "cols": 4,
       "written": {
         "TOP10_Phú Quốc": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_Phú Quốc.pkl"
         },
         "TOP10_Ph_Qu_c": {
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_Phú Quốc.pkl"
+        },
+        "TOP10_Ph_Qu_c": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+>>>>>>> d4ecea7 (Update dashboard app and data)
           "pkl": "output\\cache\\TOP10_Ph_Qu_c.pkl"
         }
       },
@@ -434,6 +811,7 @@
       "cols": 4,
       "written": {
         "TOP10_Rạch Giá": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_Rạch Giá.pkl"
         },
@@ -443,23 +821,43 @@
         }
       },
       "elapsed_s": 0.007
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_Rạch Giá.pkl"
+        },
+        "TOP10_R_ch_Gi": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_R_ch_Gi.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_ST": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_ST": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_ST.pkl"
         }
       },
       "elapsed_s": 0.004
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_ST.pkl"
+        }
+      },
+      "elapsed_s": 0.007
+>>>>>>> d4ecea7 (Update dashboard app and data)
     },
     "TOP10_Vĩnh Long": {
       "rows": 10,
       "cols": 4,
       "written": {
         "TOP10_Vĩnh Long": {
+<<<<<<< HEAD
           "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - `Import pyarrow` failed. pyarrow is required for parquet support. Use pip or conda to install the pyarrow package.\n - `Import fastparquet` failed. fastparquet is required for parquet support. Use pip or conda to install the fastparquet package.",
           "pkl": "output\\cache\\TOP10_Vĩnh Long.pkl"
         },
@@ -472,4 +870,18 @@
     }
   },
   "elapsed_s": 26.068
+=======
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_Vĩnh Long.pkl"
+        },
+        "TOP10_V_nh_Long": {
+          "parquet_error": "Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.\nA suitable version of pyarrow or fastparquet is required for parquet support.\nTrying to import the above resulted in these errors:\n - Missing optional dependency 'pyarrow'. pyarrow is required for parquet support. Use pip or conda to install pyarrow.\n - Missing optional dependency 'fastparquet'. fastparquet is required for parquet support. Use pip or conda to install fastparquet.",
+          "pkl": "output\\cache\\TOP10_V_nh_Long.pkl"
+        }
+      },
+      "elapsed_s": 0.005
+    }
+  },
+  "elapsed_s": 72.528
+>>>>>>> d4ecea7 (Update dashboard app and data)
 }

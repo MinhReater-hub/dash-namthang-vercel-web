@@ -141,6 +141,15 @@ DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "daily" if DASH
 DASH_ZOOM_COMPACT_FIGURE = str(os.getenv("DASH_ZOOM_COMPACT_FIGURE", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_OPEN_CACHE_MAX = int(os.getenv("DASH_ZOOM_OPEN_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DASH_ZOOM_DRILL_CACHE_MAX = int(os.getenv("DASH_ZOOM_DRILL_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
+<<<<<<< HEAD
+=======
+DASH_DAILY_LOAD_SEAT_DATA = str(os.getenv("DASH_DAILY_LOAD_SEAT_DATA", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Daily menu speed mode: avoid duplicated Plotly figure payloads in hidden zoom stores.
+# The browser already has the visible graph figure, so zoom retrieves it lazily on click.
+DASH_DAILY_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_DAILY_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Driver-specific breakdown sheets are heavy and only needed after a driver filter is selected.
+DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+>>>>>>> d4ecea7 (Update dashboard app and data)
 
 
 def _graph_config(extra: dict | None = None) -> dict:
@@ -647,9 +656,21 @@ REGION_CANON_MAP = {
     "ct": "Cần Thơ",
     "hg": "Hậu Giang",
     "st": "Sóc Trăng",
+    "pq": "Phú Quốc",
+    "rg": "Rạch Giá",
+    "bl": "Bạc Liêu",
+    "cm": "Cà Mau",
+    "vl": "Vĩnh Long",
+    "ag": "An Giang",
     "c t": "Cần Thơ",
     "h g": "Hậu Giang",
     "s t": "Sóc Trăng",
+    "p q": "Phú Quốc",
+    "r g": "Rạch Giá",
+    "b l": "Bạc Liêu",
+    "c m": "Cà Mau",
+    "v l": "Vĩnh Long",
+    "a g": "An Giang",
     "can tho": "Cần Thơ",
     "tp can tho": "Cần Thơ",
     "tp. can tho": "Cần Thơ",
@@ -662,6 +683,23 @@ REGION_CANON_MAP = {
     "soc trang": "Sóc Trăng",
     "sóc trăng": "Sóc Trăng",
     "soctrang": "Sóc Trăng",
+    "phu quoc": "Phú Quốc",
+    "phú quốc": "Phú Quốc",
+    "phuquoc": "Phú Quốc",
+    "rach gia": "Rạch Giá",
+    "rạch giá": "Rạch Giá",
+    "rachgia": "Rạch Giá",
+    "bac lieu": "Bạc Liêu",
+    "bạc liêu": "Bạc Liêu",
+    "baclieu": "Bạc Liêu",
+    "ca mau": "Cà Mau",
+    "cà mau": "Cà Mau",
+    "camau": "Cà Mau",
+    "vinh long": "Vĩnh Long",
+    "vĩnh long": "Vĩnh Long",
+    "vinhlong": "Vĩnh Long",
+    "an giang": "An Giang",
+    "angiang": "An Giang",
 }
 PINNED_REGIONS = ["Cần Thơ"]
 
@@ -2776,6 +2814,7 @@ def _read_daily_raw_checker_df() -> pd.DataFrame:
 DASH_BOOT_LAZY_DATA = str(os.getenv("DASH_BOOT_LAZY_DATA", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 _BOOT_DATA_LOADED = {"daily": False, "hr": False, "biz": False, "fleet": False}
 _BOOT_DATA_LOADING = set()
+DAILY_DRIVER_DETAIL_LOADED = False
 
 
 def _df_reset_in_place(target: pd.DataFrame, source: pd.DataFrame) -> pd.DataFrame:
@@ -2816,10 +2855,19 @@ def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None
         DAILY_LATEST_OUTPUT_CACHE.clear()
         DAILY_TABLE_FRAME_CACHE.clear()
         DAILY_DATE_BOUNDS_CACHE.clear()
+<<<<<<< HEAD
+=======
+        DAILY_FLEET_AVAILABLE_CACHE.clear()
+>>>>>>> d4ecea7 (Update dashboard app and data)
     except Exception:
         pass
     try:
         PAGE_LAYOUT_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        if "df_daily_taixe_lh_checker" in frame_map or "df_daily_taixe_hinhthuc_checker" in frame_map:
+            globals()["DAILY_DRIVER_DETAIL_LOADED"] = not DASH_DAILY_LAZY_DRIVER_DETAIL
     except Exception:
         pass
 
@@ -2845,17 +2893,17 @@ def _load_daily_boot_frames(log: bool = True) -> dict:
             category_name="loai_luong",
             source_label="Loại lương ngày checker",
         ),
-        "df_daily_socho_checker": _read_daily_checker_df(
+        "df_daily_socho_checker": (_read_daily_checker_df(
             DAILY_CHECKER_SOCHO_SHEET_CANDIDATES,
             category_candidates=["so_cho", "số chỗ", "so cho"],
             category_name="so_cho",
             source_label="Số chỗ ngày checker",
-        ),
+        ) if DASH_DAILY_LOAD_SEAT_DATA else pd.DataFrame()),
         "df_daily_taixe_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES),
-        "df_daily_taixe_lh_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES),
-        "df_daily_taixe_hinhthuc_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES),
-        "df_daily_taixe_luong_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LUONG_SHEET_CANDIDATES),
-        "df_daily_taixe_socho_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SOCHO_SHEET_CANDIDATES),
+        "df_daily_taixe_lh_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES)),
+        "df_daily_taixe_hinhthuc_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES)),
+        "df_daily_taixe_luong_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LUONG_SHEET_CANDIDATES)),
+        "df_daily_taixe_socho_checker": (_read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SOCHO_SHEET_CANDIDATES) if DASH_DAILY_LOAD_SEAT_DATA else pd.DataFrame()),
         "df_daily_raw_checker": _read_daily_raw_checker_df(),
     }
     if log:
@@ -5600,6 +5648,32 @@ def pack_fig_store(fig, rows=None, meta=None):
         meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
     return {"kind": "fig", "figure": fig_dict, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
 
+
+def pack_daily_fig_store(fig, rows=None, meta=None):
+    """Daily-only zoom store: keep rows/meta but do not duplicate chart figures in dcc.Store.
+
+    The visible dcc.Graph already receives the full Plotly figure. A clientside zoom
+    selector injects that graph figure only when the user actually opens zoom. This
+    removes 5 duplicated figure JSON payloads from the main Daily callback response.
+    """
+    if not DASH_DAILY_LAZY_ZOOM_FIGURES:
+        return pack_fig_store(fig, rows=rows, meta=meta)
+    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
+    meta_out = dict(meta or {})
+    meta_out["figure_included"] = False
+    meta_out["figure_lazy_from_graph"] = True
+    meta_out["figure_compacted"] = False
+    meta_out["zoom_first"] = True
+    try:
+        meta_out["trace_names"] = [str(getattr(tr, "name", "") or "") for tr in getattr(fig, "data", [])]
+    except Exception:
+        meta_out["trace_names"] = []
+    if truncated:
+        meta_out["rows_truncated"] = True
+        meta_out["rows_total"] = total_rows
+        meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
+    return {"kind": "fig", "figure": {}, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
+
 def pack_kpi_store(title, main, subtitle, rows=None, kind="kpi"):
     limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_KPI_STORE_MAX_ROWS)
     payload = {"kind": kind, "title": title, "main": main, "subtitle": subtitle, "rows": json_safe(limited_rows)}
@@ -5724,6 +5798,10 @@ ZOOM_DETAIL_COLUMN_LABELS = {
     "avg_fmt": "Bình quân",
     "avg_per_trip_fmt": "Doanh thu bình quân / cuốc",
     "avg_per_trip": "Doanh thu bình quân / cuốc",
+    "avg_per_vehicle_day_fmt": "Doanh thu bình quân / xe kinh doanh-ngày",
+    "vehicle_day_fmt": "Lượt xe kinh doanh-ngày",
+    "active_vehicle_fmt": "Xe hoạt động",
+    "active_driver_fmt": "Tài xế",
     "rev_ma7_fmt": "Doanh thu TB 7 ngày",
     "pct": "Tỷ trọng",
     "pct_fmt": "Tỷ trọng",
@@ -5808,7 +5886,7 @@ ZOOM_DETAIL_CONTEXT_ORDER = [
     "metric_label", "loai_xe", "nhom_nhien_lieu", "nhom_vong_doi", "bo_phan",
 ]
 ZOOM_DETAIL_VALUE_ORDER = [
-    "metric_fmt", "value_fmt", "val_fmt", "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "rev_ma7_fmt",
+    "metric_fmt", "value_fmt", "val_fmt", "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "avg_per_vehicle_day_fmt", "vehicle_day_fmt", "rev_ma7_fmt",
     "avg_fmt", "pct_fmt", "ty_trong_fmt", "pct_segment_fmt", "count_fmt", "xe_fmt", "bks_fmt",
     "join_fmt", "leave_fmt", "net_fmt", "tang_fmt", "giam_fmt", "giu_fmt",
     "tong_doanh_thu", "tong_so_cuoc", "gia_tri", "so_luong_xe", "so_bien_kiem_soat", "so_so_tai", "tong_so_cho",
@@ -7907,8 +7985,13 @@ def home_page():
 
 
 DAILY_DATE_COL_CANDIDATES = [
-    "ngay_du_lieu", "ngay du lieu", "ngay", "date", "report_date", "report date",
-    "ngay_bao_cao", "ngay bao cao", "ngay_chay", "ngay chay", "ngay_tao", "ngay tao",
+    "ngay_du_lieu", "ngày dữ liệu", "ngay du lieu", "ngay", "ngày", "date",
+    "report_date", "report date", "ngay_bao_cao", "ngày báo cáo", "ngay bao cao",
+    "ngay_chay", "ngày chạy", "ngay chay", "ngay_tao", "ngày tạo", "ngay tao",
+    "ngay_cap_nhat", "ngày cập nhật", "ngay cap nhat", "ngay_nhap", "ngày nhập", "ngay nhap",
+    "ngay_ghi_nhan", "ngày ghi nhận", "ngay ghi nhan", "ngay_kiem_ke", "ngày kiểm kê", "ngay kiem ke",
+    "ngay_trang_thai", "ngày trạng thái", "ngay trang thai", "snapshot_date", "snapshot date",
+    "fleet_date", "vehicle_date", "as_of_date", "as of date", "effective_date", "effective date",
     "created_at", "createdat", "updated_at", "updatedat", "timestamp",
 ]
 
@@ -7993,6 +8076,24 @@ DAILY_LATEST_OUTPUT_CACHE_MAX = int(os.getenv("DASH_DAILY_OUTPUT_CACHE_MAX", "96
 DAILY_TABLE_FRAME_CACHE = {}
 DAILY_TABLE_FRAME_CACHE_MAX = int(os.getenv("DASH_DAILY_TABLE_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DAILY_DATE_BOUNDS_CACHE = {"key": None, "value": None}
+<<<<<<< HEAD
+=======
+DAILY_FLEET_AVAILABLE_CACHE = {}
+DAILY_FLEET_AVAILABLE_CACHE_MAX = int(os.getenv("DASH_DAILY_FLEET_AVAILABLE_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DAILY_DRIVER_OPTIONS_CACHE = {"key": None, "value": None}
+DAILY_OPERATING_COUNTS_CACHE = {}
+DAILY_OPERATING_COUNTS_CACHE_MAX = int(os.getenv("DASH_DAILY_OPERATING_COUNTS_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DAILY_AVAILABLE_SUMMARY_CACHE = {}
+DAILY_AVAILABLE_SUMMARY_CACHE_MAX = int(os.getenv("DASH_DAILY_AVAILABLE_SUMMARY_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+DAILY_VEHICLE_KPI_PAYLOAD_CACHE = {}
+DAILY_VEHICLE_KPI_PAYLOAD_CACHE_MAX = int(os.getenv("DASH_DAILY_VEHICLE_KPI_PAYLOAD_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+# Daily menu responsive mode: reuse already-filtered daily frames to build all
+# KPI payloads/charts/table from the same grouped views. This avoids repeating
+# region/day groupby work every time the date filter changes.
+DASH_DAILY_RESPONSIVE_CACHE = str(os.getenv("DASH_DAILY_RESPONSIVE_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DAILY_AGG_VIEW_CACHE = {}
+DAILY_AGG_VIEW_CACHE_MAX = int(os.getenv("DASH_DAILY_AGG_VIEW_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
+>>>>>>> d4ecea7 (Update dashboard app and data)
 
 
 def _normalize_multi_value(values) -> list[str]:
@@ -8010,12 +8111,21 @@ def _daily_filter_cache_scope_key():
         return "__na__"
 
 
+<<<<<<< HEAD
 def _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd):
+=======
+def _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_types, seat_filter, theme, source_dt, source_lh, source_hd):
+>>>>>>> d4ecea7 (Update dashboard app and data)
     return (
         str(start_date or ""),
         str(end_date or ""),
         tuple(sorted(_normalize_multi_value(regions))),
         tuple(sorted(_normalize_multi_value(drivers))),
+<<<<<<< HEAD
+=======
+        tuple(sorted(_normalize_multi_value(vehicle_types))),
+        tuple(sorted(_normalize_multi_value(seat_filter))),
+>>>>>>> d4ecea7 (Update dashboard app and data)
         str(theme or "light"),
         _daily_filter_cache_scope_key(),
         _df_cache_signature(source_dt),
@@ -8089,11 +8199,195 @@ def _filter_daily_frame(source_df: pd.DataFrame, start_date=None, end_date=None,
     except Exception:
         pass
 
+    # Daily business rule: all revenue/trip/KM/vehicle metrics exclude Khoan dien
+    # outside Phu Quoc. This app-side guard also protects old cache files that
+    # may still contain those rows before refresh_data.py is rerun.
+    dff = _daily_filter_khoan_dien_outside_phu_quoc(dff)
+
     out = dff.copy(deep=False)
     if len(DAILY_FILTER_CACHE) > DAILY_FILTER_CACHE_MAX:
         DAILY_FILTER_CACHE.clear()
     DAILY_FILTER_CACHE[cache_key] = out.copy(deep=False)
     return _return_df_cached(out)
+
+
+def _daily_numeric_series(dff: pd.DataFrame, col: str, default=0) -> pd.Series:
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return pd.Series(dtype="float64")
+    if col not in dff.columns:
+        return pd.Series([default] * len(dff), index=dff.index, dtype="float64")
+    return pd.to_numeric(dff[col], errors="coerce").fillna(default)
+
+
+def _daily_filtered_agg_view(dff_dt: pd.DataFrame) -> dict:
+    """Build and cache all lightweight grouped views used by the Daily callback.
+
+    The callback used to group the same filtered daily data several times for KPI
+    payloads, charts and the detail table. This helper computes those grouped
+    views once per filtered frame and reuses them across the whole response.
+    """
+    empty_region = pd.DataFrame(columns=[
+        "khu_vuc", "tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh",
+        "sokm_cokhach", "so_xe", "so_tai_xe", "avg_per_trip",
+        "avg_per_vehicle_day", "rev_fmt", "trip_fmt", "avg_per_trip_fmt",
+        "so_xe_fmt", "vehicle_day_fmt", "avg_per_vehicle_day_fmt",
+        "km_co_khach_ratio", "km_co_khach_ratio_fmt",
+    ])
+    empty_day = pd.DataFrame(columns=[
+        "ngay_du_lieu", "ngay_label", "tong_doanh_thu", "tong_so_cuoc",
+        "rev_fmt", "trip_fmt", "avg_per_trip", "avg_per_trip_fmt",
+        "rev_ma7", "rev_ma7_fmt",
+    ])
+    empty_table = pd.DataFrame(columns=[
+        "ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt",
+        "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt",
+        "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt",
+        "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
+    ])
+    if dff_dt is None or not isinstance(dff_dt, pd.DataFrame) or dff_dt.empty:
+        return {"region": empty_region, "day": empty_day, "table": empty_table}
+
+    cache_key = (_df_cache_signature(dff_dt), _daily_filter_cache_scope_key(), "daily_agg_view_v3")
+    if DASH_DAILY_RESPONSIVE_CACHE:
+        cached = DAILY_AGG_VIEW_CACHE.get(cache_key)
+        if isinstance(cached, dict):
+            return {
+                "region": _return_df_cached(cached.get("region", empty_region)),
+                "day": _return_df_cached(cached.get("day", empty_day)),
+                "table": _return_df_cached(cached.get("table", empty_table)),
+            }
+
+    tmp = dff_dt.copy(deep=False)
+    if "khu_vuc" not in tmp.columns:
+        tmp = tmp.copy()
+        tmp["khu_vuc"] = "Tổng hợp"
+    tmp["khu_vuc"] = tmp["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+    if "ngay_du_lieu" not in tmp.columns:
+        tmp = tmp.copy()
+        tmp["ngay_du_lieu"] = _coerce_daily_date_series(tmp)
+    tmp = tmp[tmp["ngay_du_lieu"].notna()].copy(deep=False)
+    if tmp.empty:
+        return {"region": empty_region, "day": empty_day, "table": empty_table}
+
+    for col in ["tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh", "sokm_cokhach", "so_xe", "so_tai_xe"]:
+        if col not in tmp.columns:
+            tmp[col] = 0
+        tmp[col] = pd.to_numeric(tmp[col], errors="coerce").fillna(0)
+    if "ngay_label" not in tmp.columns:
+        tmp["ngay_label"] = pd.to_datetime(tmp["ngay_du_lieu"], errors="coerce").dt.strftime("%d/%m/%Y")
+    if "thang_label" not in tmp.columns:
+        tmp["thang_label"] = pd.to_datetime(tmp["ngay_du_lieu"], errors="coerce").dt.strftime("%m/%Y")
+
+    region_g = tmp.groupby("khu_vuc", as_index=False).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        tong_so_cuoc=("tong_so_cuoc", "sum"),
+        sokm_vandoanh=("sokm_vandoanh", "sum"),
+        sokm_cokhach=("sokm_cokhach", "sum"),
+        so_xe=("so_xe", "sum"),
+        so_tai_xe=("so_tai_xe", "sum"),
+    ).sort_values("tong_doanh_thu", ascending=False).reset_index(drop=True)
+    region_g["avg_per_trip"] = np.where(region_g["tong_so_cuoc"] > 0, region_g["tong_doanh_thu"] / region_g["tong_so_cuoc"].replace(0, 1), 0)
+    region_g["avg_per_vehicle_day"] = np.where(region_g["so_xe"] > 0, region_g["tong_doanh_thu"] / region_g["so_xe"].replace(0, 1), 0)
+    region_g["km_co_khach_ratio"] = np.where(region_g["sokm_vandoanh"] > 0, region_g["sokm_cokhach"] / region_g["sokm_vandoanh"].replace(0, 1) * 100, 0)
+    region_g["rev_fmt"] = region_g["tong_doanh_thu"].apply(fmt_vn)
+    region_g["trip_fmt"] = region_g["tong_so_cuoc"].apply(fmt_vn)
+    region_g["avg_per_trip_fmt"] = region_g["avg_per_trip"].apply(fmt_vn)
+    region_g["so_xe_fmt"] = region_g["so_xe"].apply(fmt_vn)
+    region_g["vehicle_day_fmt"] = region_g["so_xe"].apply(fmt_vn)
+    region_g["avg_per_vehicle_day_fmt"] = region_g["avg_per_vehicle_day"].apply(fmt_vn)
+    region_g["km_co_khach_ratio_fmt"] = region_g["km_co_khach_ratio"].apply(lambda x: fmt_pct(x, 1))
+
+    day_g = tmp.groupby("ngay_du_lieu", as_index=False).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        tong_so_cuoc=("tong_so_cuoc", "sum"),
+    ).sort_values("ngay_du_lieu").reset_index(drop=True)
+    day_g["ngay_label"] = pd.to_datetime(day_g["ngay_du_lieu"], errors="coerce").dt.strftime("%d/%m/%Y")
+    day_g["rev_fmt"] = day_g["tong_doanh_thu"].apply(fmt_vn)
+    day_g["trip_fmt"] = day_g["tong_so_cuoc"].apply(fmt_vn)
+    day_g["avg_per_trip"] = np.where(day_g["tong_so_cuoc"] > 0, day_g["tong_doanh_thu"] / day_g["tong_so_cuoc"].replace(0, 1), 0)
+    day_g["avg_per_trip_fmt"] = day_g["avg_per_trip"].apply(fmt_vn)
+    day_g["rev_ma7"] = day_g["tong_doanh_thu"].rolling(window=7, min_periods=1).mean()
+    day_g["rev_ma7_fmt"] = day_g["rev_ma7"].apply(fmt_vn)
+
+    table_g = tmp.groupby(["ngay_du_lieu", "ngay_label", "thang_label", "khu_vuc"], as_index=False).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        tong_so_cuoc=("tong_so_cuoc", "sum"),
+        sokm_vandoanh=("sokm_vandoanh", "sum"),
+        sokm_cokhach=("sokm_cokhach", "sum"),
+        so_xe=("so_xe", "sum"),
+        so_tai_xe=("so_tai_xe", "sum"),
+    ).sort_values(["ngay_du_lieu", "tong_doanh_thu"], ascending=[False, False]).reset_index(drop=True)
+    table_g["avg_per_trip"] = np.where(table_g["tong_so_cuoc"] > 0, table_g["tong_doanh_thu"] / table_g["tong_so_cuoc"].replace(0, 1), 0)
+    table_g["avg_per_vehicle_day"] = np.where(table_g["so_xe"] > 0, table_g["tong_doanh_thu"] / table_g["so_xe"].replace(0, 1), 0)
+    table_g["km_co_khach_ratio"] = np.where(table_g["sokm_vandoanh"] > 0, table_g["sokm_cokhach"] / table_g["sokm_vandoanh"].replace(0, 1) * 100, 0)
+    table_g["tong_doanh_thu_fmt"] = table_g["tong_doanh_thu"].apply(fmt_vn)
+    table_g["tong_so_cuoc_fmt"] = table_g["tong_so_cuoc"].apply(fmt_vn)
+    table_g["avg_per_trip_fmt"] = table_g["avg_per_trip"].apply(fmt_vn)
+    table_g["so_xe_fmt"] = table_g["so_xe"].apply(fmt_vn)
+    table_g["avg_per_vehicle_day_fmt"] = table_g["avg_per_vehicle_day"].apply(fmt_vn)
+    table_g["so_tai_xe_fmt"] = table_g["so_tai_xe"].apply(fmt_vn)
+    table_g["sokm_vandoanh_fmt"] = table_g["sokm_vandoanh"].apply(fmt_vn)
+    table_g["sokm_cokhach_fmt"] = table_g["sokm_cokhach"].apply(fmt_vn)
+    table_g["km_co_khach_ratio_fmt"] = table_g["km_co_khach_ratio"].apply(lambda x: fmt_pct(x, 1))
+    table_cols = [
+        "ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt",
+        "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt",
+        "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt",
+        "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
+    ]
+    table_out = table_g[table_cols].copy()
+
+    result = {"region": region_g, "day": day_g, "table": table_out}
+    if DASH_DAILY_RESPONSIVE_CACHE:
+        try:
+            if len(DAILY_AGG_VIEW_CACHE) > DAILY_AGG_VIEW_CACHE_MAX:
+                DAILY_AGG_VIEW_CACHE.clear()
+            DAILY_AGG_VIEW_CACHE[cache_key] = {k: v.copy(deep=False) for k, v in result.items()}
+        except Exception:
+            pass
+    return {k: _return_df_cached(v) for k, v in result.items()}
+
+
+def _daily_payload_from_region_view(region_g: pd.DataFrame, metric_col: str, selected_regions=None):
+    if region_g is None or not isinstance(region_g, pd.DataFrame) or region_g.empty or metric_col not in region_g.columns:
+        return []
+    tmp = region_g.copy(deep=False)
+    selected = _normalize_multi_value(selected_regions)
+    if selected and "khu_vuc" in tmp.columns:
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(selected)]
+    tmp = tmp.sort_values(metric_col, ascending=False)
+    total = float(pd.to_numeric(tmp[metric_col], errors="coerce").fillna(0).sum()) if not tmp.empty else 0.0
+    out = []
+    for _, r in tmp.iterrows():
+        name = str(r.get("khu_vuc", ""))
+        val = float(r.get(metric_col, 0) or 0)
+        out.append({
+            "khu_vuc": name,
+            "value": val,
+            "value_fmt": fmt_vn(val),
+            "pct": (val / total * 100.0) if total > 0 else 0.0,
+            "color": REGION_COLOR_MAP.get(name, "#888"),
+        })
+    return out
+
+
+def _daily_avg_payload_from_region_view(region_g: pd.DataFrame, selected_regions=None):
+    if region_g is None or not isinstance(region_g, pd.DataFrame) or region_g.empty:
+        return []
+    tmp = region_g.copy(deep=False)
+    selected = _normalize_multi_value(selected_regions)
+    if selected and "khu_vuc" in tmp.columns:
+        tmp = tmp[tmp["khu_vuc"].astype(str).isin(selected)]
+    if "avg_per_trip" not in tmp.columns:
+        tmp = tmp.copy()
+        tmp["avg_per_trip"] = np.where(pd.to_numeric(tmp.get("tong_so_cuoc", 0), errors="coerce").fillna(0) > 0, pd.to_numeric(tmp.get("tong_doanh_thu", 0), errors="coerce").fillna(0) / pd.to_numeric(tmp.get("tong_so_cuoc", 0), errors="coerce").fillna(0).replace(0, 1), 0)
+    tmp = tmp.sort_values("avg_per_trip", ascending=False)
+    return [{
+        "khu_vuc": str(r.get("khu_vuc", "")),
+        "avg": float(r.get("avg_per_trip", 0) or 0),
+        "avg_fmt": fmt_vn(r.get("avg_per_trip", 0)),
+        "color": REGION_COLOR_MAP.get(str(r.get("khu_vuc", "")), "#888"),
+    } for _, r in tmp.iterrows()]
 
 def _daily_primary_source_df() -> pd.DataFrame:
     ensure_daily_data_loaded()
@@ -8113,8 +8407,6 @@ def _daily_mix_source_df() -> pd.DataFrame:
         return df_daily_hinhthuc_checker
     if isinstance(df_daily_luong_checker, pd.DataFrame) and not df_daily_luong_checker.empty:
         return df_daily_luong_checker
-    if isinstance(df_daily_socho_checker, pd.DataFrame) and not df_daily_socho_checker.empty:
-        return df_daily_socho_checker
     return df_hd
 
 
@@ -8127,12 +8419,746 @@ def _daily_source_label() -> str:
 def _daily_driver_options():
     ensure_daily_data_loaded()
     source = df_daily_taixe_checker if isinstance(df_daily_taixe_checker, pd.DataFrame) and not df_daily_taixe_checker.empty else df_daily_raw_checker
+    cache_key = (_df_cache_signature(source), _daily_filter_cache_scope_key())
+    if DAILY_DRIVER_OPTIONS_CACHE.get("key") == cache_key:
+        return DAILY_DRIVER_OPTIONS_CACHE.get("value", [])
     if source is None or not isinstance(source, pd.DataFrame) or source.empty or "ho_ten" not in source.columns:
+        value = []
+    else:
+        scoped = apply_region_scope_to_df(source)
+        names = scoped["ho_ten"].fillna("").astype(str).str.strip()
+        names = sorted([x for x in names.unique().tolist() if x])
+        value = [{"label": x, "value": x} for x in names]
+    DAILY_DRIVER_OPTIONS_CACHE["key"] = cache_key
+    DAILY_DRIVER_OPTIONS_CACHE["value"] = value
+    return value
+
+
+
+DAILY_VEHICLE_TYPE_CANON = ["Xe Công ty", "Xe thương quyền trả góp", "Xe thương quyền hợp tác"]
+
+
+def _daily_vehicle_type_options():
+    return [{"label": x, "value": x} for x in DAILY_VEHICLE_TYPE_CANON]
+
+
+def _daily_vehicle_type_col(dff: pd.DataFrame):
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return None
+    return find_col_fuzzy(dff, [
+        "loai_hinh_std", "loaihinh_hoptac", "loai_hinh_hop_tac", "loại hình hợp tác",
+        "loai hinh hop tac", "loai_hinh", "loại hình", "loaihinh", "loai hinh",
+        "phan_loai_xe", "phân loại xe", "nhom_xe", "nhóm xe", "type", "loai",
+    ])
+
+
+def _daily_vehicle_type_label_series(dff: pd.DataFrame, col: str) -> pd.Series:
+    if dff is None or not isinstance(dff, pd.DataFrame) or col not in dff.columns:
+        return pd.Series([], dtype="object")
+    if str(col) == "loai_hinh_std":
+        return dff[col].fillna("Khác").astype(str).str.strip()
+    return map_to_canon(dff[col], LH_MAP).fillna("Khác").astype(str).str.strip()
+
+
+def _filter_daily_vehicle_type_frame(dff: pd.DataFrame, vehicle_types=None) -> pd.DataFrame:
+    selected = _normalize_multi_value(vehicle_types)
+    if dff is None or not isinstance(dff, pd.DataFrame):
+        return pd.DataFrame()
+    if not selected:
+        return _return_df_cached(dff)
+    if dff.empty:
+        return dff.copy()
+    col = _daily_vehicle_type_col(dff)
+    if col is None or col not in dff.columns:
+        return dff.iloc[0:0].copy()
+    labels = _daily_vehicle_type_label_series(dff, col)
+    mask = labels.isin(set(selected))
+    out = dff.loc[mask].copy()
+    if "loai_hinh_std" not in out.columns:
+        out["loai_hinh_std"] = labels.loc[out.index].values if len(out) else []
+    return out
+
+
+def _daily_frame_has_vehicle_type(dff: pd.DataFrame) -> bool:
+    col = _daily_vehicle_type_col(dff)
+    return bool(col is not None and isinstance(dff, pd.DataFrame) and col in dff.columns)
+
+
+def _daily_compact_norm(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", norm_text(value))
+
+
+def _daily_is_phu_quoc_series(series_like) -> pd.Series:
+    try:
+        return pd.Series(series_like).map(lambda x: _daily_compact_norm(x) in {"phuquoc", "pq"}).fillna(False).astype(bool)
+    except Exception:
+        return pd.Series(False, index=getattr(series_like, "index", None))
+
+
+def _daily_is_khoan_dien_series(series_like) -> pd.Series:
+    try:
+        s = pd.Series(series_like).map(norm_text)
+        return s.str.contains("khoan dien", regex=False, na=False) | s.str.contains("khoang dien", regex=False, na=False)
+    except Exception:
+        return pd.Series(False, index=getattr(series_like, "index", None))
+
+
+def _daily_filter_khoan_dien_outside_phu_quoc(dff: pd.DataFrame) -> pd.DataFrame:
+    """Exclude Khoan dien outside Phu Quoc for all Daily-menu metrics and denominators.
+
+    Phu Quoc is the only exception where Khoan dien remains valid for Daily analysis.
+    """
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return dff.copy() if isinstance(dff, pd.DataFrame) else pd.DataFrame()
+    hinhthuc_col = find_col_fuzzy(dff, [
+        "hinhthuc_kinhdoanh", "hinh thuc kinh doanh", "hinh_thuc_kinh_doanh",
+        "hinh_thuc_kd", "hinh thuc kd", "kenh_kinh_doanh", "hinhthuc"
+    ])
+    region_col = find_col_fuzzy(dff, ["khu_vuc", "khu vực", "khu vuc", "region", "kv", "area"])
+    if hinhthuc_col is None or hinhthuc_col not in dff.columns or region_col is None or region_col not in dff.columns:
+        return dff.copy(deep=False)
+    is_khoan = _daily_is_khoan_dien_series(dff[hinhthuc_col])
+    is_pq = _daily_is_phu_quoc_series(dff[region_col])
+    try:
+        return dff.loc[~(is_khoan & ~is_pq)].copy()
+    except Exception:
+        return dff.copy(deep=False)
+
+
+DAILY_SEAT_CANON = [5, 7]
+
+
+def _daily_seat_options():
+    return [{"label": f"{x} chỗ", "value": str(x)} for x in DAILY_SEAT_CANON]
+
+
+def _normalize_daily_seat_values(values) -> list[int]:
+    raw = _normalize_multi_value(values)
+    out = []
+    for item in raw:
+        try:
+            m = re.search(r"(\d+)", str(item))
+            if m:
+                out.append(int(m.group(1)))
+        except Exception:
+            continue
+    return [x for x in sorted(set(out)) if x in set(DAILY_SEAT_CANON)]
+
+
+def _daily_seat_col(dff: pd.DataFrame):
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return None
+    return find_col_fuzzy(dff, [
+        "so_cho_num", "so_cho", "số chỗ", "so cho", "socho", "seat", "seats",
+        "seat_count", "suc_chua", "sức chứa", "cho_ngoi", "chỗ ngồi",
+        "so_cho_loc", "nhan_so_cho", "nhãn số chỗ",
+    ])
+
+
+def _daily_seat_series(dff: pd.DataFrame, col: str) -> pd.Series:
+    if dff is None or not isinstance(dff, pd.DataFrame) or col not in dff.columns:
+        return pd.Series([], dtype="float")
+    raw = dff[col]
+    numeric = pd.to_numeric(raw, errors="coerce")
+    if numeric.notna().sum() >= max(1, int(len(raw) * 0.65)):
+        return numeric.fillna(0).round().astype(int)
+    return pd.to_numeric(raw.astype(str).str.extract(r"(\d+)")[0], errors="coerce").fillna(0).round().astype(int)
+
+
+def _daily_frame_has_seat(dff: pd.DataFrame) -> bool:
+    col = _daily_seat_col(dff)
+    return bool(col is not None and isinstance(dff, pd.DataFrame) and col in dff.columns)
+
+
+def _filter_daily_seat_frame(dff: pd.DataFrame, seat_filter=None) -> pd.DataFrame:
+    seats = _normalize_daily_seat_values(seat_filter)
+    if dff is None or not isinstance(dff, pd.DataFrame):
+        return pd.DataFrame()
+    if not seats:
+        return _return_df_cached(dff)
+    if dff.empty:
+        return dff.copy()
+    col = _daily_seat_col(dff)
+    if col is None or col not in dff.columns:
+        return dff.iloc[0:0].copy()
+    seat_series = _daily_seat_series(dff, col)
+    out = dff.loc[seat_series.isin(seats)].copy()
+    if "so_cho_num" not in out.columns:
+        out["so_cho_num"] = seat_series.loc[out.index].values if len(out) else []
+    if "so_cho" not in out.columns:
+        out["so_cho"] = out["so_cho_num"].astype(str) + " chỗ" if "so_cho_num" in out.columns else ""
+    return out
+
+
+def _daily_metric_frame_from_lh(dff_lh: pd.DataFrame) -> pd.DataFrame:
+    """Use the already-filtered daily LH frame as the primary daily metric frame when filtering by vehicle type."""
+    if dff_lh is None or not isinstance(dff_lh, pd.DataFrame) or dff_lh.empty:
+        return pd.DataFrame()
+    out = dff_lh.copy()
+    if "ngay_du_lieu" not in out.columns:
+        try:
+            out["ngay_du_lieu"] = _coerce_daily_date_series(out)
+        except Exception:
+            out["ngay_du_lieu"] = pd.NaT
+    out["ngay_du_lieu"] = pd.to_datetime(out["ngay_du_lieu"], errors="coerce").dt.normalize()
+    out = out[out["ngay_du_lieu"].notna()].copy()
+    if out.empty:
+        return out
+    if "ngay_label" not in out.columns:
+        out["ngay_label"] = out["ngay_du_lieu"].dt.strftime("%d/%m/%Y")
+    if "thang_label" not in out.columns:
+        out["thang_label"] = out["ngay_du_lieu"].dt.strftime("%m/%Y")
+    if "nam" not in out.columns:
+        out["nam"] = out["ngay_du_lieu"].dt.year
+    if "khu_vuc" not in out.columns:
+        out["khu_vuc"] = "Tổng hợp"
+    for c in ["tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh", "sokm_cokhach", "so_xe", "so_tai_xe"]:
+        if c not in out.columns:
+            out[c] = 0
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+    return out
+
+
+def _daily_vehicle_type_to_fleet_prefixes(vehicle_types=None) -> list[str]:
+    selected = set(_normalize_multi_value(vehicle_types))
+    if not selected:
+        return ["xdt", "xpq"]
+    out = []
+    if "Xe Công ty" in selected:
+        out.append("xdt")
+    if {"Xe thương quyền trả góp", "Xe thương quyền hợp tác"}.intersection(selected):
+        out.append("xpq")
+    return list(dict.fromkeys(out))
+
+
+def _filter_fleet_frame_by_daily_vehicle_type(dff: pd.DataFrame, prefix: str, vehicle_types=None) -> pd.DataFrame:
+    """Filter daily fleet snapshot rows by XDT/XPQ and optional daily vehicle type.
+
+    Important for generic XeDangCo_KV_Ngay sheets: when no vehicle-type filter is selected,
+    still split rows by fleet_prefix/loai_hinh so xdt and xpq are not double-counted.
+    If a source has no type/prefix column, assume it is already prefix-specific and keep it.
+    """
+    selected = set(_normalize_multi_value(vehicle_types))
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return pd.DataFrame()
+    prefix = str(prefix or "")
+    if prefix not in {"xdt", "xpq"}:
+        return dff.iloc[0:0].copy()
+
+    base_mask = None
+    prefix_col = find_col_fuzzy(dff, ["fleet_prefix", "prefix", "nhom_fleet", "nhóm fleet"])
+    if prefix_col is not None and prefix_col in dff.columns:
+        prefix_series = dff[prefix_col].fillna("").astype(str).map(lambda x: re.sub(r"[^a-z0-9]+", "", norm_text(x)))
+        base_mask = prefix_series.eq(prefix)
+    else:
+        type_col = _daily_vehicle_type_col(dff)
+        if type_col is not None and type_col in dff.columns:
+            labels = _daily_vehicle_type_label_series(dff, type_col)
+            if prefix == "xdt":
+                base_mask = labels.eq("Xe Công ty")
+            else:
+                base_mask = labels.isin({"Xe thương quyền trả góp", "Xe thương quyền hợp tác"})
+
+    if base_mask is not None:
+        dff = dff.loc[base_mask].copy()
+    else:
+        # No prefix/type metadata found: keep as-is because this is likely a dedicated prefix sheet.
+        dff = _return_df_cached(dff)
+
+    if dff.empty:
+        return dff.copy()
+    if not selected:
+        return _return_df_cached(dff)
+
+    if prefix == "xdt":
+        return _return_df_cached(dff) if "Xe Công ty" in selected else dff.iloc[0:0].copy()
+
+    tq_selected = selected.intersection({"Xe thương quyền trả góp", "Xe thương quyền hợp tác"})
+    if not tq_selected:
+        return dff.iloc[0:0].copy()
+
+    type_col = _daily_vehicle_type_col(dff)
+    if type_col is not None and type_col in dff.columns:
+        labels = _daily_vehicle_type_label_series(dff, type_col)
+        filtered = dff.loc[labels.isin(tq_selected)].copy()
+        if not filtered.empty:
+            return filtered
+
+    if len(tq_selected) >= 2:
+        return _return_df_cached(dff)
+
+    # Try to split XPQ into trả góp/hợp tác only when the fleet sheet has a real text column
+    # containing those words. If it cannot be split safely, keep all XPQ instead of returning 0.
+    target = next(iter(tq_selected))
+    pattern = r"tra\s*gop|tra\s+gop" if "trả góp" in target.lower() else r"hop\s*tac|hop\s+tc|hop\s+dong\s+hop\s+tac"
+    text_cols = []
+    for cand in ["loai_xe", "loai_hinh", "loaihinh_hoptac", "nhom_nhien_lieu", "du_lieu_nguon", "ghi_chu_nguon"]:
+        if cand in dff.columns:
+            text_cols.append(cand)
+    if not text_cols:
+        for col in dff.columns:
+            try:
+                if pd.api.types.is_object_dtype(dff[col]) or pd.api.types.is_string_dtype(dff[col]):
+                    text_cols.append(col)
+            except Exception:
+                continue
+    if not text_cols:
+        return _return_df_cached(dff)
+    try:
+        joined = dff[text_cols].fillna("").astype(str).agg(" ".join, axis=1).map(norm_text)
+        mask = joined.str.contains(pattern, regex=True, na=False)
+        if bool(mask.any()):
+            return dff.loc[mask].copy()
+    except Exception:
+        pass
+    return _return_df_cached(dff)
+
+
+def _daily_fleet_strict_day_series(dff: pd.DataFrame) -> pd.Series:
+    """Return only real daily snapshot dates from fleet data; never fall back to month columns."""
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return pd.Series(dtype="datetime64[ns]")
+    col = _find_daily_date_col(dff)
+    if col is None or col not in dff.columns:
+        return pd.Series([pd.NaT] * len(dff), index=dff.index)
+    s = pd.to_datetime(dff[col], errors="coerce")
+    try:
+        if getattr(s.dt, "tz", None) is not None:
+            s = s.dt.tz_convert(VN_TZ).dt.tz_localize(None)
+    except Exception:
+        pass
+    return pd.to_datetime(s, errors="coerce").dt.normalize()
+
+
+def _daily_fleet_vf3_mask(dff: pd.DataFrame) -> pd.Series:
+    """Detect VF3 service vehicles so they are excluded from xe đang có."""
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return pd.Series(False, index=getattr(dff, "index", None))
+    text_cols = []
+    preferred = [
+        "loai_xe", "loại xe", "loai xe", "dong_xe", "dòng xe", "dong xe", "model",
+        "vehicle_model", "nhan_hieu", "nhãn hiệu", "nhan hieu", "hang_xe", "hãng xe",
+        "hang xe", "ten_loai_xe", "tên loại xe", "ten loai xe", "ghi_chu", "ghi chú",
+        "muc_dich_su_dung", "mục đích sử dụng", "nhom_xe", "nhóm xe",
+    ]
+    for cand in preferred:
+        col = find_col_fuzzy(dff, [cand])
+        if col is not None and col in dff.columns and col not in text_cols:
+            text_cols.append(col)
+    if not text_cols:
+        for col in dff.columns:
+            try:
+                if pd.api.types.is_object_dtype(dff[col]) or pd.api.types.is_string_dtype(dff[col]):
+                    text_cols.append(col)
+            except Exception:
+                continue
+    if not text_cols:
+        return pd.Series(False, index=dff.index)
+    try:
+        joined = dff[text_cols].fillna("").astype(str).agg(" ".join, axis=1)
+        compact = joined.map(lambda x: re.sub(r"[^a-z0-9]+", "", norm_text(x)))
+        return compact.str.contains("vf3", na=False)
+    except Exception:
+        return pd.Series(False, index=dff.index)
+
+
+def _daily_fleet_vehicle_count_frame(raw_df: pd.DataFrame, prefix: str, vehicle_types=None, seat_filter=None) -> pd.DataFrame:
+    """Daily xe đang có by date/region from real fleet snapshot rows.
+
+    Requirements:
+    - Use only rows with a real daily date column.
+    - Include inactive/parked vehicles because this is fleet availability, not revenue activity.
+    - Exclude VF3 service vehicles.
+    - Do not estimate missing days from month-end/latest snapshots.
+    """
+    if raw_df is None or not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+    dff = raw_df.copy()
+    dff = _filter_fleet_frame_by_daily_vehicle_type(dff, prefix, vehicle_types)
+    if dff is None or not isinstance(dff, pd.DataFrame) or dff.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+    dff["ngay_du_lieu"] = _daily_fleet_strict_day_series(dff)
+    dff = dff[dff["ngay_du_lieu"].notna()].copy()
+    if dff.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+    # App-side safety: old cache files may still include Khoan dien outside Phu Quoc.
+    # Keep Khoan dien only for Phu Quoc; exclude it elsewhere from xe dang co denominator.
+    dff = _daily_filter_khoan_dien_outside_phu_quoc(dff)
+    if dff.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+    vf3_mask = _daily_fleet_vf3_mask(dff)
+    try:
+        dff = dff.loc[~vf3_mask].copy()
+    except Exception:
+        pass
+    if dff.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+    region_col = find_col_fuzzy(dff, [
+        "khu_vuc", "khu vực", "khu vuc", "region", "kv", "area", "ten_khu_vuc", "tên khu vực",
+        "chi_nhanh", "chi nhánh", "chi nhanh", "don_vi", "đơn vị", "don vi", "tram", "trạm",
+    ])
+    if region_col is None or region_col not in dff.columns:
+        dff["khu_vuc"] = "Tổng hợp"
+    elif region_col != "khu_vuc":
+        dff["khu_vuc"] = dff[region_col]
+    dff["khu_vuc"] = dff["khu_vuc"].apply(canon_region_name).fillna("Tổng hợp")
+    dff = apply_region_scope_to_df(dff)
+    if dff is None or dff.empty:
+        return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+    plate_col = find_col_fuzzy(dff, [
+        "bien_kiem_soat", "biển kiểm soát", "bien kiem soat", "bien_so", "biển số",
+        "bks", "license_plate", "plate", "so_tai", "số tài", "ma_tai", "mã tài",
+        "vehicle_no", "taxi_no",
+    ])
+    count_col = find_col_fuzzy(dff, [
+        "so_luong_xe", "số lượng xe", "so luong xe", "so_xe", "số xe", "so xe",
+        "tong_so_xe", "tổng số xe", "tong xe", "so_luong", "số lượng", "quantity", "count", "sl",
+    ])
+
+    if plate_col is not None and plate_col in dff.columns:
+        tmp = dff[["ngay_du_lieu", "khu_vuc", plate_col]].copy()
+        tmp[plate_col] = tmp[plate_col].fillna("").astype(str).str.strip()
+        tmp = tmp[tmp[plate_col].ne("")].copy()
+        if tmp.empty:
+            return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+        out = tmp.groupby(["ngay_du_lieu", "khu_vuc"], as_index=False).agg(xe_dang_co=(plate_col, "nunique"))
+    elif count_col is not None and count_col in dff.columns:
+        tmp = dff[["ngay_du_lieu", "khu_vuc", count_col]].copy()
+        tmp["_count"] = pd.to_numeric(tmp[count_col], errors="coerce").fillna(0)
+        tmp = tmp[tmp["_count"] > 0].copy()
+        if tmp.empty:
+            return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+        out = tmp.groupby(["ngay_du_lieu", "khu_vuc"], as_index=False).agg(xe_dang_co=("_count", "sum"))
+    else:
+        tmp = dff[["ngay_du_lieu", "khu_vuc"]].copy()
+        out = tmp.groupby(["ngay_du_lieu", "khu_vuc"], as_index=False).size().rename(columns={"size": "xe_dang_co"})
+
+    out["xe_dang_co"] = pd.to_numeric(out["xe_dang_co"], errors="coerce").fillna(0)
+    out = out[out["xe_dang_co"] > 0].copy()
+    return out[["ngay_du_lieu", "khu_vuc", "xe_dang_co"]]
+
+
+DAILY_FLEET_SNAPSHOT_SHEET_CANDIDATES = {
+    "xdt": [
+        "PhuongTien_XeTrucThuoc_KV_Ngay", "XeTrucThuoc_KV_Ngay", "XeTrucThuoc_Ngay_KV",
+        "PhuongTien_XeTrucThuoc_Ngay", "XeDangCo_XeTrucThuoc_KV_Ngay",
+        "DanhSachXeTrucThuoc_KV_Ngay", "DanhSachXeTrucThuoc_Ngay", "XDT_KV_Ngay", "XeDT_KV_Ngay",
+    ],
+    "xpq": [
+        "PhuongTien_XePhanQuyen_KV_Ngay", "XePhanQuyen_KV_Ngay", "XePhanQuyen_Ngay_KV",
+        "PhuongTien_XePhanQuyen_Ngay", "XeDangCo_XePhanQuyen_KV_Ngay",
+        "DanhSachXePhanQuyen_KV_Ngay", "DanhSachXePhanQuyen_Ngay", "XPQ_KV_Ngay", "XePQ_KV_Ngay",
+    ],
+    "generic": [
+        "PhuongTien_KV_Ngay", "PhuongTien_Ngay_KhuVuc", "PhuongTien_Ngay",
+        "Xe_KV_Ngay", "Xe_Ngay_KhuVuc", "Xe_Ngay",
+        "DanhSachXe_KV_Ngay", "DanhSachXe_Ngay", "XeDangCo_KV_Ngay", "XeDangCo_Ngay",
+        "DailyFleetSnapshot", "Fleet_Daily", "Fleet_KV_Ngay", "Vehicle_Daily",
+    ],
+}
+
+
+def _read_daily_fleet_snapshot_source(prefix: str):
+    """Prefer explicit daily fleet snapshot sheets before falling back to the menu fleet source."""
+    prefix = str(prefix or "")
+    candidates = list(DAILY_FLEET_SNAPSHOT_SHEET_CANDIDATES.get(prefix, []))
+    candidates.extend(DAILY_FLEET_SNAPSHOT_SHEET_CANDIDATES.get("generic", []))
+    try:
+        raw = _read_optional_sheet(candidates, menu_key=None)
+        if isinstance(raw, pd.DataFrame) and not raw.empty:
+            return raw
+    except Exception:
+        pass
+    try:
+        return _read_vehicle_source_sheet(prefix)
+    except Exception:
+        return globals().get(f"df_{prefix}")
+
+
+def _daily_fleet_available_daily(vehicle_types=None, seat_filter=None) -> pd.DataFrame:
+    """Disabled for Daily menu; kept as a no-op compatibility helper."""
+    return pd.DataFrame(columns=["ngay_du_lieu", "khu_vuc", "xe_dang_co"])
+
+
+def _daily_available_vehicle_summary(metric_frame: pd.DataFrame, vehicle_types=None, seat_filter=None, start_date=None, end_date=None, regions=None) -> dict:
+    """Disabled for Daily menu; kept as a no-op compatibility helper."""
+    return {"total_available_vehicle_days": 0.0, "rows": [], "source": "disabled"}
+
+
+def _daily_vehicle_kpi_payload(start_date=None, end_date=None, regions=None, drivers=None, vehicle_types=None, seat_filter=None, metric_frame=None, max_items: int = 8, available_summary=None):
+    """Rows for the Xe hoạt động zoom table.
+
+    Lean Daily version: only active vehicles, vehicle-days and DT/xe KD-ngày.
+    It intentionally does not calculate the removed total-fleet denominator, so this
+    callback stays on the already-aggregated Daily revenue/activity sheets.
+    """
+    selected_types = _normalize_multi_value(vehicle_types)
+    if selected_types:
+        _ensure_daily_driver_detail_loaded()
+    metric_frame = metric_frame if isinstance(metric_frame, pd.DataFrame) else pd.DataFrame()
+    cache_key = (
+        str(start_date or ""), str(end_date or ""),
+        tuple(sorted(_normalize_multi_value(regions))),
+        tuple(sorted(_normalize_multi_value(drivers))),
+        tuple(sorted(selected_types)),
+        _df_cache_signature(metric_frame),
+        _daily_filter_cache_scope_key(),
+        "lean_vehicle_payload_v2",
+    )
+    cached = DAILY_VEHICLE_KPI_PAYLOAD_CACHE.get(cache_key)
+    if isinstance(cached, list):
+        return [dict(x) for x in cached]
+
+    op_source = _first_non_empty_df(
+        df_daily_taixe_lh_checker if selected_types else pd.DataFrame(),
+        df_daily_taixe_checker,
+        df_daily_raw_checker,
+    )
+    op = pd.DataFrame()
+    if isinstance(op_source, pd.DataFrame) and not op_source.empty:
+        op = _filter_daily_frame(op_source, start_date, end_date, regions, source_label="Tài xế ngày", drivers=drivers)
+        if selected_types:
+            op = _filter_daily_vehicle_type_frame(op, selected_types)
+        op = _daily_filter_khoan_dien_outside_phu_quoc(op)
+        if seat_filter:
+            op = _filter_daily_seat_frame(op, seat_filter)
+
+    revenue_by_region = pd.DataFrame(columns=["khu_vuc", "tong_doanh_thu", "vehicle_day"])
+    if isinstance(metric_frame, pd.DataFrame) and not metric_frame.empty and "khu_vuc" in metric_frame.columns:
+        tmp = metric_frame.copy()
+        if "tong_doanh_thu" not in tmp.columns:
+            tmp["tong_doanh_thu"] = 0
+        if "so_xe" not in tmp.columns:
+            tmp["so_xe"] = 0
+        tmp["khu_vuc"] = tmp["khu_vuc"].apply(canon_region_name)
+        tmp["tong_doanh_thu"] = pd.to_numeric(tmp["tong_doanh_thu"], errors="coerce").fillna(0)
+        tmp["so_xe"] = pd.to_numeric(tmp["so_xe"], errors="coerce").fillna(0)
+        revenue_by_region = tmp.groupby("khu_vuc", as_index=False).agg(
+            tong_doanh_thu=("tong_doanh_thu", "sum"),
+            vehicle_day=("so_xe", "sum"),
+        )
+
+    active_by_region = pd.DataFrame()
+    if isinstance(op, pd.DataFrame) and not op.empty and "khu_vuc" in op.columns:
+        op = op.copy()
+        op["khu_vuc"] = op["khu_vuc"].apply(canon_region_name)
+        def _nunique_clean(series):
+            return series.fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique()
+        agg = {}
+        if "bks" in op.columns:
+            agg["active_vehicle"] = ("bks", _nunique_clean)
+        elif "so_xe" in op.columns:
+            op["_so_xe_num"] = pd.to_numeric(op["so_xe"], errors="coerce").fillna(0)
+            agg["active_vehicle"] = ("_so_xe_num", "sum")
+        if "ho_ten" in op.columns:
+            agg["active_driver"] = ("ho_ten", _nunique_clean)
+        elif "so_tai_xe" in op.columns:
+            op["_so_tai_xe_num"] = pd.to_numeric(op["so_tai_xe"], errors="coerce").fillna(0)
+            agg["active_driver"] = ("_so_tai_xe_num", "sum")
+        if agg:
+            active_by_region = op.groupby("khu_vuc", as_index=False).agg(**agg)
+
+    if active_by_region.empty and not revenue_by_region.empty:
+        active_by_region = revenue_by_region[["khu_vuc", "vehicle_day"]].copy()
+        active_by_region["active_vehicle"] = active_by_region["vehicle_day"]
+        active_by_region["active_driver"] = 0
+        active_by_region = active_by_region.drop(columns=["vehicle_day"], errors="ignore")
+
+    if active_by_region.empty and revenue_by_region.empty:
         return []
-    scoped = apply_region_scope_to_df(source)
-    names = scoped["ho_ten"].fillna("").astype(str).str.strip()
-    names = sorted([x for x in names.unique().tolist() if x])
-    return [{"label": x, "value": x} for x in names]
+
+    g = active_by_region.merge(revenue_by_region, on="khu_vuc", how="outer").fillna(0)
+    for c in ["active_vehicle", "active_driver", "tong_doanh_thu", "vehicle_day"]:
+        if c not in g.columns:
+            g[c] = 0
+        g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0)
+    g["avg_per_vehicle_day"] = np.where(g["vehicle_day"] > 0, g["tong_doanh_thu"] / g["vehicle_day"].replace(0, 1), 0)
+    g = g.sort_values("active_vehicle", ascending=False)
+    if max_items:
+        g = g.head(int(max_items))
+    total_active = float(g["active_vehicle"].sum()) if not g.empty else 0.0
+    rows = []
+    for _, r in g.iterrows():
+        active = float(r.get("active_vehicle", 0) or 0)
+        rows.append({
+            "khu_vuc": str(r.get("khu_vuc", "")),
+            "metric_fmt": fmt_vn(active),
+            "vehicle_day_fmt": fmt_vn(r.get("vehicle_day", 0)),
+            "avg_per_vehicle_day_fmt": fmt_vn(r.get("avg_per_vehicle_day", 0)),
+            "pct": (active / total_active * 100.0) if total_active > 0 else 0.0,
+            "pct_fmt": fmt_pct((active / total_active * 100.0) if total_active > 0 else 0.0, 1),
+            "color": REGION_COLOR_MAP.get(str(r.get("khu_vuc", "")), "#888"),
+        })
+    try:
+        if len(DAILY_VEHICLE_KPI_PAYLOAD_CACHE) > DAILY_VEHICLE_KPI_PAYLOAD_CACHE_MAX:
+            DAILY_VEHICLE_KPI_PAYLOAD_CACHE.clear()
+        DAILY_VEHICLE_KPI_PAYLOAD_CACHE[cache_key] = [dict(x) for x in rows]
+    except Exception:
+        pass
+    return rows
+
+
+DAILY_REGION_DETAIL_ORDER = [
+    "An Giang", "Bạc Liêu", "Cà Mau", "Cần Thơ", "Hậu Giang",
+    "Phú Quốc", "Rạch Giá", "Sóc Trăng", "Vĩnh Long",
+]
+
+
+def _daily_detail_regions(selected_regions=None) -> list[str]:
+    """Region order for Daily KPI detail tables.
+
+    When no region filter is selected, show all 9 operating regions so every Daily
+    KPI card detail is comparable across branches, including zero-value regions.
+    When a region filter is selected, respect that explicit filter.
+    """
+    selected = _normalize_multi_value(selected_regions)
+    if selected:
+        return [str(canon_region_name(x) or x) for x in selected]
+    try:
+        scope = current_user_region_scope()
+        if scope is not None:
+            scope_set = {str(x) for x in _normalize_region_list(scope)}
+            return [r for r in DAILY_REGION_DETAIL_ORDER if str(r) in scope_set]
+    except Exception:
+        pass
+    return DAILY_REGION_DETAIL_ORDER.copy()
+
+
+def _daily_region_order_index(region_name: str) -> int:
+    try:
+        return DAILY_REGION_DETAIL_ORDER.index(str(region_name))
+    except Exception:
+        return 999
+
+
+def _sort_daily_detail_rows(rows, numeric_key: str, descending: bool = True):
+    out = [] if rows is None else [dict(r) for r in rows]
+    def _num(row):
+        try:
+            return float(row.get(numeric_key, 0) or 0)
+        except Exception:
+            return 0.0
+    return sorted(out, key=lambda r: (-_num(r) if descending else _num(r), _daily_region_order_index(r.get("khu_vuc", "")), str(r.get("khu_vuc", ""))))
+
+
+def _complete_daily_value_payload(rows, selected_regions=None, value_key="value", fmt_key="value_fmt", pct_key="pct"):
+    base_rows = [] if rows is None else [dict(r) for r in rows]
+    order = _daily_detail_regions(selected_regions)
+    by_region = {}
+    for row in base_rows:
+        region = str(canon_region_name(row.get("khu_vuc")) or row.get("khu_vuc") or "").strip()
+        if not region:
+            continue
+        row["khu_vuc"] = region
+        by_region[region] = row
+    for region in order:
+        if region not in by_region:
+            by_region[region] = {
+                "khu_vuc": region,
+                value_key: 0.0,
+                fmt_key: fmt_vn(0),
+                "color": REGION_COLOR_MAP.get(region, "#888"),
+            }
+    total = 0.0
+    for row in by_region.values():
+        try:
+            total += float(row.get(value_key, 0) or 0)
+        except Exception:
+            pass
+    out = []
+    for region in order:
+        row = by_region.get(region, {"khu_vuc": region})
+        try:
+            val = float(row.get(value_key, 0) or 0)
+        except Exception:
+            val = 0.0
+        row[value_key] = val
+        row[fmt_key] = row.get(fmt_key) or fmt_vn(val)
+        if pct_key:
+            pct = (val / total * 100.0) if total > 0 else 0.0
+            row[pct_key] = pct
+            row["pct_fmt"] = fmt_pct(pct, 1)
+        row["color"] = row.get("color") or REGION_COLOR_MAP.get(region, "#888")
+        out.append(row)
+    return _sort_daily_detail_rows(out, value_key, descending=True)
+
+
+def _complete_daily_avg_payload(rows, selected_regions=None):
+    base_rows = [] if rows is None else [dict(r) for r in rows]
+    order = _daily_detail_regions(selected_regions)
+    by_region = {}
+    for row in base_rows:
+        region = str(canon_region_name(row.get("khu_vuc")) or row.get("khu_vuc") or "").strip()
+        if not region:
+            continue
+        row["khu_vuc"] = region
+        by_region[region] = row
+    out = []
+    for region in order:
+        row = by_region.get(region, {"khu_vuc": region})
+        try:
+            avg = float(row.get("avg", 0) or 0)
+        except Exception:
+            avg = 0.0
+        row["avg"] = avg
+        row["avg_fmt"] = row.get("avg_fmt") or fmt_vn(avg)
+        row["color"] = row.get("color") or REGION_COLOR_MAP.get(region, "#888")
+        out.append(row)
+    return _sort_daily_detail_rows(out, "avg", descending=True)
+
+
+def _complete_daily_vehicle_payload(rows, selected_regions=None):
+    base_rows = [] if rows is None else [dict(r) for r in rows]
+    order = _daily_detail_regions(selected_regions)
+    by_region = {}
+    for row in base_rows:
+        region = str(canon_region_name(row.get("khu_vuc")) or row.get("khu_vuc") or "").strip()
+        if not region:
+            continue
+        row["khu_vuc"] = region
+        by_region[region] = row
+    for region in order:
+        if region not in by_region:
+            by_region[region] = {
+                "khu_vuc": region,
+                "metric_fmt": fmt_vn(0),
+                "vehicle_day_fmt": fmt_vn(0),
+                "avg_per_vehicle_day_fmt": fmt_vn(0),
+                "pct": 0.0,
+                "pct_fmt": fmt_pct(0, 1),
+                "color": REGION_COLOR_MAP.get(region, "#888"),
+            }
+    # Recompute percentage from the displayed active-vehicle metric where possible.
+    def _parse_fmt_number(value):
+        try:
+            return float(str(value).replace(".", "").replace(",", "."))
+        except Exception:
+            return 0.0
+    total_active = sum(_parse_fmt_number(by_region.get(region, {}).get("metric_fmt", 0)) for region in order)
+    out = []
+    for region in order:
+        row = by_region.get(region, {"khu_vuc": region})
+        for key in ["metric_fmt", "vehicle_day_fmt", "avg_per_vehicle_day_fmt"]:
+            row[key] = row.get(key) or fmt_vn(0)
+        active = _parse_fmt_number(row.get("metric_fmt", 0))
+        pct = (active / total_active * 100.0) if total_active > 0 else 0.0
+        row["pct"] = pct
+        row["pct_fmt"] = fmt_pct(pct, 1)
+        row["color"] = row.get("color") or REGION_COLOR_MAP.get(region, "#888")
+        row["_active_numeric"] = active
+        out.append(row)
+    out = _sort_daily_detail_rows(out, "_active_numeric", descending=True)
+    for row in out:
+        try:
+            row.pop("_active_numeric", None)
+        except Exception:
+            pass
+    return out
 
 
 def _daily_default_start_date(min_d, max_d):
@@ -8154,11 +9180,50 @@ def _first_non_empty_df(*frames):
     return pd.DataFrame()
 
 
+def _ensure_daily_driver_detail_loaded():
+    """Load driver-specific Daily breakdown sheets only when a driver filter is used."""
+    global DAILY_DRIVER_DETAIL_LOADED, df_daily_taixe_lh_checker, df_daily_taixe_hinhthuc_checker, df_daily_taixe_luong_checker
+    if not DASH_DAILY_LAZY_DRIVER_DETAIL or DAILY_DRIVER_DETAIL_LOADED:
+        return
+    started = time.perf_counter()
+    try:
+        df_daily_taixe_lh_checker = _df_reset_in_place(
+            df_daily_taixe_lh_checker,
+            _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES),
+        )
+        df_daily_taixe_hinhthuc_checker = _df_reset_in_place(
+            df_daily_taixe_hinhthuc_checker,
+            _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES),
+        )
+        df_daily_taixe_luong_checker = _df_reset_in_place(
+            df_daily_taixe_luong_checker,
+            _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LUONG_SHEET_CANDIDATES),
+        )
+    finally:
+        DAILY_DRIVER_DETAIL_LOADED = True
+        try:
+            DAILY_DRIVER_SOURCE_CACHE.clear()
+            DAILY_FILTER_CACHE.clear()
+            DAILY_LATEST_OUTPUT_CACHE.clear()
+        except Exception:
+            pass
+        if DASH_LOG_CALLBACK_TIMING or DASH_LOG_BOOT_TIMING:
+            _perf_log("daily_driver_detail_lazy_load", started)
+
+
 def _daily_sources_for_driver_filter(drivers=None):
     ensure_daily_data_loaded()
     drivers_norm = _normalize_multi_value(drivers)
     if drivers_norm:
-        driver_key = (tuple(sorted(drivers_norm)), _daily_filter_cache_scope_key())
+        _ensure_daily_driver_detail_loaded()
+        driver_key = (
+            tuple(sorted(drivers_norm)),
+            _daily_filter_cache_scope_key(),
+            _df_cache_signature(df_daily_taixe_checker),
+            _df_cache_signature(df_daily_taixe_lh_checker),
+            _df_cache_signature(df_daily_taixe_hinhthuc_checker),
+            _df_cache_signature(df_daily_taixe_luong_checker),
+        )
         cached = DAILY_DRIVER_SOURCE_CACHE.get(driver_key)
         if cached is not None:
             return cached
@@ -8168,10 +9233,8 @@ def _daily_sources_for_driver_filter(drivers=None):
         source_mix = _first_non_empty_df(
             df_daily_taixe_hinhthuc_checker,
             df_daily_taixe_luong_checker,
-            df_daily_taixe_socho_checker,
             df_daily_hinhthuc_checker,
             df_daily_luong_checker,
-            df_daily_socho_checker,
             df_daily_raw_checker,
         )
         result = (source_dt, source_lh, source_mix)
@@ -8182,23 +9245,56 @@ def _daily_sources_for_driver_filter(drivers=None):
     return _daily_primary_source_df(), _daily_lh_source_df(), _daily_mix_source_df()
 
 
-def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None, drivers=None):
+def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None, drivers=None, vehicle_types=None, seat_filter=None):
     ensure_daily_data_loaded()
-    source = _first_non_empty_df(df_daily_taixe_checker, df_daily_raw_checker)
+    selected_types = _normalize_multi_value(vehicle_types)
+    if selected_types:
+        _ensure_daily_driver_detail_loaded()
+    source = _first_non_empty_df(df_daily_taixe_lh_checker if selected_types else pd.DataFrame(), df_daily_taixe_checker, df_daily_raw_checker)
+    cache_key = (
+        str(start_date or ""), str(end_date or ""),
+        tuple(sorted(_normalize_multi_value(regions))),
+        tuple(sorted(_normalize_multi_value(drivers))),
+        tuple(sorted(selected_types)),
+        _df_cache_signature(source),
+        _daily_filter_cache_scope_key(),
+    )
+    cached = DAILY_OPERATING_COUNTS_CACHE.get(cache_key)
+    if isinstance(cached, dict):
+        return dict(cached)
     if source is None or not isinstance(source, pd.DataFrame) or source.empty:
         return None
     dff = _filter_daily_frame(source, start_date, end_date, regions, source_label="Tài xế ngày", drivers=drivers)
+    if selected_types:
+        dff = _filter_daily_vehicle_type_frame(dff, selected_types)
+    dff = _daily_filter_khoan_dien_outside_phu_quoc(dff)
+    if seat_filter:
+        dff = _filter_daily_seat_frame(dff, seat_filter)
     if dff.empty:
-        return {"vehicles": 0, "drivers": 0, "regions": 0}
+        result = {"vehicles": 0, "drivers": 0, "regions": 0}
+        try:
+            if len(DAILY_OPERATING_COUNTS_CACHE) > DAILY_OPERATING_COUNTS_CACHE_MAX:
+                DAILY_OPERATING_COUNTS_CACHE.clear()
+            DAILY_OPERATING_COUNTS_CACHE[cache_key] = dict(result)
+        except Exception:
+            pass
+        return result
     def _nunique(col):
         if col not in dff.columns:
             return 0
         return int(dff[col].fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique())
-    return {
+    result = {
         "vehicles": _nunique("bks"),
         "drivers": _nunique("ho_ten"),
         "regions": _nunique("khu_vuc"),
     }
+    try:
+        if len(DAILY_OPERATING_COUNTS_CACHE) > DAILY_OPERATING_COUNTS_CACHE_MAX:
+            DAILY_OPERATING_COUNTS_CACHE.clear()
+        DAILY_OPERATING_COUNTS_CACHE[cache_key] = dict(result)
+    except Exception:
+        pass
+    return result
 
 
 def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, drivers=None, limit: int = 10):
@@ -8281,6 +9377,7 @@ def _daily_table_columns():
         {"name": "Số cuốc", "id": "tong_so_cuoc_fmt"},
         {"name": "TB / cuốc", "id": "avg_per_trip_fmt"},
         {"name": "Xe hoạt động", "id": "so_xe_fmt"},
+        {"name": "TB / xe-ngày", "id": "avg_per_vehicle_day_fmt"},
         {"name": "Tài xế", "id": "so_tai_xe_fmt"},
         {"name": "KM vận doanh", "id": "sokm_vandoanh_fmt"},
         {"name": "KM có khách", "id": "sokm_cokhach_fmt"},
@@ -8345,6 +9442,10 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         0,
     )
     out["avg_per_trip_fmt"] = pd.to_numeric(out["avg_per_trip"], errors="coerce").fillna(0).apply(fmt_vn)
+    _daily_table_vehicle_days = pd.to_numeric(out["so_xe"], errors="coerce").fillna(0) if "so_xe" in out.columns else pd.Series(0, index=out.index)
+    _daily_table_revenue = pd.to_numeric(out["tong_doanh_thu"], errors="coerce").fillna(0) if "tong_doanh_thu" in out.columns else pd.Series(0, index=out.index)
+    out["avg_per_vehicle_day"] = np.where(_daily_table_vehicle_days > 0, _daily_table_revenue / _daily_table_vehicle_days.replace(0, 1), 0)
+    out["avg_per_vehicle_day_fmt"] = pd.to_numeric(out["avg_per_vehicle_day"], errors="coerce").fillna(0).apply(fmt_vn)
     out["so_xe_fmt"] = pd.to_numeric(out.get("so_xe", 0), errors="coerce").fillna(0).apply(fmt_vn)
     out["so_tai_xe_fmt"] = pd.to_numeric(out.get("so_tai_xe", 0), errors="coerce").fillna(0).apply(fmt_vn)
     out["sokm_vandoanh_fmt"] = pd.to_numeric(out.get("sokm_vandoanh", 0), errors="coerce").fillna(0).apply(fmt_vn)
@@ -8355,7 +9456,11 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         0,
     )
     out["km_co_khach_ratio_fmt"] = pd.to_numeric(out["km_co_khach_ratio"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
+<<<<<<< HEAD
     result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
+=======
+    result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
+>>>>>>> d4ecea7 (Update dashboard app and data)
     if cache_key is not None:
         if len(DAILY_TABLE_FRAME_CACHE) > DAILY_TABLE_FRAME_CACHE_MAX:
             DAILY_TABLE_FRAME_CACHE.clear()
@@ -8385,6 +9490,7 @@ def daily_latest_page():
             display_format="DD/MM/YYYY",
             minimum_nights=0,
             clearable=False,
+            updatemode="bothdates",
             className="executive-date-picker",
         ),
         className="executive-date-picker"
@@ -8395,7 +9501,7 @@ def daily_latest_page():
             "Ngày dữ liệu",
             date_picker,
             "daily-date-wrap",
-            4,
+            3,
             "fa-calendar-day",
             "Mặc định mở 30 ngày gần nhất",
         ),
@@ -8410,9 +9516,24 @@ def daily_latest_page():
                 clearable=True,
             ),
             "daily-region-wrap",
-            4,
+            3,
             "fa-map-location-dot",
             "Khoanh vùng doanh thu ngày",
+        ),
+        make_filter_col(
+            "Phân loại xe",
+            exec_dropdown(
+                id="daily-vehicle-type",
+                options=_daily_vehicle_type_options(),
+                value=[],
+                multi=True,
+                placeholder="Tất cả phân loại xe",
+                clearable=True,
+            ),
+            "daily-vehicle-type-wrap",
+            3,
+            "fa-car-side",
+            "Lọc Xe Công ty / thương quyền",
         ),
         make_filter_col(
             "Tài xế",
@@ -8425,7 +9546,7 @@ def daily_latest_page():
                 clearable=True,
             ),
             "daily-driver-wrap",
-            4,
+            3,
             "fa-id-card",
             "Lọc riêng theo từng tài xế",
         ),
@@ -8438,6 +9559,7 @@ def daily_latest_page():
         right_children=[
             filter_panel_chip("Lọc theo ngày", fa_icon("fa-calendar-day", 12, GREEN_PRIMARY)),
             filter_panel_chip("30 ngày gần nhất", fa_icon("fa-bolt", 12, GREEN_PRIMARY)),
+            filter_panel_chip("Lọc phân loại xe", fa_icon("fa-car-side", 12, GREEN_PRIMARY)),
             filter_panel_chip("Lọc theo tài xế", fa_icon("fa-id-card", 12, GREEN_PRIMARY)),
         ],
         class_name="mb-3 executive-control-dock"
@@ -12236,52 +13358,75 @@ def update_home(year_val, months, regions, theme):
     Input("daily-date-range", "end_date", allow_optional=True),
     Input("daily-region", "value", allow_optional=True),
     Input("daily-driver", "value", allow_optional=True),
+<<<<<<< HEAD
+=======
+    Input("daily-vehicle-type", "value", allow_optional=True),
+>>>>>>> d4ecea7 (Update dashboard app and data)
     State("theme", "data"),
 )
 @timed_callback("daily_latest")
-def update_daily_latest(start_date, end_date, regions, drivers, theme):
+def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, theme):
     ensure_daily_data_loaded()
     theme = theme or "light"
     regions = _normalize_multi_value(regions)
     drivers = _normalize_multi_value(drivers)
+    vehicle_types = _normalize_multi_value(vehicle_types)
     daily_source_label = _daily_source_label()
     source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers)
+<<<<<<< HEAD
     daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, theme, source_dt, source_lh, source_hd)
+=======
+    daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_types, None, theme, source_dt, source_lh, source_hd)
+>>>>>>> d4ecea7 (Update dashboard app and data)
     cached_daily_output = _daily_output_cache_get(daily_cache_key)
     if cached_daily_output is not None:
         return cached_daily_output
     dff_dt = _filter_daily_frame(source_dt, start_date, end_date, regions, source_label=daily_source_label, drivers=drivers)
     dff_lh = _filter_daily_frame(source_lh, start_date, end_date, regions, source_label="Loại hình ngày", drivers=drivers)
     dff_hd = _filter_daily_frame(source_hd, start_date, end_date, regions, source_label="Cơ cấu vận hành ngày", drivers=drivers)
-
+    if vehicle_types:
+        dff_lh = _filter_daily_vehicle_type_frame(dff_lh, vehicle_types)
+        if _daily_frame_has_vehicle_type(dff_dt):
+            dff_dt = _filter_daily_vehicle_type_frame(dff_dt, vehicle_types)
+        else:
+            dff_dt = _daily_metric_frame_from_lh(dff_lh)
+        dff_hd = _filter_daily_vehicle_type_frame(dff_hd, vehicle_types)
     date_txt = _format_date_range_text(start_date, end_date)
     region_txt = ", ".join(regions[:3]) if regions and len(regions) <= 3 else (f"{len(regions)} khu vực" if regions else ("Phạm vi tài khoản" if current_user_region_scope() is not None else "Tất cả khu vực"))
     driver_txt = ", ".join(drivers[:2]) if drivers and len(drivers) <= 2 else (f"{len(drivers)} tài xế" if drivers else "Tất cả tài xế")
+    vehicle_type_txt = ", ".join(vehicle_types[:2]) if vehicle_types and len(vehicle_types) <= 2 else (f"{len(vehicle_types)} phân loại xe" if vehicle_types else "Tất cả phân loại xe")
     summary_children = [
         summary_pill(date_txt, fa_icon("fa-calendar-day", 12, GREEN_PRIMARY)),
         summary_pill(region_txt, fa_icon("fa-map-location-dot", 12, GREEN_PRIMARY)),
         summary_pill(driver_txt, fa_icon("fa-id-card", 12, GREEN_PRIMARY)),
+        summary_pill(vehicle_type_txt, fa_icon("fa-car-side", 12, GREEN_PRIMARY)),
         summary_pill(daily_source_label, fa_icon("fa-database", 12, GREEN_PRIMARY)),
         html.Span([fa_icon("fa-bolt", 11, GREEN_PRIMARY), html.Span("30 ngày gần nhất", className="ms-1")], className="daily-latest-badge"),
     ]
 
     style_cell, style_header = _detail_table_theme_styles(theme, "dt")
 
-    total_rev = float(pd.to_numeric(dff_dt.get("tong_doanh_thu", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
-    total_trip = float(pd.to_numeric(dff_dt.get("tong_so_cuoc", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
-    total_km = float(pd.to_numeric(dff_dt.get("sokm_vandoanh", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
-    paid_km = float(pd.to_numeric(dff_dt.get("sokm_cokhach", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
+    daily_views = _daily_filtered_agg_view(dff_dt)
+    region_g = daily_views.get("region", pd.DataFrame())
+    g_day = daily_views.get("day", pd.DataFrame())
+
+    total_rev = float(pd.to_numeric(region_g.get("tong_doanh_thu", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
+    total_trip = float(pd.to_numeric(region_g.get("tong_so_cuoc", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
+    total_km = float(pd.to_numeric(region_g.get("sokm_vandoanh", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
+    paid_km = float(pd.to_numeric(region_g.get("sokm_cokhach", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
     km_paid_ratio = paid_km / total_km * 100.0 if total_km else 0.0
     avg_rev_trip = total_rev / total_trip if total_trip else 0.0
-    active_regions = int(dff_dt["khu_vuc"].nunique()) if (not dff_dt.empty and "khu_vuc" in dff_dt.columns) else 0
-    unique_counts = _daily_unique_operating_counts(start_date, end_date, regions, drivers)
+    vehicle_days = float(pd.to_numeric(region_g.get("so_xe", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
+    avg_rev_vehicle_day = total_rev / vehicle_days if vehicle_days else 0.0
+    active_regions = int(region_g["khu_vuc"].nunique()) if (not region_g.empty and "khu_vuc" in region_g.columns) else 0
+    unique_counts = _daily_unique_operating_counts(start_date, end_date, regions, drivers, vehicle_types, None)
     if unique_counts is not None:
         active_vehicles = float(unique_counts.get("vehicles", 0))
         active_drivers = float(unique_counts.get("drivers", 0))
         active_regions = int(unique_counts.get("regions", active_regions))
     else:
-        active_vehicles = float(pd.to_numeric(dff_dt.get("so_xe", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
-        active_drivers = float(pd.to_numeric(dff_dt.get("so_tai_xe", 0), errors="coerce").fillna(0).sum()) if not dff_dt.empty else 0.0
+        active_vehicles = float(pd.to_numeric(region_g.get("so_xe", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
+        active_drivers = float(pd.to_numeric(region_g.get("so_tai_xe", 0), errors="coerce").fillna(0).sum()) if not region_g.empty else 0.0
     latest_label = "Không có dữ liệu"
     if not dff_dt.empty and "ngay_du_lieu" in dff_dt.columns:
         try:
@@ -12289,23 +13434,53 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         except Exception:
             latest_label = date_txt
 
-    total_payload = region_payload_value(dff_dt, "tong_doanh_thu", regions, max_items=6)
-    trip_payload = region_payload_value(dff_dt, "tong_so_cuoc", regions, max_items=6)
-    avg_payload = region_payload_avg_revenue_per_trip(dff_dt, "tong_doanh_thu", regions, max_items=6)
+    total_payload = _complete_daily_value_payload(
+        _daily_payload_from_region_view(region_g, "tong_doanh_thu", regions),
+        regions,
+        value_key="value",
+        fmt_key="value_fmt",
+        pct_key="pct",
+    )
+    trip_payload = _complete_daily_value_payload(
+        _daily_payload_from_region_view(region_g, "tong_so_cuoc", regions),
+        regions,
+        value_key="value",
+        fmt_key="value_fmt",
+        pct_key="pct",
+    )
+    avg_payload = _complete_daily_avg_payload(
+        _daily_avg_payload_from_region_view(region_g, regions),
+        regions,
+    )
+    vehicle_payload = _complete_daily_vehicle_payload(
+        _daily_vehicle_kpi_payload(start_date, end_date, regions, drivers, vehicle_types, None, metric_frame=dff_dt, max_items=None),
+        regions,
+    )
 
     daily_kpi1 = home_kpi_markup(fmt_vn(total_rev), f"Doanh thu • {date_txt}", extra_lines=region_value_lines_from_payload(total_payload, 4))
     daily_kpi2 = home_kpi_markup(fmt_vn(total_trip), f"Số cuốc • {date_txt}", extra_lines=region_value_lines_from_payload(trip_payload, 4))
     daily_kpi3 = home_kpi_markup(fmt_vn(avg_rev_trip), f"TB/cuốc • KM khách {fmt_pct(km_paid_ratio, 1)}", extra_lines=region_value_lines_from_payload(avg_payload, 4, value_key="avg_fmt", pct_key=None))
-    daily_kpi4 = home_kpi_markup(fmt_vn(active_vehicles), f"Xe hoạt động • {fmt_vn(active_drivers)} tài xế", extra_lines=[_ellipsis_div([fa_icon("fa-road", 11, GREEN_PRIMARY), html.Span(f" {fmt_vn(total_km)} KM vận doanh • mới nhất {latest_label}", className="ms-1")])])
+    daily_kpi4 = home_kpi_markup(
+        fmt_vn(active_vehicles),
+        f"Xe hoạt động • {fmt_vn(active_drivers)} tài xế",
+        extra_lines=[
+            _ellipsis_div([fa_icon("fa-car-side", 11, GREEN_PRIMARY), html.Span(f" Lượt xe kinh doanh-ngày {fmt_vn(vehicle_days)} • DT TB/xe KD-ngày {fmt_vn(avg_rev_vehicle_day)}", className="ms-1")]),
+            _ellipsis_div([fa_icon("fa-road", 11, GREEN_PRIMARY), html.Span(f" {fmt_vn(total_km)} KM vận doanh • mới nhất {latest_label}", className="ms-1")]),
+        ],
+    )
 
     daily_kpi1_store = pack_kpi_store("Doanh thu theo ngày", fmt_vn(total_rev), date_txt, total_payload)
     daily_kpi2_store = pack_kpi_store("Số cuốc theo ngày", fmt_vn(total_trip), date_txt, trip_payload)
     daily_kpi3_store = pack_kpi_store("TB / cuốc", fmt_vn(avg_rev_trip), f"KM khách {fmt_pct(km_paid_ratio, 1)}", avg_payload)
-    daily_kpi4_store = pack_kpi_store("Xe hoạt động", fmt_vn(active_vehicles), f"{fmt_vn(active_drivers)} tài xế • {active_regions} khu vực", total_payload)
+    daily_kpi4_store = pack_kpi_store("Xe hoạt động", fmt_vn(active_vehicles), f"{fmt_vn(active_drivers)} tài xế • Lượt xe KD-ngày {fmt_vn(vehicle_days)} • DT TB/xe KD-ngày {fmt_vn(avg_rev_vehicle_day)}", vehicle_payload)
 
     if dff_dt.empty:
         fig_empty = empty_figure("Không có dữ liệu theo ngày", theme)
+<<<<<<< HEAD
         empty_store = pack_fig_store(fig_empty, rows=[], meta={"chart": "daily_empty", "metric_label": "Dữ liệu theo ngày"})
+=======
+        empty_store = pack_daily_fig_store(fig_empty, rows=[], meta={"chart": "daily_empty", "metric_label": "Dữ liệu theo ngày"})
+>>>>>>> d4ecea7 (Update dashboard app and data)
         result = (
             summary_children, daily_kpi1, daily_kpi2, daily_kpi3, daily_kpi4,
             fig_empty, fig_empty, fig_empty, fig_empty, fig_empty,
@@ -12315,17 +13490,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         )
         return _daily_output_cache_set(daily_cache_key, result)
 
-    g_day = dff_dt.groupby("ngay_du_lieu", as_index=False).agg(
-        tong_doanh_thu=("tong_doanh_thu", "sum"),
-        tong_so_cuoc=("tong_so_cuoc", "sum"),
-    ).sort_values("ngay_du_lieu")
-    g_day["ngay_label"] = g_day["ngay_du_lieu"].dt.strftime("%d/%m/%Y")
-    g_day["rev_fmt"] = g_day["tong_doanh_thu"].apply(fmt_vn)
-    g_day["trip_fmt"] = g_day["tong_so_cuoc"].apply(fmt_vn)
-    g_day["avg_per_trip"] = g_day["tong_doanh_thu"] / g_day["tong_so_cuoc"].replace(0, 1)
-    g_day["avg_per_trip_fmt"] = g_day["avg_per_trip"].apply(fmt_vn)
-    g_day["rev_ma7"] = g_day["tong_doanh_thu"].rolling(window=7, min_periods=1).mean()
-    g_day["rev_ma7_fmt"] = g_day["rev_ma7"].apply(fmt_vn)
+    # g_day and region_g were pre-grouped once in _daily_filtered_agg_view().
 
     fig_daily_main = make_subplots(specs=[[{"secondary_y": True}]])
     fig_daily_main.add_trace(
@@ -12365,7 +13530,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         ),
         secondary_y=False,
     )
-    daily_title = f"Doanh thu & số cuốc theo ngày<br>{date_txt} • {region_txt}"
+    daily_title = f"Doanh thu & số cuốc theo ngày<br>{date_txt} • {region_txt} • {vehicle_type_txt}"
     fig_daily_main.update_layout(
         plot_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
         paper_bgcolor=LIGHT_BG if theme == "light" else DARK_BG,
@@ -12379,19 +13544,17 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
     fig_daily_main.update_xaxes(tickformat="%d/%m/%Y", showgrid=True, gridcolor="#e5e7eb" if theme == "light" else "#333", automargin=True)
     fig_daily_main.update_yaxes(title_text="Doanh thu", secondary_y=False, gridcolor="#e5e7eb" if theme == "light" else "#333", automargin=True)
     fig_daily_main.update_yaxes(title_text="Số cuốc", secondary_y=True, showgrid=False, automargin=True)
-    daily_main_store = pack_fig_store(fig_daily_main, rows=g_day[["ngay_label", "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "rev_ma7_fmt"]].to_dict("records"), meta={"chart": "daily_combo", "metric_label": "Doanh thu & số cuốc"})
+    daily_main_store = pack_daily_fig_store(fig_daily_main, rows=g_day[["ngay_label", "rev_fmt", "trip_fmt", "avg_per_trip_fmt", "rev_ma7_fmt"]].to_dict("records"), meta={"chart": "daily_combo", "metric_label": "Doanh thu & số cuốc"})
 
-    region_g = dff_dt.groupby("khu_vuc", as_index=False).agg(tong_doanh_thu=("tong_doanh_thu", "sum"), tong_so_cuoc=("tong_so_cuoc", "sum")).sort_values("tong_doanh_thu", ascending=False)
-    region_g["rev_fmt"] = region_g["tong_doanh_thu"].apply(fmt_vn)
     fig_region_donut = make_vn_donut(region_g, names="khu_vuc", values="tong_doanh_thu", title=f"Tỷ trọng doanh thu theo khu vực<br>{date_txt}", max_slices=8, color_map=REGION_COLOR_MAP, theme=theme)
-    daily_region_donut_store = pack_fig_store(fig_region_donut, rows=region_g[["khu_vuc", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_region_donut", "metric_label": "Doanh thu"})
+    daily_region_donut_store = pack_daily_fig_store(fig_region_donut, rows=region_g[["khu_vuc", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_region_donut", "metric_label": "Doanh thu"})
 
     top_region = region_g.head(10).copy()
     fig_region_bar = px.bar(top_region.sort_values("tong_doanh_thu", ascending=True), x="tong_doanh_thu", y="khu_vuc", orientation="h", text="rev_fmt", color="khu_vuc", color_discrete_map=REGION_COLOR_MAP, hover_data={"rev_fmt": True, "tong_doanh_thu": False})
     fig_region_bar.update_traces(textposition="outside", cliponaxis=False)
     fig_region_bar.update_layout(showlegend=False)
     fig_region_bar = apply_exec_layout(fig_region_bar, theme=theme, title=f"Top khu vực theo doanh thu<br>{date_txt}", top=155, x_title="Doanh thu", y_title="Khu vực")
-    daily_region_bar_store = pack_fig_store(fig_region_bar, rows=top_region[["khu_vuc", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_region_bar", "metric_label": "Doanh thu"})
+    daily_region_bar_store = pack_daily_fig_store(fig_region_bar, rows=top_region[["khu_vuc", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_region_bar", "metric_label": "Doanh thu"})
 
     daily_lh_col = find_col_fuzzy(dff_lh, ["loai_hinh_std", "loaihinh_hoptac", "loại hình hợp tác", "loai hinh hop tac", "loai_hinh", "loại hình"]) if not dff_lh.empty else None
     if not dff_lh.empty and daily_lh_col in dff_lh.columns:
@@ -12400,10 +13563,10 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         lh_g = lh_work.groupby("daily_lh_label", as_index=False)["tong_doanh_thu"].sum().sort_values("tong_doanh_thu", ascending=False)
         lh_g["rev_fmt"] = lh_g["tong_doanh_thu"].apply(fmt_vn)
         fig_lh = make_vn_donut(lh_g, names="daily_lh_label", values="tong_doanh_thu", title=f"Cơ cấu loại hình theo doanh thu ngày<br>{date_txt}", max_slices=8, color_map=None, theme=theme)
-        daily_lh_store = pack_fig_store(fig_lh, rows=lh_g[["daily_lh_label", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_lh_donut", "metric_label": "Doanh thu", "series_field": "daily_lh_label"})
+        daily_lh_store = pack_daily_fig_store(fig_lh, rows=lh_g[["daily_lh_label", "rev_fmt"]].to_dict("records"), meta={"chart": "daily_lh_donut", "metric_label": "Doanh thu", "series_field": "daily_lh_label"})
     else:
         fig_lh = empty_figure("Không có dữ liệu loại hình", theme)
-        daily_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "daily_lh_donut", "metric_label": "Doanh thu"})
+        daily_lh_store = pack_daily_fig_store(fig_lh, rows=[], meta={"chart": "daily_lh_donut", "metric_label": "Doanh thu"})
 
     daily_mix_col = None
     daily_mix_label = "Loại hợp đồng"
@@ -12431,12 +13594,13 @@ def update_daily_latest(start_date, end_date, regions, drivers, theme):
         fig_hd = px.bar(hd_g.sort_values(daily_mix_metric, ascending=True), x=daily_mix_metric, y=daily_mix_col, orientation="h", text="metric_fmt", hover_data={"metric_fmt": True, daily_mix_metric: False})
         fig_hd.update_traces(textposition="outside", cliponaxis=False, marker_color=GREEN_PRIMARY)
         fig_hd = apply_exec_layout(fig_hd, theme=theme, title=f"{daily_mix_title}<br>{date_txt}", top=155, x_title=daily_mix_metric_label, y_title=daily_mix_label)
-        daily_hd_store = pack_fig_store(fig_hd, rows=hd_g[[daily_mix_col, "metric_fmt"]].to_dict("records"), meta={"chart": "daily_mix_bar", "metric_label": daily_mix_metric_label, "series_field": daily_mix_col})
+        daily_hd_store = pack_daily_fig_store(fig_hd, rows=hd_g[[daily_mix_col, "metric_fmt"]].to_dict("records"), meta={"chart": "daily_mix_bar", "metric_label": daily_mix_metric_label, "series_field": daily_mix_col})
     else:
         fig_hd = empty_figure("Không có dữ liệu cơ cấu vận hành ngày", theme)
-        daily_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "daily_mix_bar", "metric_label": "Doanh thu"})
+        daily_hd_store = pack_daily_fig_store(fig_hd, rows=[], meta={"chart": "daily_mix_bar", "metric_label": "Doanh thu"})
 
-    daily_table_data = _daily_table_frame(dff_dt).to_dict("records")
+    daily_table_view = daily_views.get("table", pd.DataFrame())
+    daily_table_data = daily_table_view.to_dict("records") if isinstance(daily_table_view, pd.DataFrame) else _daily_table_frame(dff_dt).to_dict("records")
 
     result = (
         summary_children,
@@ -14356,7 +15520,11 @@ for _prefix in HR_MENU_PREFIXES:
 
 app.clientside_callback(
     """
+<<<<<<< HEAD
     function(_clicks, allStoreData) {
+=======
+    function(_clicks, allStoreData, dailyMainFigure, dailyRegionDonutFigure, dailyRegionBarFigure, dailyLhDonutFigure, dailyHdBarFigure) {
+>>>>>>> d4ecea7 (Update dashboard app and data)
         const noUpdate = dash_clientside.no_update;
         const ctx = dash_clientside.callback_context || {};
         const trig = ctx.triggered_id;
@@ -14414,6 +15582,32 @@ app.clientside_callback(
             return [noUpdate, noUpdate];
         }
 
+<<<<<<< HEAD
+=======
+        // Daily charts keep their figure out of hidden dcc.Store for fast page load.
+        // When zoom is opened, reuse the visible dcc.Graph figure that is already in the browser.
+        try {
+            const dailyFigureMap = {
+                "daily-main": dailyMainFigure,
+                "daily-region-donut": dailyRegionDonutFigure,
+                "daily-region-bar": dailyRegionBarFigure,
+                "daily-lh-donut": dailyLhDonutFigure,
+                "daily-hd-bar": dailyHdBarFigure
+            };
+            if (selectedStore && selectedStore.kind === "fig") {
+                const figMissing = (!selectedStore.figure) ||
+                    (typeof selectedStore.figure === "object" && Object.keys(selectedStore.figure).length === 0);
+                if (figMissing && dailyFigureMap[target]) {
+                    selectedStore = Object.assign({}, selectedStore, {figure: dailyFigureMap[target]});
+                    selectedStore.meta = Object.assign({}, selectedStore.meta || {}, {
+                        figure_included: true,
+                        figure_lazy_from_graph: true
+                    });
+                }
+            }
+        } catch(e) {}
+
+>>>>>>> d4ecea7 (Update dashboard app and data)
         return [{target: target, kind: kind, ts: Date.now(), n: nclick}, selectedStore];
     }
     """.replace("ZOOM_TARGETS_JS", json.dumps(ZOOM_TARGETS, ensure_ascii=False)),
@@ -14421,6 +15615,14 @@ app.clientside_callback(
     Output("zoom-selected-store", "data"),
     Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
     State({"type":"zoom-store","target":ALL}, "data"),
+<<<<<<< HEAD
+=======
+    State("daily-main", "figure", allow_optional=True),
+    State("daily-region-donut", "figure", allow_optional=True),
+    State("daily-region-bar", "figure", allow_optional=True),
+    State("daily-lh-donut", "figure", allow_optional=True),
+    State("daily-hd-bar", "figure", allow_optional=True),
+>>>>>>> d4ecea7 (Update dashboard app and data)
     prevent_initial_call=True,
 )
 
