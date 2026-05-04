@@ -5668,11 +5668,47 @@ def pack_daily_fig_store(fig, rows=None, meta=None):
         meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
     return {"kind": "fig", "figure": {}, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
 
+def _kpi_store_effective_row_limit(rows=None, configured_limit=None) -> int:
+    """Return a safe KPI store row limit.
+
+    KPI zoom tables are small summary tables. On Vercel, an environment variable
+    such as DASH_KPI_STORE_MAX_ROWS may be set too low and can truncate Daily KPI
+    detail rows to only 1 branch. Keep all small KPI tables intact while still
+    capping unexpectedly large stores.
+    """
+    try:
+        configured = int(configured_limit if configured_limit is not None else DASH_KPI_STORE_MAX_ROWS)
+    except Exception:
+        configured = 0
+    try:
+        if rows is None:
+            total = 0
+        elif isinstance(rows, pd.DataFrame):
+            total = len(rows)
+        elif isinstance(rows, (list, tuple)):
+            total = len(rows)
+        else:
+            total = 0
+    except Exception:
+        total = 0
+
+    # Daily KPI details need 9 regions. Use 12 as a safe floor and preserve all
+    # small summary tables so production env overrides cannot hide branches.
+    safe_floor = 12
+    small_table_limit = 24
+    if total and total <= small_table_limit:
+        return max(configured, total, safe_floor)
+    return max(configured, safe_floor)
+
+
 def pack_kpi_store(title, main, subtitle, rows=None, kind="kpi"):
-    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_KPI_STORE_MAX_ROWS)
+    row_limit = _kpi_store_effective_row_limit(rows, DASH_KPI_STORE_MAX_ROWS)
+    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], row_limit)
     payload = {"kind": kind, "title": title, "main": main, "subtitle": subtitle, "rows": json_safe(limited_rows)}
+    meta = {"rows_limit_effective": row_limit, "rows_limit_env": int(DASH_KPI_STORE_MAX_ROWS)}
     if truncated:
-        payload["meta"] = {"rows_truncated": True, "rows_total": total_rows, "rows_limit": DASH_KPI_STORE_MAX_ROWS}
+        meta.update({"rows_truncated": True, "rows_total": total_rows, "rows_limit": row_limit})
+    payload["meta"] = meta
     return payload
 
 def safe_month_label(x):
@@ -8118,7 +8154,8 @@ def _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_type
         bool(DASH_ZOOM_STORE_INCLUDE_FIGURE),
         bool(DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS),
         int(DASH_FIGURE_STORE_MAX_ROWS),
-        int(DASH_KPI_STORE_MAX_ROWS),
+        int(_kpi_store_effective_row_limit([{}] * len(DAILY_REGION_DETAIL_ORDER), DASH_KPI_STORE_MAX_ROWS)) if "DAILY_REGION_DETAIL_ORDER" in globals() else max(int(DASH_KPI_STORE_MAX_ROWS), 12),
+        "kpi-safe-region-rows-v1",
     )
 
 
