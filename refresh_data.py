@@ -83,6 +83,12 @@ def _dt_param(value):
     return pd.Timestamp(value).to_pydatetime()
 
 
+def _date_param(value):
+    if value is None or pd.isna(value):
+        return None
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
 def _read_sql_fast(label: str, sql: str, params=None, fallback_sql: str | None = None) -> pd.DataFrame:
     started = time.perf_counter()
     try:
@@ -113,6 +119,8 @@ except Exception:
 
 start_param = _dt_param(START_DATE)
 end_param = _dt_param(END_DATE)
+start_date_param = _date_param(START_DATE)
+end_date_param = _date_param(END_DATE)
 
 _df_tx_sql = """
     SELECT thoi_gian_tao, thang_nam, so_tai, ho_ten,
@@ -147,28 +155,37 @@ df_hd = _read_sql_fast(
 
 _df_ns_sql = """
     SELECT
-        ID_NV,
-        HO_TEN,
-        DON_VI_CT,
-        VI_TRI_CONG_VIEC,
-        TRANG_THAI,
-        KHU_VUC,
-        DIA_DIEM_LAM_VIEC,
-        NGAY_THU_VIEC,
-        NGAY_CHINH_THUC,
-        NGAY_NGHI_VIEC,
-        UpdatedAt,
-        VONG_DOI
-    FROM dbo.nhansutapdoan
+        n.ID_NV,
+        n.HO_TEN,
+        n.DON_VI_CT,
+        n.VI_TRI_CONG_VIEC,
+        n.TRANG_THAI,
+        n.KHU_VUC,
+        n.DIA_DIEM_LAM_VIEC,
+        n.NGAY_THU_VIEC,
+        n.NGAY_CHINH_THUC,
+        n.NGAY_NGHI_VIEC,
+        n.UpdatedAt,
+        n.VONG_DOI
+    FROM dbo.nhansutapdoan AS n
+    CROSS APPLY (
+        SELECT
+            COALESCE(
+                TRY_CONVERT(date, n.NGAY_CHINH_THUC),
+                TRY_CONVERT(date, n.NGAY_THU_VIEC),
+                TRY_CONVERT(date, n.UpdatedAt)
+            ) AS ngay_bat_dau_sql,
+            TRY_CONVERT(date, n.NGAY_NGHI_VIEC) AS ngay_nghi_viec_sql
+    ) AS x
 """
 df_ns = _read_sql_fast(
     "nhansutapdoan",
     _df_ns_sql + ("""
     WHERE
-        (COALESCE(NGAY_CHINH_THUC, NGAY_THU_VIEC, UpdatedAt) IS NULL OR COALESCE(NGAY_CHINH_THUC, NGAY_THU_VIEC, UpdatedAt) <= ?)
-        AND (NGAY_NGHI_VIEC IS NULL OR NGAY_NGHI_VIEC >= ?)
+        (x.ngay_bat_dau_sql IS NULL OR x.ngay_bat_dau_sql <= CONVERT(date, ?, 23))
+        AND (x.ngay_nghi_viec_sql IS NULL OR x.ngay_nghi_viec_sql >= CONVERT(date, ?, 23))
     """ if SQL_ENABLE_DATE_PUSHDOWN else ""),
-    params=[end_param, start_param] if SQL_ENABLE_DATE_PUSHDOWN else None,
+    params=[end_date_param, start_date_param] if SQL_ENABLE_DATE_PUSHDOWN else None,
     fallback_sql=_df_ns_sql,
 )
 
@@ -176,22 +193,30 @@ _month_start = START_DATE.to_period("M").to_timestamp() if START_DATE is not Non
 _month_end = END_DATE.to_period("M").to_timestamp() if END_DATE is not None and not pd.isna(END_DATE) else END_DATE
 _df_bb_sql = """
     SELECT
-        ID,
-        LOAI_BIEN_BAN,
-        TINH_TRANG_BIEN_BAN,
-        TONG_TIEN_DE_XUAT,
-        CON_LAI,
-        TRANG_THAI_THU,
-        KHU_VUC,
-        thang_nam
-    FROM dbo.bienban
+        b.ID,
+        b.LOAI_BIEN_BAN,
+        b.TINH_TRANG_BIEN_BAN,
+        b.TONG_TIEN_DE_XUAT,
+        b.CON_LAI,
+        b.TRANG_THAI_THU,
+        b.KHU_VUC,
+        x.thang_nam_date AS thang_nam
+    FROM dbo.bienban AS b
+    CROSS APPLY (
+        SELECT TRY_CONVERT(
+            date,
+            '01/' + NULLIF(LTRIM(RTRIM(CONVERT(varchar(20), b.thang_nam))), ''),
+            103
+        ) AS thang_nam_date
+    ) AS x
 """
 df_bb = _read_sql_fast(
     "bienban",
     _df_bb_sql + ("""
-    WHERE thang_nam >= ? AND thang_nam < DATEADD(month, 1, ?)
+    WHERE x.thang_nam_date >= CONVERT(date, ?, 23)
+      AND x.thang_nam_date < DATEADD(month, 1, CONVERT(date, ?, 23))
     """ if SQL_ENABLE_DATE_PUSHDOWN else ""),
-    params=[_dt_param(_month_start), _dt_param(_month_end)] if SQL_ENABLE_DATE_PUSHDOWN else None,
+    params=[_date_param(_month_start), _date_param(_month_end)] if SQL_ENABLE_DATE_PUSHDOWN else None,
     fallback_sql=_df_bb_sql,
 )
 
@@ -879,11 +904,13 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     empty_base = _empty()
     empty_lh = _empty(["loaihinh_hoptac"])
     empty_hinhthuc = _empty(["hinhthuc_kinhdoanh"])
+    empty_lh_hinhthuc = _empty(["loaihinh_hoptac", "hinhthuc_kinhdoanh"])
     empty_luong = _empty(["loai_luong"])
     empty_socho = _empty(["so_cho", "so_cho_num"])
     empty_taixe = _empty(["so_tai", "bks", "ho_ten"])
     empty_taixe_lh = _empty(["so_tai", "bks", "ho_ten", "loaihinh_hoptac"])
     empty_taixe_hinhthuc = _empty(["so_tai", "bks", "ho_ten", "hinhthuc_kinhdoanh"])
+    empty_taixe_lh_hinhthuc = _empty(["so_tai", "bks", "ho_ten", "loaihinh_hoptac", "hinhthuc_kinhdoanh"])
     empty_taixe_luong = _empty(["so_tai", "bks", "ho_ten", "loai_luong"])
     empty_taixe_socho = _empty(["so_tai", "bks", "ho_ten", "so_cho", "so_cho_num"])
     empty_raw = pd.DataFrame(columns=[
@@ -893,8 +920,8 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     ])
 
     empty_tuple = (
-        empty_base, empty_lh, empty_hinhthuc, empty_luong, empty_socho, empty_taixe,
-        empty_taixe_lh, empty_taixe_hinhthuc, empty_taixe_luong, empty_taixe_socho, empty_raw,
+        empty_base, empty_lh, empty_hinhthuc, empty_lh_hinhthuc, empty_luong, empty_socho, empty_taixe,
+        empty_taixe_lh, empty_taixe_hinhthuc, empty_taixe_lh_hinhthuc, empty_taixe_luong, empty_taixe_socho, empty_raw,
     )
     if df_source is None or df_source.empty:
         return empty_tuple
@@ -1011,12 +1038,14 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     base = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc"])
     by_lh = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "loaihinh_hoptac"])
     by_hinhthuc = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "hinhthuc_kinhdoanh"])
+    by_lh_hinhthuc = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "loaihinh_hoptac", "hinhthuc_kinhdoanh"])
     by_luong = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "loai_luong"])
     by_socho = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_cho", "so_cho_num"])
 
     by_taixe = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten"])
     by_taixe_lh = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten", "loaihinh_hoptac"])
     by_taixe_hinhthuc = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten", "hinhthuc_kinhdoanh"])
+    by_taixe_lh_hinhthuc = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten", "loaihinh_hoptac", "hinhthuc_kinhdoanh"])
     by_taixe_luong = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten", "loai_luong"])
     by_taixe_socho = _agg_by(["ngay_du_lieu", "thang_nam", "khu_vuc", "so_tai", "bks", "ho_ten", "so_cho", "so_cho_num"])
 
@@ -1027,8 +1056,8 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     ]
     raw_out = work[raw_cols].copy() if DAILY_CHECKER_EXPORT_RAW else empty_raw
     return (
-        base, by_lh, by_hinhthuc, by_luong, by_socho, by_taixe,
-        by_taixe_lh, by_taixe_hinhthuc, by_taixe_luong, by_taixe_socho, raw_out,
+        base, by_lh, by_hinhthuc, by_lh_hinhthuc, by_luong, by_socho, by_taixe,
+        by_taixe_lh, by_taixe_hinhthuc, by_taixe_lh_hinhthuc, by_taixe_luong, by_taixe_socho, raw_out,
     )
 
 def _is_driver_role(role_value):
@@ -1214,7 +1243,14 @@ nhansu_taixe_kv_thang = _make_hr_dashboard_compatible(
 # =========================
 # BIEN BAN
 # =========================
-df_bb["thang_nam"] = pd.to_datetime(df_bb.get("thang_nam"), errors="coerce").dt.to_period("M").dt.to_timestamp()
+df_bb["thang_nam"] = pd.to_datetime(
+    df_bb["thang_nam"],
+    errors="coerce"
+).dt.to_period("M").dt.to_timestamp()
+
+bad_bb_month = int(df_bb["thang_nam"].isna().sum())
+if bad_bb_month:
+    print(f"[BIENBAN CHECK] bad thang_nam rows={bad_bb_month}")
 if pd.notna(START_DATE):
     df_bb = df_bb[df_bb["thang_nam"] >= START_DATE.to_period("M").to_timestamp()]
 if pd.notna(END_DATE):
@@ -1300,11 +1336,13 @@ print(
     doanhthu_ngay_checker,
     doanhthu_ngay_lh_checker,
     doanhthu_ngay_hinhthuc_checker,
+    doanhthu_ngay_lh_hinhthuc_checker,
     doanhthu_ngay_luong_checker,
     doanhthu_ngay_socho_checker,
     doanhthu_ngay_taixe_checker,
     doanhthu_ngay_taixe_lh_checker,
     doanhthu_ngay_taixe_hinhthuc_checker,
+    doanhthu_ngay_taixe_lh_hinhthuc_checker,
     doanhthu_ngay_taixe_luong_checker,
     doanhthu_ngay_taixe_socho_checker,
     doanhthu_ngay_raw_checker,
@@ -1423,7 +1461,7 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
 
 
 def _write_sheet(writer, df: pd.DataFrame, sheet_name: str) -> None:
-    df.to_excel(writer, sheet_name, index=False)
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
     _export_cache_sheet(df, sheet_name)
 
 
@@ -1446,11 +1484,13 @@ with _excel_writer as writer:
     _write_sheet(writer, doanhthu_ngay_checker, "DoanhThu_Ngay_Checker")
     _write_sheet(writer, doanhthu_ngay_lh_checker, "DoanhThu_Ngay_LH_Checker")
     _write_sheet(writer, doanhthu_ngay_hinhthuc_checker, "DoanhThu_Ngay_HinhThuc")
+    _write_sheet(writer, doanhthu_ngay_lh_hinhthuc_checker, "DoanhThu_Ngay_LH_HinhThuc")
     _write_sheet(writer, doanhthu_ngay_luong_checker, "DoanhThu_Ngay_Luong")
     _write_sheet(writer, doanhthu_ngay_socho_checker, "DoanhThu_Ngay_SoCho")
     _write_sheet(writer, doanhthu_ngay_taixe_checker, "DoanhThu_Ngay_TaiXe")
     _write_sheet(writer, doanhthu_ngay_taixe_lh_checker, "DoanhThu_Ngay_TaiXe_LH")
     _write_sheet(writer, doanhthu_ngay_taixe_hinhthuc_checker, "DoanhThu_Ngay_TaiXe_HinhThuc")
+    _write_sheet(writer, doanhthu_ngay_taixe_lh_hinhthuc_checker, "DoanhThu_Ngay_TaiXe_LH_HinhThuc")
     _write_sheet(writer, doanhthu_ngay_taixe_luong_checker, "DoanhThu_Ngay_TaiXe_Luong")
     _write_sheet(writer, doanhthu_ngay_taixe_socho_checker, "DoanhThu_Ngay_TaiXe_SoCho")
     _write_sheet(writer, doanhthu_ngay_raw_checker, "DoanhThu_Ngay_Raw_Checker")

@@ -10,3 +10,4 @@ matplotlib
 Flask
 Werkzeug
 gunicorn
+pyarrow
