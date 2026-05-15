@@ -24,7 +24,7 @@ import hmac
 import time
 import hashlib
 from functools import wraps, lru_cache
-from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context
+from flask import Flask, request, session, redirect, url_for, render_template_string, has_request_context, send_file
 from werkzeug.security import check_password_hash
 
 VN_TZ = "Asia/Ho_Chi_Minh"
@@ -58,13 +58,26 @@ LOGO_PATH = _resolve_first_existing_path([
     "Logo NamThangGroup không nền.png",
     "assets/Logo NamThangGroup không nền.png",
 ])
+DASH_EMBED_LOGO_DATA_URI = str(os.getenv("DASH_EMBED_LOGO_DATA_URI", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 def _load_logo_data_uri(path: Path | None):
+    """Return a cacheable logo URL by default; embed base64 only when explicitly requested."""
     try:
-        if path.exists():
-            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-            b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
-            return f"data:{mime};base64,{b64}"
+        if path is None or not path.exists():
+            return None
+        if not DASH_EMBED_LOGO_DATA_URI:
+            try:
+                parts = list(path.parts)
+                if "assets" in parts:
+                    rel = "/".join(parts[parts.index("assets") + 1:])
+                    if rel:
+                        return "/assets/" + rel
+            except Exception:
+                pass
+            return "/company-logo"
+        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return f"data:{mime};base64,{b64}"
     except Exception:
         pass
     return None
@@ -138,8 +151,9 @@ DASH_GRAPH_LEAN_CONFIG = {
     "responsive": True,
     "staticPlot": False,
 }
-DASH_CLIENT_PRELOAD_AFTER_BOOT = str(os.getenv("DASH_CLIENT_PRELOAD_AFTER_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
-DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "daily" if DASH_SERVERLESS_FAST_PRESET else "interactive").strip().lower()
+DASH_CLIENT_PRELOAD_AFTER_BOOT = str(os.getenv("DASH_CLIENT_PRELOAD_AFTER_BOOT", "0" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_CLIENT_PRELOAD_MODE = os.getenv("DASH_CLIENT_PRELOAD_MODE", "light" if DASH_SERVERLESS_FAST_PRESET else "interactive").strip().lower()
+DASH_CLIENT_PRELOAD_DELAY_MS = int(os.getenv("DASH_CLIENT_PRELOAD_DELAY_MS", "5000" if DASH_SERVERLESS_FAST_PRESET else "650"))
 DASH_ZOOM_COMPACT_FIGURE = str(os.getenv("DASH_ZOOM_COMPACT_FIGURE", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_OPEN_CACHE_MAX = int(os.getenv("DASH_ZOOM_OPEN_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DASH_ZOOM_DRILL_CACHE_MAX = int(os.getenv("DASH_ZOOM_DRILL_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
@@ -149,6 +163,8 @@ DASH_DAILY_LOAD_SEAT_DATA = str(os.getenv("DASH_DAILY_LOAD_SEAT_DATA", "0")).str
 DASH_DAILY_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_DAILY_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Driver-specific breakdown sheets are heavy and only needed after a driver filter is selected.
 DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_WARM_ALLOW_DEEP_PRELOAD = str(os.getenv("DASH_WARM_ALLOW_DEEP_PRELOAD", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_WARM_INCLUDE_TOUCH_SUMS = str(os.getenv("DASH_WARM_INCLUDE_TOUCH_SUMS", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _graph_config(extra: dict | None = None) -> dict:
@@ -6615,15 +6631,39 @@ server.config.update(
 if _env_flag("SESSION_COOKIE_SECURE", False):
     server.config["SESSION_COOKIE_SECURE"] = True
 
+@server.after_request
+def add_fast_cache_headers(response):
+    try:
+        path = request.path or ""
+        if path.startswith("/assets/") or path == "/company-logo":
+            response.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
+    except Exception:
+        pass
+    return response
+
 @server.get("/healthz")
 def healthz():
     return ("ok", 200)
+
+@server.get("/company-logo")
+def company_logo():
+    try:
+        if LOGO_PATH is not None and LOGO_PATH.exists():
+            mime = "image/png" if LOGO_PATH.suffix.lower() == ".png" else "image/jpeg"
+            return send_file(LOGO_PATH, mimetype=mime, max_age=86400, conditional=True)
+    except Exception:
+        pass
+    return ("", 404)
 
 
 def _run_warm_preload(preload: str, deep: bool = False) -> str:
     """Shared warm/preload logic used by token endpoint and authenticated browser ping."""
     mode = str(preload or "").strip().lower()
     if deep or mode in {"all", "full"}:
+        if not DASH_WARM_ALLOW_DEEP_PRELOAD:
+            # Guard production warm pings from accidentally loading every lazy dataset.
+            # Set DASH_WARM_ALLOW_DEEP_PRELOAD=1 only for a deliberate one-off preload.
+            return "light_guarded"
         ensure_all_lazy_data_loaded(log=True)
         return "all"
     if mode in {"interactive", "ui", "first-click", "first_click"}:
@@ -6646,7 +6686,7 @@ def _run_warm_preload(preload: str, deep: bool = False) -> str:
     return "light"
 
 
-@server.get("/_warm")
+@server.route("/_warm", methods=["GET", "HEAD"])
 def warm_endpoint():
     """
     Lightweight warm endpoint for Vercel/UptimeRobot.
@@ -6659,12 +6699,18 @@ def warm_endpoint():
         if not hmac.compare_digest(incoming, token):
             return {"ok": False, "error": "forbidden"}, 403
 
+    if request.method == "HEAD":
+        return "", 200, {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+
     preload = str(request.args.get("preload", "") or request.args.get("mode", "")).strip().lower()
     deep = str(request.args.get("deep", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
     preload_done = _run_warm_preload(preload, deep=deep)
 
     started = time.perf_counter()
     touched = {}
+    include_touch_sums = DASH_WARM_INCLUDE_TOUCH_SUMS or str(request.args.get("debug", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
     def _touch_df(name):
         obj = globals().get(name)
@@ -6674,21 +6720,22 @@ def warm_endpoint():
             "rows": int(len(obj)),
             "cols": int(len(obj.columns)),
         }
-        for col in [
-            "tong_doanh_thu",
-            "tong_so_cuoc",
-            "so_tien_thu_duoc",
-            "tong_tien_de_xuat",
-            "so_tien_da_xu_ly",
-            "so_tien_con_no",
-            "so_luong_xe",
-            "so_luong_nhan_su",
-        ]:
-            if col in obj.columns:
-                try:
-                    info[col] = float(pd.to_numeric(obj[col], errors="coerce").fillna(0).sum())
-                except Exception:
-                    pass
+        if include_touch_sums:
+            for col in [
+                "tong_doanh_thu",
+                "tong_so_cuoc",
+                "so_tien_thu_duoc",
+                "tong_tien_de_xuat",
+                "so_tien_da_xu_ly",
+                "so_tien_con_no",
+                "so_luong_xe",
+                "so_luong_nhan_su",
+            ]:
+                if col in obj.columns:
+                    try:
+                        info[col] = float(pd.to_numeric(obj[col], errors="coerce").fillna(0).sum())
+                    except Exception:
+                        pass
         touched[name] = info
 
     for name in [
@@ -12167,7 +12214,7 @@ app.layout = dbc.Container(
         dcc.Store(id="ai-chat-history", data=[]),
         dcc.Store(id="client-warm-sent", data=None),
         dcc.Interval(id="refresh-meta", interval=5 * 60 * 1000, n_intervals=0),
-        dcc.Interval(id="client-warm-ping", interval=650, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="client-warm-ping", interval=DASH_CLIENT_PRELOAD_DELAY_MS, n_intervals=0, max_intervals=1),
 
         dbc.Row([
             dbc.Col(
