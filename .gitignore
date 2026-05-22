@@ -1,5 +1,6 @@
 output/cache/
 output/*.xlsx
+!output/bao_cao_doanh_thu_tong_hop.xlsx
 __pycache__/
 *.pyc
 .env
