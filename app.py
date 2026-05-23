@@ -144,6 +144,7 @@ DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).str
 DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY = str(os.getenv("DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS = str(os.getenv("DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
+DASH_CACHE_STALE_GRACE_SECONDS = int(os.getenv("DASH_CACHE_STALE_GRACE_SECONDS", "3600"))
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_GRAPH_LEAN_CONFIG = {
@@ -670,9 +671,33 @@ def _cache_file_candidates(sheet_name: str) -> list[Path]:
     return unique
 
 
+def _cache_file_is_fresh_enough(fp: Path) -> bool:
+    try:
+        if not fp.exists():
+            return False
+        if EXCEL_FILE is not None and Path(EXCEL_FILE).exists():
+            excel_mtime = Path(EXCEL_FILE).stat().st_mtime
+            cache_mtime = fp.stat().st_mtime
+            # Allow a small timestamp drift because refresh_data.py may write
+            # Dash cache while the Excel writer is still closing the workbook.
+            if cache_mtime + DASH_CACHE_STALE_GRACE_SECONDS < excel_mtime:
+                return False
+    except Exception:
+        pass
+    return True
+
+
+def _existing_cache_file_candidates(sheet_name: str) -> list[Path]:
+    try:
+        files = [fp for fp in _cache_file_candidates(sheet_name) if _cache_file_is_fresh_enough(fp)]
+        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return [fp for fp in _cache_file_candidates(sheet_name) if fp.exists()]
+
+
 def _sheet_cache_exists(sheet_name: str) -> bool:
     try:
-        return any(fp.exists() for fp in _cache_file_candidates(str(sheet_name)))
+        return any(_existing_cache_file_candidates(str(sheet_name)))
     except Exception:
         return False
 
@@ -710,7 +735,7 @@ def _ensure_excel_book_opened() -> bool:
 def _parse_cached_sheet(sheet_name: str) -> pd.DataFrame | None:
     if not DASH_PREFER_PARQUET_CACHE:
         return None
-    for fp in _cache_file_candidates(sheet_name):
+    for fp in _existing_cache_file_candidates(sheet_name):
         try:
             if not fp.exists():
                 continue

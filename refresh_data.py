@@ -19,6 +19,16 @@ def _env_datetime(name: str, default=None):
     value = pd.to_datetime(raw, errors="coerce")
     return default if pd.isna(value) else value
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(float(str(raw).strip()))
+    except Exception:
+        return default
+
 SERVER = os.getenv("SQL_SERVER")
 DATABASE = os.getenv("SQL_DATABASE")
 USERNAME = os.getenv("SQL_USERNAME")
@@ -34,6 +44,11 @@ END_DATE = _env_datetime("END_DATE", today)
 DAILY_CHECKER_EXPORT_RAW = str(os.getenv("DAILY_CHECKER_EXPORT_RAW", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DAILY_CHECKER_SQL_TABLE_HINT = os.getenv("DAILY_CHECKER_SQL_TABLE_HINT", "").strip()
 DAILY_CHECKER_TABLE_EXPR = "dbo.doanhthungaychecker" + (f" WITH ({DAILY_CHECKER_SQL_TABLE_HINT})" if DAILY_CHECKER_SQL_TABLE_HINT else "")
+
+# Monthly HOME/source sheets use daily checker data to repair the newest months
+# because the monthly SQL source can lag behind daily operational rows.
+# 3 means: replace the latest 3 months available in DoanhThu_Ngay_Checker.
+HOME_DAILY_OVERRIDE_RECENT_MONTHS = max(0, _env_int("HOME_DAILY_OVERRIDE_RECENT_MONTHS", 3))
 
 # Daily fleet availability source. dbo.danhSachLenCa is used to compute
 # "Xe đang có-ngày" from real daily rows. Business rule:
@@ -1356,6 +1371,126 @@ print(
     f"driver_agg_rows={len(doanhthu_ngay_taixe_checker)}"
 )
 
+
+def _monthly_revenue_cols(group_cols) -> list[str]:
+    cols = list(dict.fromkeys(list(group_cols) + ["tong_doanh_thu", "tong_so_cuoc"]))
+    return cols
+
+
+def _monthly_revenue_empty(group_cols) -> pd.DataFrame:
+    return pd.DataFrame(columns=_monthly_revenue_cols(group_cols))
+
+
+def _prepare_monthly_revenue_frame(df_source: pd.DataFrame, group_cols) -> pd.DataFrame:
+    """Normalize a monthly revenue frame to the schema used by HOME/source sheets."""
+    group_cols = list(group_cols)
+    if df_source is None or not isinstance(df_source, pd.DataFrame) or df_source.empty:
+        return _monthly_revenue_empty(group_cols)
+    if "thang_nam" not in df_source.columns:
+        return _monthly_revenue_empty(group_cols)
+
+    out = df_source.copy()
+    out["thang_nam"] = pd.to_datetime(out["thang_nam"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    out = out[out["thang_nam"].notna()].copy()
+    if out.empty:
+        return _monthly_revenue_empty(group_cols)
+
+    for col in group_cols:
+        if col == "thang_nam":
+            continue
+        if col not in out.columns:
+            out[col] = "Tổng hợp"
+        out[col] = out[col].fillna("Tổng hợp").astype(str).str.strip()
+        out.loc[out[col].eq(""), col] = "Tổng hợp"
+
+    for metric in ["tong_doanh_thu", "tong_so_cuoc"]:
+        if metric not in out.columns:
+            out[metric] = 0
+        out[metric] = pd.to_numeric(out[metric], errors="coerce").fillna(0)
+
+    out = out.groupby(group_cols, as_index=False, dropna=False, sort=False).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        tong_so_cuoc=("tong_so_cuoc", "sum"),
+    )
+    return out[_monthly_revenue_cols(group_cols)].copy()
+
+
+def _aggregate_monthly_revenue(df_source: pd.DataFrame, group_cols) -> pd.DataFrame:
+    group_cols = list(group_cols)
+    if df_source is None or not isinstance(df_source, pd.DataFrame) or df_source.empty:
+        return _monthly_revenue_empty(group_cols)
+    out = df_source.copy()
+    for metric in ["tong_doanh_thu", "tong_so_cuoc"]:
+        if metric not in out.columns:
+            out[metric] = 0
+        out[metric] = pd.to_numeric(out[metric], errors="coerce").fillna(0)
+    if not group_cols:
+        return pd.DataFrame({
+            "tong_doanh_thu": [out["tong_doanh_thu"].sum()],
+            "tong_so_cuoc": [out["tong_so_cuoc"].sum()],
+        })
+    grouped = out.groupby(group_cols, as_index=False, dropna=False, sort=False).agg(
+        tong_doanh_thu=("tong_doanh_thu", "sum"),
+        tong_so_cuoc=("tong_so_cuoc", "sum"),
+    )
+    return grouped[_monthly_revenue_cols(group_cols)].copy()
+
+
+def _month_label_for_log(values) -> list[str]:
+    try:
+        months = pd.to_datetime(pd.Series(list(values)), errors="coerce").dropna().dt.to_period("M").dt.to_timestamp()
+        return [x.strftime("%m/%Y") for x in sorted(months.unique())]
+    except Exception:
+        return []
+
+
+def _merge_recent_daily_months_into_monthly(
+    monthly_df: pd.DataFrame,
+    daily_df: pd.DataFrame,
+    group_cols,
+    label: str,
+    recent_months: int = HOME_DAILY_OVERRIDE_RECENT_MONTHS,
+) -> pd.DataFrame:
+    """
+    Use DoanhThu_Ngay_Checker as the source of truth for the newest months.
+
+    The monthly SQL source can lag, so the exported monthly HOME/source sheets
+    are rebuilt by keeping older monthly rows and replacing the latest N daily
+    months with daily-checker monthly aggregates.
+    """
+    group_cols = list(group_cols)
+    monthly = _prepare_monthly_revenue_frame(monthly_df, group_cols)
+    daily_monthly = _prepare_monthly_revenue_frame(daily_df, group_cols)
+    if recent_months <= 0 or daily_monthly.empty:
+        return monthly
+
+    daily_months = sorted(pd.to_datetime(daily_monthly["thang_nam"], errors="coerce").dropna().dt.to_period("M").dt.to_timestamp().unique())
+    if not daily_months:
+        return monthly
+
+    override_months = set(daily_months[-recent_months:])
+    daily_use = daily_monthly[daily_monthly["thang_nam"].isin(override_months)].copy()
+    monthly_keep = monthly[~monthly["thang_nam"].isin(override_months)].copy() if not monthly.empty else monthly
+    out = pd.concat([monthly_keep, daily_use], ignore_index=True)
+    if out.empty:
+        return _monthly_revenue_empty(group_cols)
+    out = _prepare_monthly_revenue_frame(out, group_cols)
+    out = out.sort_values(group_cols).reset_index(drop=True)
+
+    try:
+        before_max = pd.to_datetime(monthly["thang_nam"], errors="coerce").max() if not monthly.empty else pd.NaT
+        after_max = pd.to_datetime(out["thang_nam"], errors="coerce").max() if not out.empty else pd.NaT
+        print(
+            f"[HOME MONTHLY OVERRIDE] {label}: "
+            f"override_months={_month_label_for_log(override_months)} "
+            f"monthly_rows={len(monthly):,} daily_monthly_rows={len(daily_monthly):,} output_rows={len(out):,} "
+            f"before_max={before_max.strftime('%m/%Y') if pd.notna(before_max) else 'NA'} "
+            f"after_max={after_max.strftime('%m/%Y') if pd.notna(after_max) else 'NA'}"
+        )
+    except Exception:
+        pass
+    return out
+
 doanhthu_thang_khuvuc = df_tx.groupby(
     ["thang_nam", "khu_vuc"], as_index=False
 ).agg(
@@ -1406,6 +1541,27 @@ doanhthu_lh_kv_thang = df_tx.groupby(
     tong_so_cuoc=("so_cuoc", "sum")
 )
 
+# Repair monthly revenue source sheets from daily checker data. This keeps the
+# existing workbook/cache contract intact for app.py while preventing HOME and
+# revenue menus from lagging when the monthly SQL/table source is not refreshed.
+doanhthu_thang_khuvuc = _merge_recent_daily_months_into_monthly(
+    doanhthu_thang_khuvuc,
+    doanhthu_ngay_checker,
+    ["thang_nam", "khu_vuc"],
+    "DoanhThu_Thang_KhuVuc",
+)
+doanhthu_khuvuc = _aggregate_monthly_revenue(doanhthu_thang_khuvuc, ["khu_vuc"])
+
+doanhthu_lh_kv_thang = _merge_recent_daily_months_into_monthly(
+    doanhthu_lh_kv_thang,
+    doanhthu_ngay_lh_checker,
+    ["thang_nam", "khu_vuc", "loaihinh_hoptac"],
+    "DoanhThu_LH_KV_Thang",
+)
+doanhthu_lh_thang = _aggregate_monthly_revenue(doanhthu_lh_kv_thang, ["thang_nam", "loaihinh_hoptac"])
+doanhthu_lh_kv = _aggregate_monthly_revenue(doanhthu_lh_kv_thang, ["khu_vuc", "loaihinh_hoptac"])
+doanhthu_lh = _aggregate_monthly_revenue(doanhthu_lh_kv_thang, ["loaihinh_hoptac"])
+
 hopdong_tong = df_hd.groupby(
     "loai_hopdong", as_index=False
 ).agg(
@@ -1438,10 +1594,19 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
     if not EXPORT_DASH_CACHE:
         return
     try:
-        CACHE_DIR.mkdir(exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     safe_name = _cache_safe_sheet_name(sheet_name)
+    # Remove old fallback formats first so Dash never reads a stale .parquet/.pkl
+    # when the current export falls back to another format.
+    for suffix in [".parquet", ".feather", ".pkl"]:
+        try:
+            old_fp = CACHE_DIR / f"{safe_name}{suffix}"
+            if old_fp.exists():
+                old_fp.unlink()
+        except Exception as e:
+            print(f"[CACHE EXPORT] could not remove old cache {sheet_name}{suffix}: {e}")
     # Prefer Parquet for fast cold-start reads. If the deployment does not have
     # pyarrow/fastparquet, fall back to pickle, which app.py also supports.
     try:

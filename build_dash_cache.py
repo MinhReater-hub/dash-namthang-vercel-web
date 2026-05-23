@@ -42,6 +42,17 @@ def write_cache(df: pd.DataFrame, out_base: Path, formats: set[str]) -> dict:
     written: dict[str, str] = {}
     out_base.parent.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale alternate formats before writing the current cache.
+    # This prevents app.py from reading an old .parquet when the new export
+    # only succeeds as .pkl/.feather, or vice versa.
+    for suffix in [".parquet", ".feather", ".pkl"]:
+        try:
+            fp = out_base.with_suffix(suffix)
+            if fp.exists():
+                fp.unlink()
+        except Exception as exc:
+            written[f"remove_old{suffix}_error"] = str(exc)
+
     if "parquet" in formats:
         try:
             fp = out_base.with_suffix(".parquet")
