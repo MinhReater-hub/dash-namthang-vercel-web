@@ -6167,9 +6167,9 @@ ZOOM_DETAIL_COLUMN_LABELS = {
     "so_diem_moi_ky_hd": "Điểm mới / kỳ HĐ",
     "so_loai_hinh_kd": "Số loại hình KD",
     "tong_tien_de_xuat": "Tổng tiền đề xuất",
-    "so_tien_thu_duoc": "Số tiền thu được",
+    "so_tien_thu_duoc": "Số tiền đã xử lý",
     "so_tien_da_xu_ly": "Số tiền đã xử lý",
-    "so_tien_con_no": "Số tiền còn nợ",
+    "so_tien_con_no": "Số tiền chênh lệch",
     "so_bien_ban": "Số biên bản",
     "so_bien_ban_da_xu_ly": "Biên bản đã xử lý",
     "so_bien_ban_thu_hoan_tat": "Biên bản thu hoàn tất",
@@ -7820,15 +7820,15 @@ MENU_CONFIG = {
         "page2_title": "PHÂN TÍCH BIÊN BẢN THEO KHU VỰC",
         "df": df_bb,
         "value_col": "so_tien_thu_duoc",
-        "metric_label": "Số tiền thu được",
+        "metric_label": "Số tiền đã xử lý",
         "secondary_col": "so_tien_da_xu_ly",
         "secondary_label": "Số tiền biên bản ghi nhận",
-        "avg_label": "Số tiền còn nợ",
+        "avg_label": "Số tiền chênh lệch",
         "avg_mode": "per_secondary",
         "avg_divisor_label": "biên bản",
         "icon": ICON_BB,
         "type_filter_kind": None,
-        "dataset_keywords": ["bien ban", "biên bản", "thu duoc", "thu được", "con no", "còn nợ", "da xu ly", "đã xử lý", "thu hoi"],
+        "dataset_keywords": ["bien ban", "biên bản", "thu duoc", "đã xử lý", "con no", "chênh lệch", "da xu ly", "đã xử lý", "thu hoi"],
     },
     "xdt": {
         "code": "4.1",
@@ -10229,9 +10229,9 @@ def _detail_table_columns(prefix: str):
         "so_diem_moi_ky_hd": "Điểm mới / kỳ HĐ",
         "so_loai_hinh_kd": "Số loại hình KD",
         "tong_tien_de_xuat": "Tổng tiền đề xuất",
-        "so_tien_thu_duoc": "Số tiền thu được",
+        "so_tien_thu_duoc": "Số tiền đã xử lý",
         "so_tien_da_xu_ly": "Số tiền biên bản ghi nhận",
-        "so_tien_con_no": "Số tiền còn nợ",
+        "so_tien_con_no": "Số tiền chênh lệch",
         "so_bien_ban": "Số biên bản",
         "so_bien_ban_da_xu_ly": "Biên bản đã xử lý",
         "so_bien_ban_thu_hoan_tat": "Biên bản thu hoàn tất",
@@ -14255,14 +14255,14 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, b
 
 BB_METRIC_ORDER = ["so_tien_thu_duoc", "so_tien_da_xu_ly", "so_tien_con_no"]
 BB_METRIC_LABELS = {
-    "so_tien_thu_duoc": "Số tiền thu được",
+    "so_tien_thu_duoc": "Số tiền đã xử lý",
     "so_tien_da_xu_ly": "Số tiền biên bản ghi nhận",
-    "so_tien_con_no": "Số tiền còn nợ",
+    "so_tien_con_no": "Số tiền chênh lệch",
 }
 BB_METRIC_COLOR_MAP = {
-    "Số tiền thu được": GREEN_PRIMARY,
+    "Số tiền đã xử lý": GREEN_PRIMARY,
     "Số tiền biên bản ghi nhận": NAVY_PRIMARY,
-    "Số tiền còn nợ": AMBER_PRIMARY,
+    "Số tiền chênh lệch": AMBER_PRIMARY,
 }
 
 
@@ -14664,11 +14664,11 @@ def callbacks(prefix: str):
 
             kpi1 = kpi_content(fmt_vn(collected_total), kpi_subtitle, region_value_lines_from_payload(payload1, max_lines=4))
             kpi2 = kpi_content(fmt_vn(processed_total), f"{year_txt} • {mo_txt} • Giá trị biên bản ghi nhận", region_value_lines_from_payload(payload2, max_lines=4))
-            kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=4))
+            kpi3 = kpi_content(fmt_vn(debt_total), f"chênh lệch / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=4))
 
-            kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi_subtitle, payload1)
+            kpi1_store = pack_kpi_store("Số tiền đã xử lý", fmt_vn(collected_total), kpi_subtitle, payload1)
             kpi2_store = pack_kpi_store("Số tiền biên bản ghi nhận", fmt_vn(processed_total), f"{year_txt} • {mo_txt}", payload2)
-            kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
+            kpi3_store = pack_kpi_store("Số tiền chênh lệch", fmt_vn(debt_total), f"chênh lệch / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
 
             if dff.empty:
                 fig_kv = empty_figure("Không có dữ liệu biên bản", theme)
@@ -14731,9 +14731,9 @@ def callbacks(prefix: str):
                     "Khu vực: %{y}<br>"
                     "Chỉ số: %{fullData.name}<br>"
                     "Giá trị: %{customdata[0]}<br>"
-                    "Thu được: %{customdata[1]}<br>"
+                    "Đã xử lý: %{customdata[1]}<br>"
                     "Đã xử lý: %{customdata[2]}<br>"
-                    "Còn nợ: %{customdata[3]}<br>"
+                    "chênh lệch: %{customdata[3]}<br>"
                     "Tỷ lệ nợ / đã xử lý: %{customdata[4]}"
                     "<extra></extra>"
                 )
@@ -14808,10 +14808,10 @@ def callbacks(prefix: str):
             if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
                 pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
                 pie_value = "so_tien_thu_duoc"
-                pie_title = f"Tỷ trọng số tiền thu được theo khu vực<br>{year_txt} • {mo_txt}"
+                pie_title = f"Tỷ trọng số tiền đã xử lý theo khu vực<br>{year_txt} • {mo_txt}"
             else:
                 pie_value = "so_tien_con_no"
-                pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{year_txt} • {mo_txt}"
+                pie_title = f"Tỷ trọng số tiền chênh lệch theo khu vực<br>{year_txt} • {mo_txt}"
             fig_pie = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
             pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
             fig_pie_store = pack_fig_store(fig_pie, rows=_bb_drill_rows(dff, ["khu_vuc"], label_from="khu_vuc", label_col="label"), meta={"chart": "bb_region_debt", "metric_label": pie_title})
@@ -15171,12 +15171,12 @@ def callbacks(prefix: str):
             kpi1_sub = f"{dims_show} • {year_txt} • {mo_txt} • {fmt_vn(count_total)} biên bản"
             kpi1 = kpi_content(fmt_vn(collected_total), kpi1_sub, region_value_lines_from_payload(payload1, max_lines=6))
             kpi2 = kpi_content(fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", region_value_lines_from_payload(payload2, max_lines=6))
-            kpi3 = kpi_content(fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=6))
+            kpi3 = kpi_content(fmt_vn(debt_total), f"chênh lệch / đã xử lý: {fmt_pct(debt_ratio, 1)}", region_value_lines_from_payload(payload3, max_lines=6))
 
-            kpi1_store = pack_kpi_store("Số tiền thu được", fmt_vn(collected_total), kpi1_sub, payload1)
+            kpi1_store = pack_kpi_store("Số tiền đã xử lý", fmt_vn(collected_total), kpi1_sub, payload1)
             kpi2_store = pack_kpi_store("Số tiền biên bản ghi nhận", fmt_vn(processed_total), f"{dims_show} • {year_txt} • {mo_txt}", payload2)
-            kpi3_store = pack_kpi_store("Số tiền còn nợ", fmt_vn(debt_total), f"Còn nợ / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
-            insight = f"Thu được {fmt_vn(collected_total)} / Đã xử lý {fmt_vn(processed_total)} / Còn nợ {fmt_vn(debt_total)} – {dims_show}"
+            kpi3_store = pack_kpi_store("Số tiền chênh lệch", fmt_vn(debt_total), f"chênh lệch / đã xử lý: {fmt_pct(debt_ratio, 1)}", payload3)
+            insight = f"đã xử lý {fmt_vn(collected_total)} / Đã xử lý {fmt_vn(processed_total)} / chênh lệch {fmt_vn(debt_total)} – {dims_show}"
 
             if dff.empty:
                 fig1 = empty_figure("Không có dữ liệu biên bản", theme)
@@ -15208,10 +15208,10 @@ def callbacks(prefix: str):
                 fig1.update_traces(line_shape="spline", line_width=3, marker_size=7)
                 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="left", x=0))
                 fig1 = apply_theme(fig1, theme)
-                fig1 = apply_chart_title(fig1, f"Số tiền thu được theo tháng • So sánh khu vực<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
+                fig1 = apply_chart_title(fig1, f"Số tiền đã xử lý theo tháng • So sánh khu vực<br>{dims_show} • {year_txt} • {mo_txt}", top=220, y_title="Giá trị")
                 fig1 = _add_line_point_labels(fig1, show_all_if_points_le=10)
-                rows1 = _bb_drill_rows(dff, ["thang_nam_vn", "khu_vuc"], metric_labels=["Số tiền thu được"])
-                fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Số tiền thu được", "series_field": "khu_vuc"})
+                rows1 = _bb_drill_rows(dff, ["thang_nam_vn", "khu_vuc"], metric_labels=["Số tiền đã xử lý"])
+                fig1_store = pack_fig_store(fig1, rows=rows1, meta={"chart": "bb_line", "metric_label": "Số tiền đã xử lý", "series_field": "khu_vuc"})
             else:
                 monthly_long = _bb_metric_long_df(dff, ["thang_nam_vn"])
                 monthly_long["thang_label"] = pd.to_datetime(monthly_long["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
@@ -15263,10 +15263,10 @@ def callbacks(prefix: str):
                 if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
                     pie_source = dff.groupby("khu_vuc", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
                     pie_value = "so_tien_thu_duoc"
-                    pie_title = f"Tỷ trọng số tiền thu được theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
+                    pie_title = f"Tỷ trọng số tiền đã xử lý theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
                 else:
                     pie_value = "so_tien_con_no"
-                    pie_title = f"Tỷ trọng số tiền còn nợ theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
+                    pie_title = f"Tỷ trọng số tiền chênh lệch theo khu vực<br>{dims_show} • {year_txt} • {mo_txt}"
                 fig3 = make_vn_donut(pie_source, names="khu_vuc", values=pie_value, title=pie_title, max_slices=10, color_map=REGION_COLOR_MAP, theme=theme)
                 pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
                 rows3 = _bb_drill_rows(dff, ["khu_vuc"], label_from="khu_vuc", label_col="label")
@@ -15275,10 +15275,10 @@ def callbacks(prefix: str):
                 if float(pd.to_numeric(pie_source.get("so_tien_con_no", 0), errors="coerce").fillna(0).sum()) <= 0:
                     pie_source = dff.groupby("thang_label", as_index=False)["so_tien_thu_duoc"].sum().sort_values("so_tien_thu_duoc", ascending=False)
                     pie_value = "so_tien_thu_duoc"
-                    pie_title = f"Tỷ trọng số tiền thu được theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
+                    pie_title = f"Tỷ trọng số tiền đã xử lý theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
                 else:
                     pie_value = "so_tien_con_no"
-                    pie_title = f"Tỷ trọng số tiền còn nợ theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
+                    pie_title = f"Tỷ trọng số tiền chênh lệch theo tháng<br>{dims_show} • {year_txt} • {mo_txt}"
                 pie_source = pie_source.rename(columns={"thang_label": "thang"})
                 fig3 = make_vn_donut(pie_source, names="thang", values=pie_value, title=pie_title, max_slices=12, color_map=None, theme=theme)
                 pie_source["metric_fmt"] = pie_source[pie_value].apply(fmt_vn)
@@ -16676,9 +16676,9 @@ def choose_dataset(question: str):
 
 def detect_metric_intent(question: str, value_col_default: str = "tong_doanh_thu"):
     q = norm_q(question)
-    if any(k in q for k in ["thu duoc", "thu được", "thu hoi", "thu hồi", "da thu", "đã thu"]):
+    if any(k in q for k in ["thu duoc", "đã xử lý", "thu hoi", "thu hồi", "da thu", "đã thu"]):
         metric_col = "so_tien_thu_duoc"
-    elif any(k in q for k in ["con no", "còn nợ", "no dong", "nợ đọng", "chua thu", "chưa thu"]):
+    elif any(k in q for k in ["con no", "chênh lệch", "no dong", "nợ đọng", "chua thu", "chưa thu"]):
         metric_col = "so_tien_con_no"
     elif any(k in q for k in ["da xu ly", "đã xử lý", "hoan tat xu ly", "hoàn tất xử lý"]):
         metric_col = "so_tien_da_xu_ly"
