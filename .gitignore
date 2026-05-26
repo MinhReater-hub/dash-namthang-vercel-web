@@ -4,3 +4,17 @@ output/*.xlsx
 __pycache__/
 *.pyc
 .env
+.vercel
+.env*
+
+.venv/
+
+venv/
+
+env/
+
+__pycache__/
+
+*.pyc
+
+.env.local
