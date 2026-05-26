@@ -19,6 +19,7 @@ from plotly.subplots import make_subplots
 import unicodedata
 from dash.exceptions import PreventUpdate
 import os
+import urllib.request
 import json
 import hmac
 import time
@@ -581,17 +582,114 @@ def _score_excel_workbook_for_dashboard(path: Path) -> int:
         return -1
 
 
+REMOTE_EXCEL_ERROR = None
+
+
+def _remote_excel_url() -> str:
+    return str(
+        os.getenv("DATA_URL")
+        or os.getenv("DASH_DATA_URL")
+        or os.getenv("EXCEL_DATA_URL")
+        or ""
+    ).strip()
+
+
+def _validate_excel_file_bytes(path: Path) -> tuple[bool, str]:
+    """Validate that the file is a real .xlsx workbook, not a Git LFS pointer/HTML error."""
+    try:
+        if path is None or not path.exists():
+            return False, f"File không tồn tại: {path}"
+        size = path.stat().st_size
+        head = path.read_bytes()[:160]
+        if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            return False, "File đang là Git LFS pointer, không phải Excel thật."
+        if head.lstrip().lower().startswith(b"<!doctype html") or head.lstrip().lower().startswith(b"<html"):
+            return False, "URL đang trả về HTML, không phải file Excel thật."
+        if not head.startswith(b"PK"):
+            return False, f"File tải về không giống .xlsx thật. Size={size}, header={head[:40]!r}"
+        return True, f"OK size={size}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _download_dashboard_excel_from_url() -> Path | None:
+    """Download the real Excel file to /tmp on Vercel when DATA_URL is configured."""
+    global REMOTE_EXCEL_ERROR
+    data_url = _remote_excel_url()
+    if not data_url:
+        return None
+
+    filename = os.getenv("DASH_REMOTE_EXCEL_FILENAME", "bao_cao_doanh_thu_tong_hop.xlsx")
+    target_dir = Path(os.getenv("DASH_REMOTE_EXCEL_DIR", "/tmp"))
+    target_path = target_dir / filename
+    timeout = int(os.getenv("DASH_REMOTE_EXCEL_TIMEOUT", "120"))
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Reuse a valid warm-cache file in /tmp when the serverless instance is warm.
+        if target_path.exists():
+            ok, msg = _validate_excel_file_bytes(target_path)
+            if ok:
+                print(f"[DATA] Using cached remote Excel: {target_path} ({msg})")
+                return target_path
+            try:
+                target_path.unlink()
+            except Exception:
+                pass
+
+        print(f"[DATA] Downloading Excel from DATA_URL to {target_path} ...")
+        req = urllib.request.Request(
+            data_url,
+            headers={
+                "User-Agent": "NamThang-Dash/1.0",
+                "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            target_path.write_bytes(resp.read())
+
+        ok, msg = _validate_excel_file_bytes(target_path)
+        print(f"[DATA] Remote Excel check: {msg}")
+        if not ok:
+            REMOTE_EXCEL_ERROR = (
+                "DATA_URL không trả về file Excel thật. "
+                f"Chi tiết: {msg}. Hãy dùng link raw/download thật, không dùng link trang GitHub preview."
+            )
+            try:
+                target_path.unlink()
+            except Exception:
+                pass
+            return None
+        return target_path
+    except Exception as e:
+        REMOTE_EXCEL_ERROR = f"Không tải được Excel từ DATA_URL: {e}"
+        print(f"[DATA] {REMOTE_EXCEL_ERROR}")
+        return None
+
+
 def _resolve_dashboard_excel_file(candidates) -> Path | None:
+    # On Vercel, always prefer DATA_URL so the 63 MB Excel file is not bundled.
+    remote_path = _download_dashboard_excel_from_url()
+    if remote_path is not None:
+        return remote_path
+
     env_file = os.getenv("DASH_EXCEL_FILE") or os.getenv("OUTPUT_EXCEL_FILE")
     if env_file:
         env_path = _resolve_first_existing_path([env_file])
         if env_path is not None:
-            return env_path
+            ok, msg = _validate_excel_file_bytes(env_path)
+            if ok:
+                return env_path
+            print(f"[DATA] Ignoring invalid DASH_EXCEL_FILE/OUTPUT_EXCEL_FILE: {msg}")
 
-    # 1) Keep original exact-path behavior first.
+    # 1) Keep original exact-path behavior first, but ignore LFS pointer files.
     exact = _resolve_first_existing_path(candidates)
     if exact is not None:
-        return exact
+        ok, msg = _validate_excel_file_bytes(exact)
+        if ok:
+            return exact
+        print(f"[DATA] Ignoring invalid local Excel candidate {exact}: {msg}")
 
     # 2) Optional advanced discovery. This is expensive on serverless cold starts,
     # so it is disabled by default for production/Vercel.
@@ -807,7 +905,12 @@ except Exception as e:
     df_hd = _empty_dashboard_df("hd")
 
 if EXCEL_FILE is None and all(x.empty for x in [df_dt, df_lh, df_hd]):
-    DATA_LOAD_ERROR = "Không tìm thấy file Excel/cache dữ liệu. Hãy kiểm tra DASH_EXCEL_FILE hoặc DASH_CACHE_DIR."
+    if REMOTE_EXCEL_ERROR:
+        DATA_LOAD_ERROR = REMOTE_EXCEL_ERROR
+    else:
+        DATA_LOAD_ERROR = "Không tìm thấy file Excel/cache dữ liệu. Hãy kiểm tra DATA_URL, DASH_EXCEL_FILE hoặc DASH_CACHE_DIR."
+if REMOTE_EXCEL_ERROR and DATA_LOAD_ERROR is None:
+    DATA_LOAD_ERROR = REMOTE_EXCEL_ERROR
 if DASH_LOG_BOOT_TIMING:
     _perf_log("core_data_load", _core_started, f"excel={EXCEL_FILE} cache_dir={DASH_CACHE_DIR}")
 
