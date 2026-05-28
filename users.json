@@ -5,6 +5,12 @@
     "regions": ["*"],
     "display_name": "Tài khoản DEV"
   },
+  "chutich": {
+    "password": "686868",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Tài khoản Chủ Tịch"
+  },
   "banlanhdao": {
     "password": "123",
     "role": "admin",
