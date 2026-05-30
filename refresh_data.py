@@ -48,7 +48,7 @@ DAILY_CHECKER_TABLE_EXPR = "dbo.doanhthungaychecker" + (f" WITH ({DAILY_CHECKER_
 # Monthly HOME/source sheets use daily checker data to repair the newest months
 # because the monthly SQL source can lag behind daily operational rows.
 # 3 means: replace the latest 3 months available in DoanhThu_Ngay_Checker.
-HOME_DAILY_OVERRIDE_RECENT_MONTHS = max(0, _env_int("HOME_DAILY_OVERRIDE_RECENT_MONTHS", 3))
+HOME_DAILY_OVERRIDE_RECENT_MONTHS = 1
 
 # Daily fleet availability source. dbo.danhSachLenCa is used to compute
 # "Xe đang có-ngày" from real daily rows. Business rule:
@@ -1468,27 +1468,83 @@ def _merge_recent_daily_months_into_monthly(
     if not daily_months:
         return monthly
 
-    override_months = set(daily_months[-recent_months:])
-    daily_use = daily_monthly[daily_monthly["thang_nam"].isin(override_months)].copy()
-    monthly_keep = monthly[~monthly["thang_nam"].isin(override_months)].copy() if not monthly.empty else monthly
-    out = pd.concat([monthly_keep, daily_use], ignore_index=True)
+    print("\n========== DEBUG MONTHLY ==========")
+    print(monthly["thang_nam"].astype(str).value_counts().sort_index().tail(20))
+
+    print("\n========== DEBUG DAILY MONTHLY ==========")
+    print(daily_monthly["thang_nam"].astype(str).value_counts().sort_index().tail(20))
+
+    monthly_months = set(
+        pd.to_datetime(
+            monthly["thang_nam"],
+            errors="coerce"
+        ).dropna().dt.to_period("M").dt.to_timestamp()
+    )
+
+    daily_months_set = set(
+        pd.to_datetime(
+            daily_monthly["thang_nam"],
+            errors="coerce"
+        ).dropna().dt.to_period("M").dt.to_timestamp()
+    )
+
+    override_months = daily_months_set - monthly_months
+
+    print("\n========== DEBUG OVERRIDE MONTHS ==========")
+    print(override_months)
+
+    daily_use = daily_monthly[
+        daily_monthly["thang_nam"].isin(override_months)
+    ].copy()
+
+    out = pd.concat(
+        [monthly, daily_use],
+        ignore_index=True
+    )
+
+    numeric_cols = out.select_dtypes(include="number").columns.tolist()
+
+    group_keys = [
+        col for col in out.columns
+        if col not in numeric_cols
+    ]
+
+    out = (
+        out
+        .groupby(group_keys, dropna=False, as_index=False)[numeric_cols]
+        .sum()
+    )
+
     if out.empty:
         return _monthly_revenue_empty(group_cols)
+
+    print("\n========== DEBUG OUT BEFORE PREPARE ==========")
+    print(out["thang_nam"].astype(str).value_counts().sort_index().tail(20))
+
     out = _prepare_monthly_revenue_frame(out, group_cols)
+
+    print("\n========== DEBUG OUT AFTER PREPARE ==========")
+    print(out["thang_nam"].astype(str).value_counts().sort_index().tail(20))
+
     out = out.sort_values(group_cols).reset_index(drop=True)
 
     try:
         before_max = pd.to_datetime(monthly["thang_nam"], errors="coerce").max() if not monthly.empty else pd.NaT
         after_max = pd.to_datetime(out["thang_nam"], errors="coerce").max() if not out.empty else pd.NaT
+
         print(
             f"[HOME MONTHLY OVERRIDE] {label}: "
             f"override_months={_month_label_for_log(override_months)} "
-            f"monthly_rows={len(monthly):,} daily_monthly_rows={len(daily_monthly):,} output_rows={len(out):,} "
+            f"monthly_rows={len(monthly):,} "
+            f"daily_monthly_rows={len(daily_monthly):,} "
+            f"output_rows={len(out):,} "
             f"before_max={before_max.strftime('%m/%Y') if pd.notna(before_max) else 'NA'} "
             f"after_max={after_max.strftime('%m/%Y') if pd.notna(after_max) else 'NA'}"
         )
+
     except Exception:
         pass
+
     return out
 
 doanhthu_thang_khuvuc = df_tx.groupby(
