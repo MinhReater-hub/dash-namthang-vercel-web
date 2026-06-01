@@ -1,7 +1,5 @@
-output/cache/
 output/bao_cao_doanh_thu_tong_hop.xlsx
 *.xlsx
-*.pkl
 __pycache__/
 .venv/
 venv/
