@@ -145,6 +145,14 @@ DASH_PREFER_PARQUET_CACHE = str(os.getenv("DASH_PREFER_PARQUET_CACHE", "1")).str
 DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY = str(os.getenv("DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS = str(os.getenv("DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
+# Resolve cache dir relative to app.py instead of the process cwd.
+# Vercel/serverless cwd can differ from the repository root, which made valid
+# tracked files under output/cache invisible and forced slow Excel fallback.
+try:
+    if not DASH_CACHE_DIR.is_absolute():
+        DASH_CACHE_DIR = (Path(__file__).resolve().parent / DASH_CACHE_DIR).resolve()
+except Exception:
+    pass
 DASH_CACHE_STALE_GRACE_SECONDS = int(os.getenv("DASH_CACHE_STALE_GRACE_SECONDS", "3600"))
 # On Vercel/Git deployments, file mtimes are not a reliable freshness signal.
 # Trust prebuilt cache files by default on serverless so Dash does not fall back to slow Excel reads.
@@ -915,7 +923,15 @@ def _ensure_excel_book_opened() -> bool:
 def _parse_cached_sheet(sheet_name: str) -> pd.DataFrame | None:
     if not DASH_PREFER_PARQUET_CACHE:
         return None
-    for fp in _existing_cache_file_candidates(sheet_name):
+    cache_candidates = _existing_cache_file_candidates(sheet_name)
+    if not cache_candidates and (DASH_LOG_BOOT_TIMING or DASH_LOG_CALLBACK_TIMING) and "TaiXe" in str(sheet_name):
+        try:
+            raw_candidates = _cache_file_candidates(sheet_name)
+            exists_txt = "; ".join(f"{fp}={'Y' if fp.exists() else 'N'}" for fp in raw_candidates[:6])
+            print(f"[DASH CACHE MISS] sheet={sheet_name} cache_dir={DASH_CACHE_DIR} candidates={exists_txt}")
+        except Exception:
+            pass
+    for fp in cache_candidates:
         try:
             if not fp.exists():
                 continue
@@ -10051,34 +10067,48 @@ def _ensure_daily_driver_detail_loaded():
             _perf_log("daily_driver_detail_lazy_load", started)
 
 
-def _daily_sources_for_driver_filter(drivers=None):
+def _daily_sources_for_driver_filter(drivers=None, vehicle_types=None, business_types=None):
     ensure_daily_data_loaded()
     drivers_norm = _normalize_multi_value(drivers)
+    selected_types = _normalize_multi_value(vehicle_types)
+    selected_business = _normalize_multi_value(business_types)
     if drivers_norm:
         _ensure_daily_driver_base_loaded()
-        _ensure_daily_driver_detail_loaded()
+        needs_driver_detail = bool(selected_types or selected_business)
+        if needs_driver_detail:
+            _ensure_daily_driver_detail_loaded()
         driver_key = (
             tuple(sorted(drivers_norm)),
+            tuple(sorted(selected_types)),
+            tuple(sorted(selected_business)),
+            bool(needs_driver_detail),
             _daily_filter_cache_scope_key(),
             _df_cache_signature(df_daily_taixe_checker),
-            _df_cache_signature(df_daily_taixe_lh_checker),
-            _df_cache_signature(df_daily_taixe_hinhthuc_checker),
-            _df_cache_signature(df_daily_taixe_lh_hinhthuc_checker),
-            _df_cache_signature(df_daily_taixe_luong_checker),
+            _df_cache_signature(df_daily_taixe_lh_checker) if needs_driver_detail else (),
+            _df_cache_signature(df_daily_taixe_hinhthuc_checker) if needs_driver_detail else (),
+            _df_cache_signature(df_daily_taixe_lh_hinhthuc_checker) if needs_driver_detail else (),
+            _df_cache_signature(df_daily_taixe_luong_checker) if needs_driver_detail else (),
         )
         cached = DAILY_DRIVER_SOURCE_CACHE.get(driver_key)
         if cached is not None:
             return cached
 
         source_dt = _first_non_empty_df(df_daily_taixe_checker, df_daily_raw_checker)
-        source_lh = _first_non_empty_df(df_daily_taixe_lh_checker, df_daily_lh_checker, df_daily_raw_checker)
-        source_mix = _first_non_empty_df(
-            df_daily_taixe_hinhthuc_checker,
-            df_daily_taixe_luong_checker,
-            df_daily_hinhthuc_checker,
-            df_daily_luong_checker,
-            df_daily_raw_checker,
-        )
+        if needs_driver_detail:
+            source_lh = _first_non_empty_df(df_daily_taixe_lh_checker, df_daily_lh_checker, df_daily_raw_checker)
+            source_mix = _first_non_empty_df(
+                df_daily_taixe_hinhthuc_checker,
+                df_daily_taixe_luong_checker,
+                df_daily_hinhthuc_checker,
+                df_daily_luong_checker,
+                df_daily_raw_checker,
+            )
+        else:
+            # Driver-only filter: keep the page responsive by using the base
+            # driver sheet for all primary metrics. Category-specific driver
+            # breakdown sheets are loaded only when category filters need them.
+            source_lh = source_dt
+            source_mix = source_dt
         result = (source_dt, source_lh, source_mix)
         if len(DAILY_DRIVER_SOURCE_CACHE) > DAILY_DRIVER_SOURCE_CACHE_MAX:
             DAILY_DRIVER_SOURCE_CACHE.clear()
@@ -14369,7 +14399,7 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, b
         except Exception:
             pass
     daily_source_label = _daily_source_label()
-    source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers)
+    source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers, vehicle_types, business_types)
     source_cross = _daily_cross_source_df(drivers) if (vehicle_types or business_types) else pd.DataFrame()
     daily_cache_key = _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_types, business_types, None, theme, source_dt, source_lh, source_hd, source_cross)
     cached_daily_output = _daily_output_cache_get(daily_cache_key)
