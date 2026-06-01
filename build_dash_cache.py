@@ -19,9 +19,37 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+
+
+CRITICAL_CACHE_SHEETS = [
+    # Home / monthly boot sheets
+    "DoanhThu_Thang_KhuVuc",
+    "DoanhThu_LH_KV_Thang",
+    "HopDong_KV_Thang",
+    # Daily overview sheets
+    "DoanhThu_Ngay_Checker",
+    "DoanhThu_Ngay_LH_Checker",
+    "DoanhThu_Ngay_HinhThuc",
+    "DoanhThu_Ngay_LH_HinhThuc",
+    "DoanhThu_Ngay_Luong",
+    "DoanhThu_Ngay_SoCho",
+    # Daily driver sheets: these are expensive to read from Excel on Vercel
+    "DoanhThu_Ngay_TaiXe",
+    "DoanhThu_Ngay_TaiXe_LH",
+    "DoanhThu_Ngay_TaiXe_HinhThuc",
+    "DoanhThu_Ngay_TaiXe_LH_HinhThuc",
+    "DoanhThu_Ngay_TaiXe_Luong",
+    "DoanhThu_Ngay_TaiXe_SoCho",
+    # Daily fleet denominator sheets
+    "XeDangCo_XeTrucThuoc_KV_Ngay",
+    "PhuongTien_XeTrucThuoc_KV_Ngay",
+    "XeDangCo_XePhanQuyen_KV_Ngay",
+    "PhuongTien_XePhanQuyen_KV_Ngay",
+]
 
 
 def norm_text(value: object) -> str:
@@ -36,6 +64,43 @@ def first_existing(candidates: list[str]) -> Path | None:
         if p.exists() and p.is_file():
             return p
     return None
+
+
+def validate_excel_file(path: Path) -> tuple[bool, str]:
+    try:
+        if path is None or not path.exists():
+            return False, f"file not found: {path}"
+        size = path.stat().st_size
+        head = path.read_bytes()[:160]
+        if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            return False, "Git LFS pointer, not a real Excel workbook"
+        if head.lstrip().lower().startswith(b"<!doctype html") or head.lstrip().lower().startswith(b"<html"):
+            return False, "HTML response, not a real Excel workbook"
+        if not head.startswith(b"PK"):
+            return False, f"not a valid .xlsx-like file. size={size}, header={head[:40]!r}"
+        return True, f"OK size={size}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def parse_requested_sheets(raw: str, book: pd.ExcelFile) -> tuple[list[str], list[str]]:
+    available = list(book.sheet_names)
+    available_set = set(available)
+    value = (raw or "").strip()
+    if not value:
+        return available, []
+
+    lowered = value.lower()
+    if lowered in {"critical", "core", "fast", "daily"}:
+        requested = CRITICAL_CACHE_SHEETS
+    else:
+        requested = [x.strip() for x in value.split(",") if x.strip()]
+
+    # Preserve requested order while ignoring duplicates.
+    requested = list(dict.fromkeys(requested))
+    sheet_names = [x for x in requested if x in available_set]
+    missing = [x for x in requested if x not in available_set]
+    return sheet_names, missing
 
 
 def write_cache(df: pd.DataFrame, out_base: Path, formats: set[str]) -> dict:
@@ -100,27 +165,43 @@ def main() -> int:
         print("[dash-cache] No Excel workbook found. Skipping cache build.")
         return 0
 
-    print(f"[dash-cache] Source workbook: {excel_file}")
+    ok, check_msg = validate_excel_file(excel_file)
+    if not ok:
+        print(f"[dash-cache] Invalid Excel workbook: {check_msg}")
+        return 0
+
+    print(f"[dash-cache] Source workbook: {excel_file} ({check_msg})")
     print(f"[dash-cache] Cache directory: {cache_dir}")
     print(f"[dash-cache] Formats: {', '.join(sorted(formats))}")
 
     book = pd.ExcelFile(excel_file)
     only_sheets_raw = os.getenv("DASH_CACHE_SHEETS", "").strip()
-    if only_sheets_raw:
-        requested = [x.strip() for x in only_sheets_raw.split(",") if x.strip()]
-        sheet_names = [x for x in requested if x in book.sheet_names]
-        missing = [x for x in requested if x not in book.sheet_names]
-        if missing:
-            print(f"[dash-cache] Missing requested sheets: {missing}")
-    else:
-        sheet_names = list(book.sheet_names)
+    sheet_names, missing = parse_requested_sheets(only_sheets_raw, book)
+    if missing:
+        print(f"[dash-cache] Missing requested sheets: {missing}")
+
+    try:
+        source_stat = excel_file.stat()
+        source_size = int(source_stat.st_size)
+        source_mtime = int(source_stat.st_mtime)
+    except Exception:
+        source_size = None
+        source_mtime = None
 
     manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": str(excel_file),
+        "source_size": source_size,
+        "source_mtime": source_mtime,
         "cache_dir": str(cache_dir),
         "formats": sorted(formats),
+        "sheet_mode": only_sheets_raw or "all",
+        "missing_requested_sheets": missing,
         "sheets": {},
     }
+
+    if not sheet_names:
+        print("[dash-cache] No matching sheets to cache. Nothing to do.")
 
     for sheet_name in sheet_names:
         try:

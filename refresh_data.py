@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+import json
 import pyodbc
 import pandas as pd
 from pathlib import Path
@@ -85,7 +86,24 @@ EXCEL_FILE = BASE_DIR / os.getenv("OUTPUT_EXCEL_NAME", "bao_cao_doanh_thu_tong_h
 # but the Dash app should read these smaller cache files first on Vercel.
 CACHE_DIR = Path(os.getenv("OUTPUT_CACHE_DIR", str(BASE_DIR / "cache")))
 EXPORT_DASH_CACHE = str(os.getenv("EXPORT_DASH_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
-CACHE_DIR.mkdir(exist_ok=True)
+# Write both parquet and pkl by default. Parquet is fastest when pyarrow/fastparquet
+# is available; pkl is a safe fallback so Vercel never has to open the large Excel
+# workbook just because parquet support is missing in the runtime.
+CACHE_FORMATS = {
+    x.strip().lower()
+    for x in os.getenv("OUTPUT_CACHE_FORMATS", os.getenv("DASH_CACHE_FORMATS", "parquet,pkl")).split(",")
+    if x.strip()
+}
+CACHE_FORMATS = CACHE_FORMATS & {"parquet", "feather", "pkl"}
+if not CACHE_FORMATS:
+    CACHE_FORMATS = {"pkl"}
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_EXPORT_MANIFEST = {
+    "source": str(EXCEL_FILE),
+    "cache_dir": str(CACHE_DIR),
+    "formats": sorted(CACHE_FORMATS),
+    "sheets": {},
+}
 
 SQL_QUERY_TIMEOUT = int(os.getenv("SQL_QUERY_TIMEOUT", "90"))
 SQL_ENABLE_DATE_PUSHDOWN = str(os.getenv("SQL_ENABLE_DATE_PUSHDOWN", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -1649,36 +1667,69 @@ def _cache_safe_sheet_name(sheet_name: str) -> str:
 def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
     if not EXPORT_DASH_CACHE:
         return
+    started = time.perf_counter()
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    safe_name = _cache_safe_sheet_name(sheet_name)
-    # Remove old fallback formats first so Dash never reads a stale .parquet/.pkl
-    # when the current export falls back to another format.
-    for suffix in [".parquet", ".feather", ".pkl"]:
-        try:
-            old_fp = CACHE_DIR / f"{safe_name}{suffix}"
-            if old_fp.exists():
-                old_fp.unlink()
-        except Exception as e:
-            print(f"[CACHE EXPORT] could not remove old cache {sheet_name}{suffix}: {e}")
-    # Prefer Parquet for fast cold-start reads. If the deployment does not have
-    # pyarrow/fastparquet, fall back to pickle, which app.py also supports.
+
+    # Write both the exact sheet name and the safe file name. app.py searches both
+    # variants, so this keeps cache lookup stable for Vietnamese sheet names and
+    # for any future sheet aliases without changing the Excel output.
+    cache_names = list(dict.fromkeys([str(sheet_name), _cache_safe_sheet_name(sheet_name)]))
+    sheet_info = {
+        "rows": int(len(df)) if isinstance(df, pd.DataFrame) else 0,
+        "cols": int(len(df.columns)) if isinstance(df, pd.DataFrame) else 0,
+        "written": {},
+        "elapsed_s": None,
+    }
+
+    for cache_name in cache_names:
+        if not cache_name:
+            continue
+        base = CACHE_DIR / cache_name
+        written = {}
+        # Remove old fallback formats first so Dash never reads stale cache.
+        for suffix in [".parquet", ".feather", ".pkl"]:
+            try:
+                old_fp = base.with_suffix(suffix)
+                if old_fp.exists():
+                    old_fp.unlink()
+            except Exception as e:
+                written[f"remove_old{suffix}_error"] = str(e)
+                print(f"[CACHE EXPORT] could not remove old cache {sheet_name}{suffix}: {e}")
+
+        if "parquet" in CACHE_FORMATS:
+            try:
+                df.to_parquet(base.with_suffix(".parquet"), index=False)
+                written["parquet"] = str(base.with_suffix(".parquet"))
+            except Exception as e:
+                written["parquet_error"] = str(e)
+                print(f"[CACHE EXPORT] parquet failed for {sheet_name}: {e}")
+
+        if "feather" in CACHE_FORMATS:
+            try:
+                df.reset_index(drop=True).to_feather(base.with_suffix(".feather"))
+                written["feather"] = str(base.with_suffix(".feather"))
+            except Exception as e:
+                written["feather_error"] = str(e)
+                print(f"[CACHE EXPORT] feather failed for {sheet_name}: {e}")
+
+        if "pkl" in CACHE_FORMATS:
+            try:
+                df.to_pickle(base.with_suffix(".pkl"))
+                written["pkl"] = str(base.with_suffix(".pkl"))
+            except Exception as e:
+                written["pkl_error"] = str(e)
+                print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
+
+        sheet_info["written"][cache_name] = written
+
+    sheet_info["elapsed_s"] = round(time.perf_counter() - started, 3)
     try:
-        df.to_parquet(CACHE_DIR / f"{safe_name}.parquet", index=False)
-        return
-    except Exception as e:
-        print(f"[CACHE EXPORT] parquet failed for {sheet_name}: {e}")
-    try:
-        df.reset_index(drop=True).to_feather(CACHE_DIR / f"{safe_name}.feather")
-        return
-    except Exception as e:
-        print(f"[CACHE EXPORT] feather failed for {sheet_name}: {e}")
-    try:
-        df.to_pickle(CACHE_DIR / f"{safe_name}.pkl")
-    except Exception as e:
-        print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
+        CACHE_EXPORT_MANIFEST["sheets"][str(sheet_name)] = sheet_info
+    except Exception:
+        pass
 
 
 def _write_sheet(writer, df: pd.DataFrame, sheet_name: str) -> None:
@@ -1742,7 +1793,27 @@ with _excel_writer as writer:
     for kv, d in top10_driver.groupby("khu_vuc"):
         _write_sheet(writer, d, f"TOP10_{kv[:25]}")
 
+if EXPORT_DASH_CACHE:
+    try:
+        CACHE_EXPORT_MANIFEST["elapsed_s"] = round(sum(
+            float(v.get("elapsed_s") or 0)
+            for v in CACHE_EXPORT_MANIFEST.get("sheets", {}).values()
+            if isinstance(v, dict)
+        ), 3)
+        CACHE_EXPORT_MANIFEST["date_range"] = {
+            "start": START_DATE.strftime("%Y-%m-%d") if START_DATE is not None else None,
+            "end": END_DATE.strftime("%Y-%m-%d") if END_DATE is not None else None,
+        }
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (CACHE_DIR / "manifest.json").write_text(
+            json.dumps(CACHE_EXPORT_MANIFEST, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[CACHE EXPORT] manifest failed: {e}")
+
 print("PIPELINE COMPLETED")
 print("Excel output:", EXCEL_FILE)
 print("Dash cache output:", CACHE_DIR if EXPORT_DASH_CACHE else "disabled")
+print("Dash cache formats:", ",".join(sorted(CACHE_FORMATS)) if EXPORT_DASH_CACHE else "disabled")
 print("Date range:", START_DATE.strftime("%Y-%m-%d") if START_DATE is not None else "-", "->", END_DATE.strftime("%Y-%m-%d") if END_DATE is not None else "-")
