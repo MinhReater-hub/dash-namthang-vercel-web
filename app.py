@@ -146,6 +146,10 @@ DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY = str(os.getenv("DASH_BOOT_SKIP_EXCEL_WHEN
 DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS = str(os.getenv("DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
 DASH_CACHE_STALE_GRACE_SECONDS = int(os.getenv("DASH_CACHE_STALE_GRACE_SECONDS", "3600"))
+# Vercel/serverless cold-start guard: when prebuilt cache files are present,
+# do not download/open the large Excel workbook just to serve Home/Daily.
+DASH_CACHE_FIRST_BOOT = str(os.getenv("DASH_CACHE_FIRST_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_DATA_VERSION = str(os.getenv("DASH_DATA_VERSION", os.getenv("VERCEL_GIT_COMMIT_SHA", ""))).strip()
 DASH_ZOOM_STORE_INCLUDE_FIGURE = str(os.getenv("DASH_ZOOM_STORE_INCLUDE_FIGURE", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS = str(os.getenv("DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_GRAPH_LEAN_CONFIG = {
@@ -163,6 +167,10 @@ DASH_DAILY_LOAD_SEAT_DATA = str(os.getenv("DASH_DAILY_LOAD_SEAT_DATA", "0")).str
 # Daily menu speed mode: avoid duplicated Plotly figure payloads in hidden zoom stores.
 # The browser already has the visible graph figure, so zoom retrieves it lazily on click.
 DASH_DAILY_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_DAILY_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Home uses the same browser-side lazy zoom pattern as Daily so the visible
+# graph figure is not duplicated in hidden dcc.Store payloads.
+DASH_HOME_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_HOME_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_DAILY_TABLE_MAX_ROWS = int(os.getenv("DASH_DAILY_TABLE_MAX_ROWS", "750" if DASH_SERVERLESS_FAST_PRESET else "1500"))
 # Driver-specific breakdown sheets are heavy and only needed after a driver filter is selected.
 DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_WARM_ALLOW_DEEP_PRELOAD = str(os.getenv("DASH_WARM_ALLOW_DEEP_PRELOAD", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -582,6 +590,63 @@ def _score_excel_workbook_for_dashboard(path: Path) -> int:
         return -1
 
 
+def _cache_file_candidates_boot_fast(sheet_name: str) -> list[Path]:
+    """Small early-boot cache lookup used before EXCEL_FILE/_cache helpers exist."""
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(sheet_name)).strip("_")
+    names = [str(sheet_name), safe_name]
+    out = []
+    seen = set()
+    for name in names:
+        if not str(name).strip():
+            continue
+        for suffix in (".parquet", ".feather", ".pkl"):
+            fp = DASH_CACHE_DIR / f"{name}{suffix}"
+            key = str(fp)
+            if key not in seen:
+                seen.add(key)
+                out.append(fp)
+    return out
+
+
+def _sheet_cache_group_exists_boot_fast(sheet_names) -> bool:
+    try:
+        for name in sheet_names if isinstance(sheet_names, (list, tuple, set)) else [sheet_names]:
+            if any(fp.exists() and fp.stat().st_size > 0 for fp in _cache_file_candidates_boot_fast(str(name))):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _cache_first_boot_ready() -> bool:
+    """Return True when enough prebuilt cache files exist to skip DATA_URL cold-start download."""
+    if not DASH_CACHE_FIRST_BOOT:
+        return False
+    default_groups = [
+        ["DoanhThu_Thang_KhuVuc"],
+        ["DoanhThu_LH_KV_Thang"],
+        ["HopDong_KV_Thang"],
+        ["DoanhThu_Ngay_Checker", "DoanhThu_Ngay_TheoNgay", "DoanhThuNgayChecker", "doanhthungaychecker", "Sheet1"],
+        ["DoanhThu_Ngay_LH_Checker", "DoanhThu_Ngay_LoaiHinh", "DoanhThuNgay_LoaiHinh", "DoanhThu_LH_Ngay_Checker"],
+        ["DoanhThu_Ngay_HinhThuc", "DoanhThu_Ngay_HinhThucKD", "DoanhThuNgay_HinhThuc", "DoanhThu_HinhThuc_Ngay"],
+    ]
+    raw = str(os.getenv("DASH_CACHE_FIRST_REQUIRED_SHEET_GROUPS", "")).strip()
+    if raw:
+        groups = []
+        for group in raw.split(";"):
+            names = [x.strip() for x in group.replace(",", "|").split("|") if x.strip()]
+            if names:
+                groups.append(names)
+    else:
+        groups = default_groups
+    if not groups:
+        return False
+    ready = all(_sheet_cache_group_exists_boot_fast(group) for group in groups)
+    if ready and (DASH_LOG_BOOT_TIMING or DASH_LOG_CALLBACK_TIMING):
+        print(f"[DATA] Cache-first boot ready; skipping remote Excel download. cache_dir={DASH_CACHE_DIR}")
+    return ready
+
+
 REMOTE_EXCEL_ERROR = None
 
 
@@ -669,7 +734,12 @@ def _download_dashboard_excel_from_url() -> Path | None:
 
 
 def _resolve_dashboard_excel_file(candidates) -> Path | None:
-    # On Vercel, always prefer DATA_URL so the 63 MB Excel file is not bundled.
+    # On Vercel, prefer prebuilt Parquet/Feather/Pickle caches when they are ready.
+    # This avoids downloading/opening the large Excel workbook during cold start.
+    if _cache_first_boot_ready():
+        return None
+
+    # On Vercel, prefer DATA_URL when cache-first is not ready so the Excel file is not bundled.
     remote_path = _download_dashboard_excel_from_url()
     if remote_path is not None:
         return remote_path
@@ -3239,6 +3309,10 @@ def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None
         DAILY_TABLE_FRAME_CACHE.clear()
         DAILY_DATE_BOUNDS_CACHE.clear()
         DAILY_FLEET_AVAILABLE_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        HOME_OUTPUT_CACHE.clear()
     except Exception:
         pass
     try:
@@ -6072,6 +6146,27 @@ def pack_daily_fig_store(fig, rows=None, meta=None):
         meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
     return {"kind": "fig", "figure": {}, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
 
+def pack_home_fig_store(fig, rows=None, meta=None):
+    """Home-only zoom store: keep rows/meta but do not duplicate chart figures in dcc.Store."""
+    if not DASH_HOME_LAZY_ZOOM_FIGURES:
+        return pack_fig_store(fig, rows=rows, meta=meta)
+    limited_rows, truncated, total_rows = _limit_store_rows(rows or [], DASH_FIGURE_STORE_MAX_ROWS)
+    meta_out = dict(meta or {})
+    meta_out["figure_included"] = False
+    meta_out["figure_lazy_from_graph"] = True
+    meta_out["figure_compacted"] = False
+    meta_out["zoom_first"] = True
+    try:
+        meta_out["trace_names"] = [str(getattr(tr, "name", "") or "") for tr in getattr(fig, "data", [])]
+    except Exception:
+        meta_out["trace_names"] = []
+    if truncated:
+        meta_out["rows_truncated"] = True
+        meta_out["rows_total"] = total_rows
+        meta_out["rows_limit"] = DASH_FIGURE_STORE_MAX_ROWS
+    return {"kind": "fig", "figure": {}, "rows": json_safe(limited_rows), "meta": json_safe(meta_out)}
+
+
 def _kpi_store_effective_row_limit(rows=None, configured_limit=None) -> int:
     """Return a safe KPI store row limit.
 
@@ -8616,8 +8711,10 @@ def _daily_output_cache_key(start_date, end_date, regions, drivers, vehicle_type
         bool(DASH_ZOOM_STORE_INCLUDE_FIGURE),
         bool(DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS),
         int(DASH_FIGURE_STORE_MAX_ROWS),
+        int(DASH_DAILY_TABLE_MAX_ROWS),
         int(_kpi_store_effective_row_limit([{}] * len(DAILY_REGION_DETAIL_ORDER), DASH_KPI_STORE_MAX_ROWS)) if "DAILY_REGION_DETAIL_ORDER" in globals() else max(int(DASH_KPI_STORE_MAX_ROWS), 12),
-        "kpi-safe-region-rows-v2-business-filter",
+        str(DASH_DATA_VERSION),
+        "kpi-safe-region-rows-v3-business-filter-table-limit",
     )
 
 
@@ -13703,6 +13800,68 @@ def _delta_class(v):
         return "negative"
     return "neutral"
 
+
+HOME_OUTPUT_CACHE = {}
+HOME_OUTPUT_CACHE_MAX = int(os.getenv("DASH_HOME_OUTPUT_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
+
+
+def _home_scope_cache_key():
+    try:
+        scope = current_user_region_scope()
+        if scope is None:
+            return "__all__"
+        return tuple(sorted(str(x) for x in scope))
+    except Exception:
+        return "__na__"
+
+
+def _home_output_cache_key(year_val, months, regions, theme):
+    return (
+        str(year_val or ""),
+        tuple(sorted(_normalize_multi_value(months))),
+        tuple(sorted(_normalize_multi_value(regions))),
+        str(theme or "light"),
+        _home_scope_cache_key(),
+        _df_cache_signature(df_dt),
+        _df_cache_signature(df_lh),
+        _df_cache_signature(df_hd),
+        str(DASH_DATA_VERSION),
+        bool(DASH_HOME_LAZY_ZOOM_FIGURES),
+        bool(DASH_ZOOM_STORE_INCLUDE_FIGURE),
+        int(DASH_FIGURE_STORE_MAX_ROWS),
+        int(_kpi_store_effective_row_limit([], DASH_KPI_STORE_MAX_ROWS)),
+        "home-output-v2-lazy-zoom",
+    )
+
+
+def _home_output_cache_get(cache_key):
+    cached = HOME_OUTPUT_CACHE.get(cache_key)
+    return cached if cached is not None else None
+
+
+def _home_output_cache_set(cache_key, value):
+    try:
+        if len(HOME_OUTPUT_CACHE) > HOME_OUTPUT_CACHE_MAX:
+            HOME_OUTPUT_CACHE.clear()
+        HOME_OUTPUT_CACHE[cache_key] = value
+    except Exception:
+        pass
+    return value
+
+
+def _table_records_for_dash(dff: pd.DataFrame, max_rows: int = 0) -> list:
+    if not isinstance(dff, pd.DataFrame):
+        return []
+    out = dff
+    try:
+        limit = int(max_rows or 0)
+    except Exception:
+        limit = 0
+    if limit > 0 and len(out) > limit:
+        out = out.head(limit).copy()
+    return out.to_dict("records")
+
+
 @app.callback(
     Output("home-summary", "children"),
     Output("home-kpi1", "children"),
@@ -13735,7 +13894,13 @@ def _delta_class(v):
 )
 @timed_callback("home")
 def update_home(year_val, months, regions, theme):
+    theme = theme or "light"
     regions = regions if isinstance(regions, list) else ([regions] if regions else [])
+    home_cache_key = _home_output_cache_key(year_val, months or [], regions or [], theme)
+    cached_home_output = _home_output_cache_get(home_cache_key)
+    if cached_home_output is not None:
+        return cached_home_output
+
     dff_dt = apply_common_filters(df_dt, year_val=year_val, months=months or [], dims=regions or [])
     dff_lh = apply_common_filters(df_lh, year_val=year_val, months=months or [], dims=regions or [])
     dff_hd = apply_common_filters(df_hd, year_val=year_val, months=months or [], dims=regions or [])
@@ -13879,7 +14044,7 @@ def update_home(year_val, months, regions, theme):
             linewidth=1,
             secondary_y=True
         )
-        home_main_store = pack_fig_store(
+        home_main_store = pack_home_fig_store(
             fig_home_main,
             rows=g_month[["thang_label", "rev_fmt", "trip_fmt", "avg_per_trip_fmt"]].to_dict("records"),
             meta={"chart": "home_combo", "metric_label": "Doanh thu & số cuốc"}
@@ -13901,7 +14066,7 @@ def update_home(year_val, months, regions, theme):
             color_map=REGION_COLOR_MAP,
             theme=theme
         )
-        home_region_donut_store = pack_fig_store(
+        home_region_donut_store = pack_home_fig_store(
             fig_region_donut,
             rows=[{"label": r["khu_vuc"], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["rev_fmt"]} for _, r in g_region.iterrows()],
             meta={"chart": "home_region_donut", "metric_label": "Doanh thu"}
@@ -13928,7 +14093,7 @@ def update_home(year_val, months, regions, theme):
             y_title="Khu vực"
         )
         fig_region_bar.update_layout(showlegend=False)
-        home_region_bar_store = pack_fig_store(
+        home_region_bar_store = pack_home_fig_store(
             fig_region_bar,
             rows=[{"khu_vuc": r["khu_vuc"], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["rev_fmt"]} for _, r in g_top.iterrows()],
             meta={"chart": "home_region_bar", "metric_label": "Doanh thu"}
@@ -13945,14 +14110,14 @@ def update_home(year_val, months, regions, theme):
                 max_slices=8,
                 theme=theme
             )
-            home_lh_store = pack_fig_store(
+            home_lh_store = pack_home_fig_store(
                 fig_lh,
                 rows=[{"label": r[LH_COL], "metric": float(r["tong_doanh_thu"]), "metric_fmt": r["val_fmt"]} for _, r in g_lh.iterrows()],
                 meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"}
             )
         else:
             fig_lh = empty_figure("Không có dữ liệu loại hình", theme)
-            home_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
+            home_lh_store = pack_home_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
 
         if not dff_hd.empty and HD_COL in dff_hd.columns and "tong_so_cuoc" in dff_hd.columns:
             g_hd = dff_hd.groupby(HD_COL, as_index=False).agg({"tong_so_cuoc": "sum"}).sort_values("tong_so_cuoc", ascending=False)
@@ -13975,14 +14140,14 @@ def update_home(year_val, months, regions, theme):
                 y_title="Số cuốc"
             )
             fig_hd.update_layout(showlegend=False)
-            home_hd_store = pack_fig_store(
+            home_hd_store = pack_home_fig_store(
                 fig_hd,
                 rows=[{"label": r[HD_COL], "metric": float(r["tong_so_cuoc"]), "metric_fmt": r["val_fmt"]} for _, r in g_hd.iterrows()],
                 meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"}
             )
         else:
             fig_hd = empty_figure("Không có dữ liệu hợp đồng", theme)
-            home_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
+            home_hd_store = pack_home_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
 
         if "khu_vuc" in dff_dt.columns:
             g_top_region_month = dff_dt.groupby(["thang_label", "khu_vuc"], as_index=False)["tong_doanh_thu"].sum()
@@ -14006,15 +14171,15 @@ def update_home(year_val, months, regions, theme):
         fig_lh = empty_figure("Không có dữ liệu loại hình", theme)
         fig_hd = empty_figure("Không có dữ liệu hợp đồng", theme)
         home_table_data = []
-        home_main_store = pack_fig_store(fig_home_main, rows=[], meta={"chart": "home_combo", "metric_label": "Doanh thu & số cuốc"})
-        home_region_donut_store = pack_fig_store(fig_region_donut, rows=[], meta={"chart": "home_region_donut", "metric_label": "Doanh thu"})
-        home_region_bar_store = pack_fig_store(fig_region_bar, rows=[], meta={"chart": "home_region_bar", "metric_label": "Doanh thu"})
-        home_lh_store = pack_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
-        home_hd_store = pack_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
+        home_main_store = pack_home_fig_store(fig_home_main, rows=[], meta={"chart": "home_combo", "metric_label": "Doanh thu & số cuốc"})
+        home_region_donut_store = pack_home_fig_store(fig_region_donut, rows=[], meta={"chart": "home_region_donut", "metric_label": "Doanh thu"})
+        home_region_bar_store = pack_home_fig_store(fig_region_bar, rows=[], meta={"chart": "home_region_bar", "metric_label": "Doanh thu"})
+        home_lh_store = pack_home_fig_store(fig_lh, rows=[], meta={"chart": "home_lh_donut", "metric_label": "Doanh thu"})
+        home_hd_store = pack_home_fig_store(fig_hd, rows=[], meta={"chart": "home_hd_bar", "metric_label": "Số cuốc"})
 
     style_cell, style_header = _detail_table_theme_styles(theme, "home")
 
-    return (
+    result = (
         summary_children,
         home_kpi1,
         home_kpi2,
@@ -14038,6 +14203,7 @@ def update_home(year_val, months, regions, theme):
         home_lh_store,
         home_hd_store
     )
+    return _home_output_cache_set(home_cache_key, result)
 
 
 @app.callback(
@@ -14327,7 +14493,10 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, b
         daily_hd_store = pack_daily_fig_store(fig_hd, rows=[], meta={"chart": "daily_mix_bar", "metric_label": "Doanh thu"})
 
     daily_table_view = daily_views.get("table", pd.DataFrame())
-    daily_table_data = daily_table_view.to_dict("records") if isinstance(daily_table_view, pd.DataFrame) else _daily_table_frame(dff_dt).to_dict("records")
+    if isinstance(daily_table_view, pd.DataFrame):
+        daily_table_data = _table_records_for_dash(daily_table_view, DASH_DAILY_TABLE_MAX_ROWS)
+    else:
+        daily_table_data = _table_records_for_dash(_daily_table_frame(dff_dt), DASH_DAILY_TABLE_MAX_ROWS)
 
     result = (
         summary_children,
@@ -16273,7 +16442,7 @@ for _prefix in HR_MENU_PREFIXES:
 
 app.clientside_callback(
     """
-    function(_clicks, allStoreData, dailyMainFigure, dailyRegionDonutFigure, dailyRegionBarFigure, dailyLhDonutFigure, dailyHdBarFigure) {
+    function(_clicks, allStoreData, homeMainFigure, homeRegionDonutFigure, homeRegionBarFigure, homeLhDonutFigure, homeHdBarFigure, dailyMainFigure, dailyRegionDonutFigure, dailyRegionBarFigure, dailyLhDonutFigure, dailyHdBarFigure) {
         const noUpdate = dash_clientside.no_update;
         const ctx = dash_clientside.callback_context || {};
         const trig = ctx.triggered_id;
@@ -16331,10 +16500,15 @@ app.clientside_callback(
             return [noUpdate, noUpdate];
         }
 
-        // Daily charts keep their figure out of hidden dcc.Store for fast page load.
+        // Home/Daily charts keep their figure out of hidden dcc.Store for fast page load.
         // When zoom is opened, reuse the visible dcc.Graph figure that is already in the browser.
         try {
-            const dailyFigureMap = {
+            const graphFigureMap = {
+                "home-main": homeMainFigure,
+                "home-region-donut": homeRegionDonutFigure,
+                "home-region-bar": homeRegionBarFigure,
+                "home-lh-donut": homeLhDonutFigure,
+                "home-hd-bar": homeHdBarFigure,
                 "daily-main": dailyMainFigure,
                 "daily-region-donut": dailyRegionDonutFigure,
                 "daily-region-bar": dailyRegionBarFigure,
@@ -16344,8 +16518,8 @@ app.clientside_callback(
             if (selectedStore && selectedStore.kind === "fig") {
                 const figMissing = (!selectedStore.figure) ||
                     (typeof selectedStore.figure === "object" && Object.keys(selectedStore.figure).length === 0);
-                if (figMissing && dailyFigureMap[target]) {
-                    selectedStore = Object.assign({}, selectedStore, {figure: dailyFigureMap[target]});
+                if (figMissing && graphFigureMap[target]) {
+                    selectedStore = Object.assign({}, selectedStore, {figure: graphFigureMap[target]});
                     selectedStore.meta = Object.assign({}, selectedStore.meta || {}, {
                         figure_included: true,
                         figure_lazy_from_graph: true
@@ -16361,6 +16535,11 @@ app.clientside_callback(
     Output("zoom-selected-store", "data"),
     Input({"type":"zoomable","kind":ALL,"target":ALL}, "n_clicks"),
     State({"type":"zoom-store","target":ALL}, "data"),
+    State("home-main", "figure", allow_optional=True),
+    State("home-region-donut", "figure", allow_optional=True),
+    State("home-region-bar", "figure", allow_optional=True),
+    State("home-lh-donut", "figure", allow_optional=True),
+    State("home-hd-bar", "figure", allow_optional=True),
     State("daily-main", "figure", allow_optional=True),
     State("daily-region-donut", "figure", allow_optional=True),
     State("daily-region-bar", "figure", allow_optional=True),
@@ -16505,7 +16684,7 @@ def zoom_all(zoom_request, n_dismiss, clickData, is_open, zoom_target, selected_
             # Chart cards must never open directly as a table. Missing figures usually mean
             # an old env/deployment disabled figure storage; show a chart placeholder and
             # keep drill-down hidden until a real chart figure is available.
-            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy kiểm tra DASH_ZOOM_FORCE_FIGURE_FOR_CHARTS=1 và redeploy Production.", theme).to_dict()
+            fig_dict = empty_figure("Chưa có biểu đồ phóng to cho chart này. Hãy tải lại trang hoặc kiểm tra payload figure trên graph hiển thị.", theme).to_dict()
             fig_dict = enhance_zoom_figure(fig_dict)
             result = (True, title, None, fig_dict, _zoom_graph_visible_style(), [], {"display":"none"}, {"kind":"fig","target":target})
             return _zoom_open_cache_set(open_cache_key, result)

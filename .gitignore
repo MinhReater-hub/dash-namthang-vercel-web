@@ -1,20 +1,31 @@
-output/cache/
+# =========================
+# Dashboard data outputs
+# =========================
+# Keep runtime cache files in Git so Vercel can boot from cache instead of opening/downloading Excel.
+!output/cache/
+!output/cache/**
+
+# Ignore generated Excel exports by default, but keep the main dashboard workbook if you still need it.
 output/*.xlsx
 !output/bao_cao_doanh_thu_tong_hop.xlsx
+
+# =========================
+# Python
+# =========================
 __pycache__/
 *.pyc
+
+# =========================
+# Local env / deploy metadata
+# =========================
 .env
-.vercel
 .env*
-
-.venv/
-
-venv/
-
-env/
-
-__pycache__/
-
-*.pyc
-
 .env.local
+.vercel/
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
