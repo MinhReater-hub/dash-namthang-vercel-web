@@ -173,6 +173,9 @@ DASH_HOME_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_HOME_LAZY_ZOOM_FIGURES", "1"))
 DASH_DAILY_TABLE_MAX_ROWS = int(os.getenv("DASH_DAILY_TABLE_MAX_ROWS", "750" if DASH_SERVERLESS_FAST_PRESET else "1500"))
 # Driver-specific breakdown sheets are heavy and only needed after a driver filter is selected.
 DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Driver option list is a 67k-row sheet on production data. Keep it lazy so
+# opening the Daily menu does not read Excel/cache just to populate a dropdown.
+DASH_DAILY_LAZY_DRIVER_OPTIONS = str(os.getenv("DASH_DAILY_LAZY_DRIVER_OPTIONS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_WARM_ALLOW_DEEP_PRELOAD = str(os.getenv("DASH_WARM_ALLOW_DEEP_PRELOAD", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_WARM_INCLUDE_TOUCH_SUMS = str(os.getenv("DASH_WARM_INCLUDE_TOUCH_SUMS", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -3268,6 +3271,7 @@ DASH_BOOT_LAZY_DATA = str(os.getenv("DASH_BOOT_LAZY_DATA", "1")).strip().lower()
 _BOOT_DATA_LOADED = {"daily": False, "hr": False, "biz": False, "fleet": False}
 _BOOT_DATA_LOADING = set()
 DAILY_DRIVER_DETAIL_LOADED = False
+DAILY_DRIVER_BASE_LOADED = False
 
 
 def _df_reset_in_place(target: pd.DataFrame, source: pd.DataFrame) -> pd.DataFrame:
@@ -3320,6 +3324,8 @@ def _assign_loaded_frames(frame_map: dict, cutoff_names: list[str] | None = None
     except Exception:
         pass
     try:
+        if "df_daily_taixe_checker" in frame_map:
+            globals()["DAILY_DRIVER_BASE_LOADED"] = (not DASH_DAILY_LAZY_DRIVER_OPTIONS) or (isinstance(globals().get("df_daily_taixe_checker"), pd.DataFrame) and not globals().get("df_daily_taixe_checker").empty)
         if "df_daily_taixe_lh_checker" in frame_map or "df_daily_taixe_hinhthuc_checker" in frame_map or "df_daily_taixe_lh_hinhthuc_checker" in frame_map:
             globals()["DAILY_DRIVER_DETAIL_LOADED"] = not DASH_DAILY_LAZY_DRIVER_DETAIL
     except Exception:
@@ -3361,7 +3367,7 @@ def _load_daily_boot_frames(log: bool = True) -> dict:
             category_name="so_cho",
             source_label="Số chỗ ngày checker",
         ) if DASH_DAILY_LOAD_SEAT_DATA else pd.DataFrame()),
-        "df_daily_taixe_checker": _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES),
+        "df_daily_taixe_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_OPTIONS else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES)),
         "df_daily_taixe_lh_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_LH_SHEET_CANDIDATES)),
         "df_daily_taixe_hinhthuc_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_HINHTHUC_SHEET_CANDIDATES)),
         "df_daily_taixe_lh_hinhthuc_checker": (pd.DataFrame() if DASH_DAILY_LAZY_DRIVER_DETAIL else _read_daily_checker_multi_category_df(
@@ -8996,23 +9002,79 @@ def _daily_source_label() -> str:
         return "SQL Doanh thu theo ngày"
     return "Dữ liệu tổng hợp hiện có"
 
-def _daily_driver_options():
+def _ensure_daily_driver_base_loaded():
+    """Load the driver option/base sheet only when a driver lookup or filter needs it."""
+    global DAILY_DRIVER_BASE_LOADED, df_daily_taixe_checker
+    if not DASH_DAILY_LAZY_DRIVER_OPTIONS or DAILY_DRIVER_BASE_LOADED:
+        return
+    started = time.perf_counter()
+    try:
+        df_daily_taixe_checker = _df_reset_in_place(
+            df_daily_taixe_checker,
+            _read_daily_driver_grouped_df(DAILY_CHECKER_TAIXE_SHEET_CANDIDATES),
+        )
+    finally:
+        DAILY_DRIVER_BASE_LOADED = True
+        try:
+            DAILY_DRIVER_OPTIONS_CACHE.clear()
+            DAILY_DRIVER_SOURCE_CACHE.clear()
+            DAILY_FILTER_CACHE.clear()
+            DAILY_LATEST_OUTPUT_CACHE.clear()
+            DAILY_DATE_BOUNDS_CACHE.clear()
+        except Exception:
+            pass
+        if DASH_LOG_CALLBACK_TIMING or DASH_LOG_BOOT_TIMING:
+            _perf_log("daily_driver_base_lazy_load", started)
+
+
+def _daily_driver_options(search_value=None, selected_values=None, regions=None, limit: int | None = None):
     ensure_daily_data_loaded()
+    selected_values = _normalize_multi_value(selected_values)
+    search_value = str(search_value or "").strip()
+    # Do not load the 67k-row driver sheet just because the Daily page layout is built.
+    # Load it only after the user searches/selects a driver, or when lazy mode is off.
+    if DASH_DAILY_LAZY_DRIVER_OPTIONS and not search_value and not selected_values:
+        return []
+    if DASH_DAILY_LAZY_DRIVER_OPTIONS and search_value and len(norm_text(search_value)) < 2 and not selected_values:
+        return []
+
+    _ensure_daily_driver_base_loaded()
     source = df_daily_taixe_checker if isinstance(df_daily_taixe_checker, pd.DataFrame) and not df_daily_taixe_checker.empty else df_daily_raw_checker
-    cache_key = (_df_cache_signature(source), _daily_filter_cache_scope_key())
+    cache_key = (
+        _df_cache_signature(source),
+        _daily_filter_cache_scope_key(),
+        norm_text(search_value),
+        tuple(sorted(selected_values)),
+        tuple(sorted(_normalize_multi_value(regions))),
+        int(limit or 0),
+    )
     if DAILY_DRIVER_OPTIONS_CACHE.get("key") == cache_key:
         return DAILY_DRIVER_OPTIONS_CACHE.get("value", [])
     if source is None or not isinstance(source, pd.DataFrame) or source.empty or "ho_ten" not in source.columns:
         value = []
     else:
         scoped = apply_region_scope_to_df(source)
+        region_values = _normalize_multi_value(regions)
+        if region_values and "khu_vuc" in scoped.columns:
+            region_set = {str(canon_region_name(x) or x) for x in region_values}
+            scoped = scoped[scoped["khu_vuc"].apply(lambda x: str(canon_region_name(x) or x)).isin(region_set)]
         names = scoped["ho_ten"].fillna("").astype(str).str.strip()
-        names = sorted([x for x in names.unique().tolist() if x])
-        value = [{"label": x, "value": x} for x in names]
+        names = names[names.ne("")]
+        if search_value:
+            q = norm_text(search_value)
+            names = names[names.map(norm_text).str.contains(q, regex=False, na=False)]
+        unique_names = sorted(names.unique().tolist())
+        selected_set = set(selected_values)
+        if limit is None:
+            limit = int(os.getenv("DASH_DAILY_DRIVER_OPTION_LIMIT", "80" if DASH_SERVERLESS_FAST_PRESET else "250"))
+        shown = unique_names[:max(int(limit), 1)]
+        for item in selected_values:
+            if item and item not in shown:
+                shown.append(item)
+        value = [{"label": x, "value": x} for x in shown if x]
     DAILY_DRIVER_OPTIONS_CACHE["key"] = cache_key
     DAILY_DRIVER_OPTIONS_CACHE["value"] = value
     return value
-
 
 
 DAILY_VEHICLE_TYPE_CANON = ["Xe Công ty", "Xe thương quyền trả góp", "Xe thương quyền hợp tác"]
@@ -9625,8 +9687,11 @@ def _daily_vehicle_kpi_payload(start_date=None, end_date=None, regions=None, dri
     """
     selected_types = _normalize_multi_value(vehicle_types)
     selected_business = _normalize_multi_value(business_types)
-    if (selected_types or selected_business) and (_normalize_multi_value(drivers) or DASH_DAILY_LAZY_DRIVER_DETAIL):
-        _ensure_daily_driver_detail_loaded()
+    drivers_norm = _normalize_multi_value(drivers)
+    if drivers_norm:
+        _ensure_daily_driver_base_loaded()
+        if selected_types or selected_business:
+            _ensure_daily_driver_detail_loaded()
     metric_frame = metric_frame if isinstance(metric_frame, pd.DataFrame) else pd.DataFrame()
     cache_key = (
         str(start_date or ""), str(end_date or ""),
@@ -9642,13 +9707,18 @@ def _daily_vehicle_kpi_payload(start_date=None, end_date=None, regions=None, dri
     if isinstance(cached, list):
         return [dict(x) for x in cached]
 
-    op_source = _first_non_empty_df(
-        df_daily_taixe_lh_hinhthuc_checker if (selected_types and selected_business) else pd.DataFrame(),
-        df_daily_taixe_lh_checker if selected_types else pd.DataFrame(),
-        df_daily_taixe_hinhthuc_checker if selected_business else pd.DataFrame(),
-        df_daily_taixe_checker,
-        df_daily_raw_checker,
-    )
+    if drivers_norm:
+        op_source = _first_non_empty_df(
+            df_daily_taixe_lh_hinhthuc_checker if (selected_types and selected_business) else pd.DataFrame(),
+            df_daily_taixe_lh_checker if selected_types else pd.DataFrame(),
+            df_daily_taixe_hinhthuc_checker if selected_business else pd.DataFrame(),
+            df_daily_taixe_checker,
+            df_daily_raw_checker,
+        )
+    else:
+        # Avoid forcing driver-level sheets for KPI zoom when no driver is selected.
+        # The visible metric_frame already carries the filtered aggregate values.
+        op_source = pd.DataFrame()
     op = pd.DataFrame()
     if isinstance(op_source, pd.DataFrame) and not op_source.empty:
         op = _filter_daily_frame(op_source, start_date, end_date, regions, source_label="Tài xế ngày", drivers=drivers)
@@ -9958,6 +10028,7 @@ def _daily_sources_for_driver_filter(drivers=None):
     ensure_daily_data_loaded()
     drivers_norm = _normalize_multi_value(drivers)
     if drivers_norm:
+        _ensure_daily_driver_base_loaded()
         _ensure_daily_driver_detail_loaded()
         driver_key = (
             tuple(sorted(drivers_norm)),
@@ -9993,7 +10064,13 @@ def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None,
     ensure_daily_data_loaded()
     selected_types = _normalize_multi_value(vehicle_types)
     selected_business = _normalize_multi_value(business_types)
-    if (selected_types or selected_business) and (_normalize_multi_value(drivers) or DASH_DAILY_LAZY_DRIVER_DETAIL):
+    drivers_norm = _normalize_multi_value(drivers)
+    if not drivers_norm:
+        # Do not load 67k-row driver detail sheets just to calculate exact unique
+        # operating counts. The caller will use aggregate so_xe/so_tai_xe fallback.
+        return None
+    _ensure_daily_driver_base_loaded()
+    if selected_types or selected_business:
         _ensure_daily_driver_detail_loaded()
     source = _first_non_empty_df(
         df_daily_taixe_lh_hinhthuc_checker if (selected_types and selected_business) else pd.DataFrame(),
@@ -10053,6 +10130,8 @@ def _daily_unique_operating_counts(start_date=None, end_date=None, regions=None,
 
 def _daily_top_driver_frame(start_date=None, end_date=None, regions=None, drivers=None, limit: int = 10):
     ensure_daily_data_loaded()
+    if _normalize_multi_value(drivers):
+        _ensure_daily_driver_base_loaded()
     source = _first_non_empty_df(df_daily_taixe_checker, df_daily_raw_checker)
     if source is None or not isinstance(source, pd.DataFrame) or source.empty:
         return pd.DataFrame()
@@ -13069,6 +13148,18 @@ def show_last_updated(_):
             html.Div(info.get("caption", ""), className="data-status-caption"),
         ]
     )
+
+
+@app.callback(
+    Output("daily-driver", "options"),
+    Input("daily-driver", "search_value", allow_optional=True),
+    Input("daily-region", "value", allow_optional=True),
+    State("daily-driver", "value", allow_optional=True),
+    prevent_initial_call=False,
+)
+def update_daily_driver_options(search_value, regions, selected_values):
+    return _daily_driver_options(search_value=search_value, selected_values=selected_values, regions=regions)
+
 
 @app.callback(
     Output("download-excel", "data"),
