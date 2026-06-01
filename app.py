@@ -146,6 +146,9 @@ DASH_BOOT_SKIP_EXCEL_WHEN_CACHE_READY = str(os.getenv("DASH_BOOT_SKIP_EXCEL_WHEN
 DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS = str(os.getenv("DASH_LAZY_OPEN_EXCEL_ON_CACHE_MISS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_CACHE_DIR = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
 DASH_CACHE_STALE_GRACE_SECONDS = int(os.getenv("DASH_CACHE_STALE_GRACE_SECONDS", "3600"))
+# On Vercel/Git deployments, file mtimes are not a reliable freshness signal.
+# Trust prebuilt cache files by default on serverless so Dash does not fall back to slow Excel reads.
+DASH_TRUST_PREBUILT_CACHE = str(os.getenv("DASH_TRUST_PREBUILT_CACHE", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Vercel/serverless cold-start guard: when prebuilt cache files are present,
 # do not download/open the large Excel workbook just to serve Home/Daily.
 DASH_CACHE_FIRST_BOOT = str(os.getenv("DASH_CACHE_FIRST_BOOT", "1" if DASH_SERVERLESS_FAST_PRESET else "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -846,6 +849,12 @@ def _cache_file_is_fresh_enough(fp: Path) -> bool:
     try:
         if not fp.exists():
             return False
+        # In Vercel/serverless builds, repository file mtimes are often rewritten
+        # during deployment. If we compare those mtimes, valid prebuilt cache files
+        # can be treated as stale and the app falls back to reading the huge Excel
+        # workbook. Trust cache files in production unless explicitly disabled.
+        if DASH_TRUST_PREBUILT_CACHE:
+            return True
         if EXCEL_FILE is not None and Path(EXCEL_FILE).exists():
             excel_mtime = Path(EXCEL_FILE).stat().st_mtime
             cache_mtime = fp.stat().st_mtime
@@ -8686,7 +8695,25 @@ DAILY_AGG_VIEW_CACHE_MAX = int(os.getenv("DASH_DAILY_AGG_VIEW_CACHE_MAX", "160" 
 
 def _normalize_multi_value(values) -> list[str]:
     values = values if isinstance(values, list) else ([values] if values else [])
-    return [str(x).strip() for x in values if str(x).strip()]
+    out = []
+    sentinel_values = {
+        "", "none", "null", "nan", "undefined", "[]", "{}",
+        "all", "tat ca", "tat ca tai xe", "tất cả", "tất cả tài xế",
+        "tất cả tài xe", "chon tat ca", "chọn tất cả",
+    }
+    for x in values:
+        try:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                continue
+        except Exception:
+            pass
+        value = str(x).strip()
+        if not value:
+            continue
+        if norm_text(value) in {norm_text(v) for v in sentinel_values}:
+            continue
+        out.append(value)
+    return out
 
 
 def _daily_filter_cache_scope_key():
@@ -14336,6 +14363,11 @@ def update_daily_latest(start_date, end_date, regions, drivers, vehicle_types, b
     drivers = _normalize_multi_value(drivers)
     vehicle_types = _normalize_multi_value(vehicle_types)
     business_types = _normalize_multi_value(business_types)
+    if DASH_LOG_CALLBACK_TIMING:
+        try:
+            print(f"[DAILY FILTER] drivers={len(drivers)} vehicle_types={len(vehicle_types)} business_types={len(business_types)} driver_base_loaded={DAILY_DRIVER_BASE_LOADED} driver_detail_loaded={DAILY_DRIVER_DETAIL_LOADED}")
+        except Exception:
+            pass
     daily_source_label = _daily_source_label()
     source_dt, source_lh, source_hd = _daily_sources_for_driver_filter(drivers)
     source_cross = _daily_cross_source_df(drivers) if (vehicle_types or business_types) else pd.DataFrame()
