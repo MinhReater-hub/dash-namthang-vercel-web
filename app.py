@@ -18116,9 +18116,16 @@ def clear_ai_input(_):
 if DASH_LOG_BOOT_TIMING:
     _perf_log("app_import_total", _BOOT_STARTED)
 
+# =========================================================
+# VERCEL / WSGI ENTRYPOINT
+# =========================================================
+dash_app = app
+application = server
+app = server
+
 if __name__ == "__main__":
-    app.run(
+    dash_app.run(
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8050")),
-        debug=_env_flag("DASH_DEBUG", False)
+        debug=_env_flag("DASH_DEBUG", False),
     )
