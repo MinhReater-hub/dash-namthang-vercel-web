@@ -19,41 +19,46 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 
-CRITICAL_CACHE_SHEETS = [
-    # Home / monthly boot sheets
-    "DoanhThu_Thang_KhuVuc",
-    "DoanhThu_LH_KV_Thang",
-    "HopDong_KV_Thang",
-    # Daily overview sheets
-    "DoanhThu_Ngay_Checker",
-    "DoanhThu_Ngay_LH_Checker",
-    "DoanhThu_Ngay_HinhThuc",
-    "DoanhThu_Ngay_LH_HinhThuc",
-    "DoanhThu_Ngay_Luong",
-    "DoanhThu_Ngay_SoCho",
-    # Daily driver sheets: these are expensive to read from Excel on Vercel
-    "DoanhThu_Ngay_TaiXe",
-    "DoanhThu_Ngay_TaiXe_LH",
-    "DoanhThu_Ngay_TaiXe_HinhThuc",
-    "DoanhThu_Ngay_TaiXe_LH_HinhThuc",
-    "DoanhThu_Ngay_TaiXe_Luong",
-    "DoanhThu_Ngay_TaiXe_SoCho",
-    # Daily fleet denominator sheets
-    "XeDangCo_XeTrucThuoc_KV_Ngay",
-    "PhuongTien_XeTrucThuoc_KV_Ngay",
-    "XeDangCo_XePhanQuyen_KV_Ngay",
-    "PhuongTien_XePhanQuyen_KV_Ngay",
-]
-
-
 def norm_text(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("_")
+
+
+def norm_key(value: object) -> str:
+    import unicodedata
+    s = str(value or "").replace("đ", "d").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    lookup = {norm_key(c): c for c in getattr(df, "columns", [])}
+    for cand in candidates:
+        if norm_key(cand) in lookup:
+            return lookup[norm_key(cand)]
+    return None
+
+
+def build_driver_options_cache(df_source: pd.DataFrame) -> pd.DataFrame:
+    if df_source is None or df_source.empty:
+        return pd.DataFrame(columns=["ho_ten", "khu_vuc", "search_key"])
+    name_col = find_col(df_source, ["ho_ten", "ho ten", "tai_xe", "tai xe", "driver", "ten_tai_xe"])
+    region_col = find_col(df_source, ["khu_vuc", "khu vuc", "region", "area"])
+    if name_col is None:
+        return pd.DataFrame(columns=["ho_ten", "khu_vuc", "search_key"])
+    out = pd.DataFrame({
+        "ho_ten": df_source[name_col].fillna("").astype(str).str.strip(),
+        "khu_vuc": df_source[region_col].fillna("Tổng hợp").astype(str).str.strip() if region_col else "Tổng hợp",
+    })
+    out = out[out["ho_ten"].ne("")].drop_duplicates(subset=["ho_ten"], keep="first").reset_index(drop=True)
+    out["search_key"] = out["ho_ten"].map(norm_key)
+    return out
 
 
 def first_existing(candidates: list[str]) -> Path | None:
@@ -64,43 +69,6 @@ def first_existing(candidates: list[str]) -> Path | None:
         if p.exists() and p.is_file():
             return p
     return None
-
-
-def validate_excel_file(path: Path) -> tuple[bool, str]:
-    try:
-        if path is None or not path.exists():
-            return False, f"file not found: {path}"
-        size = path.stat().st_size
-        head = path.read_bytes()[:160]
-        if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
-            return False, "Git LFS pointer, not a real Excel workbook"
-        if head.lstrip().lower().startswith(b"<!doctype html") or head.lstrip().lower().startswith(b"<html"):
-            return False, "HTML response, not a real Excel workbook"
-        if not head.startswith(b"PK"):
-            return False, f"not a valid .xlsx-like file. size={size}, header={head[:40]!r}"
-        return True, f"OK size={size}"
-    except Exception as exc:
-        return False, str(exc)
-
-
-def parse_requested_sheets(raw: str, book: pd.ExcelFile) -> tuple[list[str], list[str]]:
-    available = list(book.sheet_names)
-    available_set = set(available)
-    value = (raw or "").strip()
-    if not value:
-        return available, []
-
-    lowered = value.lower()
-    if lowered in {"critical", "core", "fast", "daily"}:
-        requested = CRITICAL_CACHE_SHEETS
-    else:
-        requested = [x.strip() for x in value.split(",") if x.strip()]
-
-    # Preserve requested order while ignoring duplicates.
-    requested = list(dict.fromkeys(requested))
-    sheet_names = [x for x in requested if x in available_set]
-    missing = [x for x in requested if x not in available_set]
-    return sheet_names, missing
 
 
 def write_cache(df: pd.DataFrame, out_base: Path, formats: set[str]) -> dict:
@@ -165,43 +133,36 @@ def main() -> int:
         print("[dash-cache] No Excel workbook found. Skipping cache build.")
         return 0
 
-    ok, check_msg = validate_excel_file(excel_file)
-    if not ok:
-        print(f"[dash-cache] Invalid Excel workbook: {check_msg}")
-        return 0
-
-    print(f"[dash-cache] Source workbook: {excel_file} ({check_msg})")
+    print(f"[dash-cache] Source workbook: {excel_file}")
     print(f"[dash-cache] Cache directory: {cache_dir}")
     print(f"[dash-cache] Formats: {', '.join(sorted(formats))}")
 
     book = pd.ExcelFile(excel_file)
     only_sheets_raw = os.getenv("DASH_CACHE_SHEETS", "").strip()
-    sheet_names, missing = parse_requested_sheets(only_sheets_raw, book)
-    if missing:
-        print(f"[dash-cache] Missing requested sheets: {missing}")
-
-    try:
-        source_stat = excel_file.stat()
-        source_size = int(source_stat.st_size)
-        source_mtime = int(source_stat.st_mtime)
-    except Exception:
-        source_size = None
-        source_mtime = None
+    if only_sheets_raw:
+        if only_sheets_raw.lower() in {"critical", "daily", "daily-critical"}:
+            requested = [
+                "DoanhThu_Thang_KhuVuc", "DoanhThu_LH_KV_Thang", "HopDong_KV_Thang",
+                "DoanhThu_Ngay_Checker", "DoanhThu_Ngay_LH_Checker", "DoanhThu_Ngay_HinhThuc",
+                "DoanhThu_Ngay_LH_HinhThuc", "DoanhThu_Ngay_Luong", "DoanhThu_Ngay_SoCho",
+                "DoanhThu_Ngay_TaiXe", "DoanhThu_Ngay_TaiXe_LH", "DoanhThu_Ngay_TaiXe_HinhThuc",
+                "DoanhThu_Ngay_TaiXe_LH_HinhThuc", "DoanhThu_Ngay_TaiXe_Luong", "DoanhThu_Ngay_TaiXe_SoCho",
+            ]
+        else:
+            requested = [x.strip() for x in only_sheets_raw.split(",") if x.strip()]
+        sheet_names = [x for x in requested if x in book.sheet_names]
+        missing = [x for x in requested if x not in book.sheet_names]
+        if missing:
+            print(f"[dash-cache] Missing requested sheets: {missing}")
+    else:
+        sheet_names = list(book.sheet_names)
 
     manifest = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": str(excel_file),
-        "source_size": source_size,
-        "source_mtime": source_mtime,
         "cache_dir": str(cache_dir),
         "formats": sorted(formats),
-        "sheet_mode": only_sheets_raw or "all",
-        "missing_requested_sheets": missing,
         "sheets": {},
     }
-
-    if not sheet_names:
-        print("[dash-cache] No matching sheets to cache. Nothing to do.")
 
     for sheet_name in sheet_names:
         try:
@@ -225,6 +186,21 @@ def main() -> int:
         except Exception as exc:
             manifest["sheets"][str(sheet_name)] = {"error": str(exc)}
             print(f"[dash-cache] ERROR {sheet_name}: {exc}", file=sys.stderr)
+
+    try:
+        if "DoanhThu_Ngay_TaiXe" in book.sheet_names:
+            t0 = time.perf_counter()
+            driver_df = book.parse(sheet_name="DoanhThu_Ngay_TaiXe")
+            driver_options = build_driver_options_cache(driver_df)
+            driver_info = {"rows": int(len(driver_options)), "cols": int(len(driver_options.columns)), "written": {}, "elapsed_s": None}
+            for name in ["Daily_Driver_Options", "Driver_Options"]:
+                driver_info["written"][name] = write_cache(driver_options, cache_dir / name, formats)
+            driver_info["elapsed_s"] = round(time.perf_counter() - t0, 3)
+            manifest["sheets"]["Daily_Driver_Options"] = driver_info
+            print(f"[dash-cache] Cached Daily_Driver_Options: rows={len(driver_options):,} elapsed={driver_info['elapsed_s']}s")
+    except Exception as exc:
+        manifest["sheets"]["Daily_Driver_Options"] = {"error": str(exc)}
+        print(f"[dash-cache] ERROR Daily_Driver_Options: {exc}", file=sys.stderr)
 
     manifest["elapsed_s"] = round(time.perf_counter() - started, 3)
     cache_dir.mkdir(parents=True, exist_ok=True)

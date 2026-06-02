@@ -187,6 +187,11 @@ DASH_DAILY_LAZY_DRIVER_DETAIL = str(os.getenv("DASH_DAILY_LAZY_DRIVER_DETAIL", "
 # Driver option list is a 67k-row sheet on production data. Keep it lazy so
 # opening the Daily menu does not read Excel/cache just to populate a dropdown.
 DASH_DAILY_LAZY_DRIVER_OPTIONS = str(os.getenv("DASH_DAILY_LAZY_DRIVER_OPTIONS", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Avoid firing an expensive driver lookup on 1-2 accidental keystrokes.
+DASH_DAILY_DRIVER_SEARCH_MIN_CHARS = max(1, int(os.getenv("DASH_DAILY_DRIVER_SEARCH_MIN_CHARS", "4")))
+# Driver filter UX: users can search/select freely, then click Apply to refresh charts.
+DASH_DAILY_DRIVER_APPLY_MODE = str(os.getenv("DASH_DAILY_DRIVER_APPLY_MODE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+DASH_DAILY_DRIVER_INDEX_CACHE_SHEETS = ["Daily_Driver_Options", "Driver_Options", "DoanhThu_Ngay_Driver_Options"]
 DASH_WARM_ALLOW_DEEP_PRELOAD = str(os.getenv("DASH_WARM_ALLOW_DEEP_PRELOAD", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 DASH_WARM_INCLUDE_TOUCH_SUMS = str(os.getenv("DASH_WARM_INCLUDE_TOUCH_SUMS", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -1498,7 +1503,7 @@ LOGIN_PAGE_TEMPLATE = """
     </form>
   </div>
   <div class="login-build-signature">
-    <strong>Dashboard engineered by Nguyen Huu Minh</strong>
+    <strong>Dashboard engineered by Nguyễn Hữu Minh</strong>
     <span>Full-stack Dash Architecture • RBAC Matrix • DataOps Pipeline • Production Observability</span>
   </div>
 </body>
@@ -8716,6 +8721,7 @@ def _normalize_multi_value(values) -> list[str]:
         "", "none", "null", "nan", "undefined", "[]", "{}",
         "all", "tat ca", "tat ca tai xe", "tất cả", "tất cả tài xế",
         "tất cả tài xe", "chon tat ca", "chọn tất cả",
+        "__daily_driver_hint__",
     }
     for x in values:
         try:
@@ -9070,16 +9076,90 @@ def _ensure_daily_driver_base_loaded():
             _perf_log("daily_driver_base_lazy_load", started)
 
 
+
+def _daily_driver_index_df() -> pd.DataFrame:
+    """Read the small prebuilt driver search index without loading the 67k-row revenue sheet."""
+    cache_key = ("driver-index-v1", _daily_filter_cache_scope_key(), str(DASH_DATA_VERSION))
+    cached = DAILY_DRIVER_OPTIONS_CACHE.get("index_key"), DAILY_DRIVER_OPTIONS_CACHE.get("index_df")
+    if cached[0] == cache_key and isinstance(cached[1], pd.DataFrame):
+        return _return_df_cached(cached[1])
+    frames = []
+    for sheet_name in DASH_DAILY_DRIVER_INDEX_CACHE_SHEETS:
+        try:
+            df_idx = _parse_cached_sheet(sheet_name)
+            if isinstance(df_idx, pd.DataFrame) and not df_idx.empty:
+                frames.append(df_idx)
+                break
+        except Exception:
+            continue
+    if not frames:
+        out = pd.DataFrame(columns=["ho_ten", "khu_vuc", "search_key"])
+    else:
+        out = frames[0].copy()
+        if "ho_ten" not in out.columns:
+            name_col = find_col_fuzzy(out, ["ho_ten", "ho ten", "tai_xe", "tai xe", "driver", "ten_tai_xe"])
+            if name_col:
+                out["ho_ten"] = out[name_col]
+        if "khu_vuc" not in out.columns:
+            region_col = find_col_fuzzy(out, ["khu_vuc", "khu vuc", "region", "area"])
+            out["khu_vuc"] = out[region_col] if region_col else "Tổng hợp"
+        if "search_key" not in out.columns:
+            out["search_key"] = out.get("ho_ten", pd.Series(dtype=object)).fillna("").astype(str).map(norm_text)
+        out = out[[c for c in ["ho_ten", "khu_vuc", "search_key"] if c in out.columns]].copy()
+        if "ho_ten" in out.columns:
+            out["ho_ten"] = out["ho_ten"].fillna("").astype(str).str.strip()
+            out = out[out["ho_ten"].ne("")].drop_duplicates(subset=["ho_ten"], keep="first")
+    DAILY_DRIVER_OPTIONS_CACHE["index_key"] = cache_key
+    DAILY_DRIVER_OPTIONS_CACHE["index_df"] = out.copy(deep=False)
+    return _return_df_cached(out)
+
+
+def _daily_driver_options_from_index(search_value=None, selected_values=None, regions=None, limit: int | None = None):
+    search_norm = norm_text(search_value or "")
+    selected_values = _normalize_multi_value(selected_values)
+    idx = _daily_driver_index_df()
+    if idx is None or not isinstance(idx, pd.DataFrame) or idx.empty or "ho_ten" not in idx.columns:
+        return None
+    scoped = apply_region_scope_to_df(idx)
+    region_values = _normalize_multi_value(regions)
+    if region_values and "khu_vuc" in scoped.columns:
+        region_set = {str(canon_region_name(x) or x) for x in region_values}
+        scoped = scoped[scoped["khu_vuc"].apply(lambda x: str(canon_region_name(x) or x)).isin(region_set)]
+    if search_norm:
+        if "search_key" not in scoped.columns:
+            scoped["search_key"] = scoped["ho_ten"].fillna("").astype(str).map(norm_text)
+        scoped = scoped[scoped["search_key"].astype(str).str.contains(search_norm, regex=False, na=False)]
+    if limit is None:
+        limit = int(os.getenv("DASH_DAILY_DRIVER_OPTION_LIMIT", "80" if DASH_SERVERLESS_FAST_PRESET else "250"))
+    names = sorted(scoped["ho_ten"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
+    shown = names[:max(int(limit), 1)]
+    for item in selected_values:
+        if item and item not in shown:
+            shown.append(item)
+    return [{"label": x, "value": x} for x in shown if x]
+
 def _daily_driver_options(search_value=None, selected_values=None, regions=None, limit: int | None = None):
     ensure_daily_data_loaded()
     selected_values = _normalize_multi_value(selected_values)
     search_value = str(search_value or "").strip()
-    # Do not load the 67k-row driver sheet just because the Daily page layout is built.
-    # Load it only after the user searches/selects a driver, or when lazy mode is off.
-    if DASH_DAILY_LAZY_DRIVER_OPTIONS and not search_value and not selected_values:
-        return []
-    if DASH_DAILY_LAZY_DRIVER_OPTIONS and search_value and len(norm_text(search_value)) < 2 and not selected_values:
-        return []
+    search_norm = norm_text(search_value)
+
+    def _selected_driver_options_only(message=None):
+        opts = [{"label": str(x), "value": str(x)} for x in selected_values if str(x).strip()]
+        if message:
+            opts.append({"label": message, "value": "__daily_driver_hint__", "disabled": True})
+        return opts
+
+    # Do not load the 67k-row driver sheet just because the Daily page layout is built
+    # or because the user typed only 1-3 accidental characters in the searchable dropdown.
+    if DASH_DAILY_LAZY_DRIVER_OPTIONS and not search_value:
+        return _selected_driver_options_only()
+    if DASH_DAILY_LAZY_DRIVER_OPTIONS and len(search_norm) < DASH_DAILY_DRIVER_SEARCH_MIN_CHARS and not selected_values:
+        return _selected_driver_options_only(f"Nhập ít nhất {DASH_DAILY_DRIVER_SEARCH_MIN_CHARS} ký tự để tìm tài xế")
+
+    indexed_options = _daily_driver_options_from_index(search_value=search_value, selected_values=selected_values, regions=regions, limit=limit)
+    if indexed_options is not None:
+        return indexed_options
 
     _ensure_daily_driver_base_loaded()
     source = df_daily_taixe_checker if isinstance(df_daily_taixe_checker, pd.DataFrame) and not df_daily_taixe_checker.empty else df_daily_raw_checker
@@ -10438,24 +10518,31 @@ def daily_latest_page():
         ),
         make_filter_col(
             "Tài xế",
-            exec_dropdown(
-                id="daily-driver",
-                options=_daily_driver_options(),
-                value=[],
-                multi=True,
-                placeholder="Tất cả tài xế",
-                clearable=True,
-            ),
+            html.Div([
+                exec_dropdown(
+                    id="daily-driver",
+                    options=_daily_driver_options(),
+                    value=[],
+                    multi=True,
+                    placeholder=f"Gõ ít nhất {DASH_DAILY_DRIVER_SEARCH_MIN_CHARS} ký tự để tìm tài xế",
+                    clearable=True,
+                ),
+                html.Div([
+                    dbc.Button([fa_icon("fa-filter", 11, "#ffffff"), html.Span(" Áp dụng", className="ms-1")], id="daily-driver-apply", color="success", size="sm", n_clicks=0, className="me-2 mt-2 px-3"),
+                    dbc.Button([fa_icon("fa-eraser", 11, GREEN_PRIMARY), html.Span(" Xóa tài xế", className="ms-1")], id="daily-driver-clear", color="success", outline=True, size="sm", n_clicks=0, className="mt-2 px-3"),
+                ], className="d-flex flex-wrap align-items-center"),
+                html.Div("Chọn tên xong bấm Áp dụng để cập nhật biểu đồ.", id="daily-driver-apply-hint", style={"fontSize": "11px", "color": MUTED_LIGHT_UI, "marginTop": "6px", "fontWeight": 700}),
+            ]),
             "daily-driver-wrap",
             3,
             "fa-id-card",
-            "Lọc riêng theo từng tài xế",
+            "Tìm/chọn tài xế rồi bấm Áp dụng",
         ),
     ], className="g-3")
 
     filters = executive_section_panel(
         "Bộ lọc doanh thu ngày",
-        "Mặc định mở 30 ngày gần nhất. Bộ lọc riêng của từng tài xế.",
+        "Mặc định mở 30 ngày gần nhất. Tài xế chỉ cập nhật biểu đồ sau khi bấm Áp dụng.",
         filter_row,
         right_children=[
             filter_panel_chip("Lọc theo ngày", fa_icon("fa-calendar-day", 12, GREEN_PRIMARY)),
@@ -12567,6 +12654,7 @@ app.layout = dbc.Container(
         dcc.Store(id="menu", data="home"),
         dcc.Store(id="page", data=0),
         dcc.Store(id="theme", data="light"),
+        dcc.Store(id="daily-driver-applied", data=[]),
 
         dcc.Store(id="filters-home", data={"year": DEFAULT_YEAR, "months": [], "dims": []}),
         *[dcc.Store(id=f"filters-{p}-p1", data=({"year": None, "months": []} if p in FLEET_MENU_PREFIXES else {"year": DEFAULT_YEAR, "months": []})) for p in DASH_PREFIXES],
@@ -12709,7 +12797,7 @@ app.layout = dbc.Container(
                     html.Div(
                         [
                             html.Div([fa_icon("fa-code", 11, "#166534"), html.Span("Intelligence Developer")], className="developer-credit-kicker"),
-                            html.Div("Nguyen Huu Minh", className="developer-credit-name"),
+                            html.Div("Nguyễn Hữu Minh", className="developer-credit-name"),
                             html.Div([fa_icon("fa-database", 10, "#166534"), html.Span("SQL Data")], className="developer-credit-sql"),
                             html.Div(
                                 [
@@ -13153,8 +13241,8 @@ def get_dashboard_update_display_payload() -> dict:
         payload = {
             "headline": f"Đến kỳ {latest_period}",
             "caption": "Không thấy timestamp chi tiết đáng tin cậy trong file Excel, hệ thống tự chuyển sang hiển thị kỳ dữ liệu mới nhất để tránh sai ngày sau khi deploy/GitHub.",
-            "source_label": "Kỳ dữ liệu",
-            "trust_label": "An toàn hiển thị",
+            "source_label": "Kỳ dữ liệu mới nhất",
+            "trust_label": "Cập nhật: Nguyễn Hữu Minh",
             "status": "fallback",
         }
     else:
@@ -13219,6 +13307,26 @@ def update_daily_driver_options(search_value, regions, selected_values):
 
 
 @app.callback(
+    Output("daily-driver-applied", "data"),
+    Output("daily-driver", "value"),
+    Output("daily-driver-apply-hint", "children"),
+    Input("daily-driver-apply", "n_clicks", allow_optional=True),
+    Input("daily-driver-clear", "n_clicks", allow_optional=True),
+    State("daily-driver", "value", allow_optional=True),
+    prevent_initial_call=True,
+)
+def apply_or_clear_daily_driver_filter(n_apply, n_clear, selected_values):
+    trigger = getattr(ctx, "triggered_id", None)
+    if trigger == "daily-driver-clear":
+        return [], [], "Đã xóa lọc tài xế."
+    values = _normalize_multi_value(selected_values)
+    if not values:
+        return [], [], "Chưa chọn tài xế. Biểu đồ đang hiển thị tổng hợp."
+    label = ", ".join(values[:2]) if len(values) <= 2 else f"{len(values)} tài xế"
+    return values, values, f"Đã áp dụng lọc: {label}."
+
+
+@app.callback(
     Output("download-excel", "data"),
     Input("btn-download-excel", "n_clicks"),
     State("menu", "data"),
@@ -13227,7 +13335,7 @@ def update_daily_driver_options(search_value, regions, selected_values):
     State("daily-date-range", "start_date", allow_optional=True),
     State("daily-date-range", "end_date", allow_optional=True),
     State("daily-region", "value", allow_optional=True),
-    State("daily-driver", "value", allow_optional=True),
+    State("daily-driver-applied", "data", allow_optional=True),
     State("daily-vehicle-type", "value", allow_optional=True),
     State("daily-business-type", "value", allow_optional=True),
     *[State(f"filters-{p}-p1", "data") for p in DASH_PREFIXES],
@@ -14380,7 +14488,7 @@ def update_home(year_val, months, regions, theme):
     Input("daily-date-range", "start_date", allow_optional=True),
     Input("daily-date-range", "end_date", allow_optional=True),
     Input("daily-region", "value", allow_optional=True),
-    Input("daily-driver", "value", allow_optional=True),
+    Input("daily-driver-applied", "data", allow_optional=True),
     Input("daily-vehicle-type", "value", allow_optional=True),
     Input("daily-business-type", "value", allow_optional=True),
     State("theme", "data"),
