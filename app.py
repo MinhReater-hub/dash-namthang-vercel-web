@@ -12673,6 +12673,7 @@ app.layout = dbc.Container(
     fluid=True,
     style={"backgroundColor": APP_LIGHT_BG, "minHeight": "100vh", "paddingBottom": "20px"},
     children=[
+        dcc.Location(id="url", refresh=False),
         dcc.Store(id="menu", data="home"),
         dcc.Store(id="page", data=0),
         dcc.Store(id="theme", data="light"),
@@ -12708,6 +12709,28 @@ app.layout = dbc.Container(
                             style={"display": "none"},
                             disabled=True
                         ),
+                        dbc.DropdownMenu(
+                            id="account-menu",
+                            label=html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2")], className="d-inline-flex align-items-center"),
+                            children=[
+                                dbc.DropdownMenuItem([fa_icon("fa-id-card", 13, "#166534"), html.Span(" Thông tin tài khoản", className="ms-2")], id="account-info-open", n_clicks=0),
+                                dbc.DropdownMenuItem([fa_icon("fa-shield-halved", 13, "#166534"), html.Span(" Phạm vi truy cập", className="ms-2")], id="account-scope-open", n_clicks=0),
+                                dbc.DropdownMenuItem(divider=True),
+                                dbc.DropdownMenuItem([fa_icon("fa-right-from-bracket", 13, "#b91c1c"), html.Span(" Đăng xuất", className="ms-2")], href="/logout", external_link=True),
+                            ],
+                            color="light",
+                            align_end=True,
+                            className="account-dropdown",
+                            toggle_style={
+                                "border": "1px solid #bbf7d0",
+                                "color": "#166534",
+                                "fontWeight": "800",
+                                "background": "linear-gradient(180deg,#ffffff 0%,#ecfdf5 100%)",
+                                "borderRadius": "12px",
+                                "boxShadow": f"0 6px 14px {GREEN_SHADOW}",
+                                "padding": "8px 12px",
+                            },
+                        ),
                         html.Img(
                             src=COMPANY_LOGO_SRC,
                             style={
@@ -12739,6 +12762,26 @@ app.layout = dbc.Container(
                 width="auto"
             )
         ], className="my-2 align-items-center top-navigation-shell"),
+
+        dbc.Modal(
+            [
+                dbc.ModalHeader(
+                    dbc.ModalTitle([fa_icon("fa-user-shield", 14, GREEN_PRIMARY), html.Span(" Thông tin tài khoản", id="account-modal-title-text", className="ms-2")])
+                ),
+                dbc.ModalBody(id="account-modal-body"),
+                dbc.ModalFooter(
+                    [
+                        dbc.Button("Đóng", id="account-modal-close", color="secondary", outline=True, n_clicks=0),
+                        dbc.Button([fa_icon("fa-right-from-bracket", 12, "#ffffff"), html.Span(" Đăng xuất", className="ms-2")], href="/logout", external_link=True, color="success"),
+                    ]
+                ),
+            ],
+            id="account-modal",
+            is_open=False,
+            centered=True,
+            size="lg",
+            backdrop=True,
+        ),
 
         dbc.Row([
             dbc.Col(
@@ -18134,6 +18177,212 @@ def ai_chat(n_send, n_clear, _chip_clicks, question, history):
 )
 def clear_ai_input(_):
     return ""
+
+
+def _account_role_label(role: str) -> str:
+    role_norm = str(role or "region").strip().lower()
+    return "Quản trị tổng" if role_norm == "admin" else "Tài khoản khu vực"
+
+
+def _account_regions_label(user: dict | None) -> str:
+    if not isinstance(user, dict):
+        return "Chưa xác định"
+    if str(user.get("role", "region")).strip().lower() == "admin":
+        return "Tất cả khu vực"
+    regions = _normalize_region_list(user.get("regions", []))
+    return ", ".join(regions) if regions else "Chưa được phân quyền khu vực"
+
+
+def _account_info_modal_content(user: dict | None):
+    if not isinstance(user, dict):
+        return dbc.Alert("Phiên đăng nhập không còn hiệu lực. Vui lòng đăng nhập lại.", color="warning")
+
+    username = str(user.get("username", "")).strip() or "Không rõ"
+    display_name = str(user.get("display_name", username)).strip() or username
+    role_label = _account_role_label(user.get("role"))
+    regions_label = _account_regions_label(user)
+    source = _auth_store_source()
+    source_label = "users.json" if source != "default" else "Tài khoản mặc định"
+
+    cards = [
+        ("Tên hiển thị", display_name, "fa-user"),
+        ("Tài khoản", username, "fa-at"),
+        ("Vai trò", role_label, "fa-user-shield"),
+        ("Phạm vi dữ liệu", regions_label, "fa-map-location-dot"),
+        ("Nguồn phân quyền", source_label, "fa-database"),
+    ]
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div([fa_icon(icon, 13, GREEN_PRIMARY), html.Span(label, className="ms-2")], style={"fontSize": "11px", "fontWeight": 900, "color": MUTED_LIGHT_UI, "textTransform": "uppercase", "letterSpacing": ".04em"}),
+                                html.Div(value, style={"fontSize": "15px", "fontWeight": 900, "color": NAVY_PRIMARY, "marginTop": "4px", "wordBreak": "break-word"}),
+                            ],
+                            style={"border": "1px solid #e2e8f0", "borderRadius": "16px", "padding": "14px 16px", "background": "#ffffff", "height": "100%"},
+                        ),
+                        md=6,
+                        className="mb-3",
+                    )
+                    for label, value, icon in cards
+                ],
+                className="g-2",
+            ),
+            dbc.Alert(
+                [fa_icon("fa-circle-info", 13, "#166534"), html.Span(" Đây là thông tin tài khoản đang đăng nhập trên dashboard.", className="ms-2")],
+                color="success",
+                className="mt-1 mb-0",
+                style={"borderRadius": "14px", "fontWeight": 700},
+            ),
+        ]
+    )
+
+
+def _account_scope_modal_content(user: dict | None):
+    if not isinstance(user, dict):
+        return dbc.Alert("Phiên đăng nhập không còn hiệu lực. Vui lòng đăng nhập lại.", color="warning")
+
+    role = str(user.get("role", "region")).strip().lower()
+    is_admin = role == "admin"
+    regions = _normalize_region_list(user.get("regions", []))
+    source = _auth_store_source()
+    source_label = "users.json" if source != "default" else "Tài khoản mặc định"
+
+    if is_admin:
+        scope_title = "Toàn bộ dữ liệu"
+        scope_desc = "Tài khoản admin được xem tất cả khu vực và tất cả menu đang được phân quyền trong dashboard."
+        region_block = dbc.Alert(
+            [fa_icon("fa-earth-asia", 14, "#166534"), html.Span(" Tất cả khu vực", className="ms-2")],
+            color="success",
+            className="mb-3",
+            style={"borderRadius": "14px", "fontWeight": 900},
+        )
+    else:
+        scope_title = "Dữ liệu theo khu vực được phân quyền"
+        scope_desc = "Tài khoản khu vực chỉ xem các dòng dữ liệu thuộc khu vực được cấu hình trong users.json."
+        region_block = html.Div(
+            [
+                html.Div("Khu vực được xem", style={"fontSize": "11px", "fontWeight": 900, "color": MUTED_LIGHT_UI, "textTransform": "uppercase", "letterSpacing": ".04em", "marginBottom": "8px"}),
+                html.Div(
+                    [
+                        html.Span(
+                            r,
+                            style={
+                                "display": "inline-flex",
+                                "alignItems": "center",
+                                "margin": "0 8px 8px 0",
+                                "padding": "7px 10px",
+                                "borderRadius": "999px",
+                                "background": "#dcfce7",
+                                "border": "1px solid #bbf7d0",
+                                "color": "#166534",
+                                "fontWeight": 900,
+                                "fontSize": "12px",
+                            },
+                        )
+                        for r in (regions or ["Chưa được phân quyền khu vực"])
+                    ],
+                    style={"lineHeight": "1.9"},
+                ),
+            ],
+            style={"border": "1px solid #e2e8f0", "borderRadius": "16px", "padding": "14px 16px", "background": "#ffffff", "marginBottom": "14px"},
+        )
+
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div([fa_icon("fa-shield-halved", 14, GREEN_PRIMARY), html.Span(scope_title, className="ms-2")], style={"fontSize": "15px", "fontWeight": 900, "color": NAVY_PRIMARY}),
+                    html.Div(scope_desc, style={"fontSize": "13px", "color": MUTED_LIGHT_UI, "marginTop": "6px", "lineHeight": "1.55"}),
+                ],
+                style={"border": "1px solid #e2e8f0", "borderRadius": "16px", "padding": "14px 16px", "background": "#f8fafc", "marginBottom": "14px"},
+            ),
+            region_block,
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div([fa_icon("fa-user-shield", 13, GREEN_PRIMARY), html.Span("Vai trò", className="ms-2")], style={"fontSize": "11px", "fontWeight": 900, "color": MUTED_LIGHT_UI, "textTransform": "uppercase", "letterSpacing": ".04em"}),
+                                html.Div(_account_role_label(user.get("role")), style={"fontSize": "15px", "fontWeight": 900, "color": NAVY_PRIMARY, "marginTop": "4px"}),
+                            ],
+                            style={"border": "1px solid #e2e8f0", "borderRadius": "16px", "padding": "14px 16px", "background": "#ffffff", "height": "100%"},
+                        ),
+                        md=6,
+                        className="mb-3",
+                    ),
+                    dbc.Col(
+                        html.Div(
+                            [
+                                html.Div([fa_icon("fa-database", 13, GREEN_PRIMARY), html.Span("Nguồn phân quyền", className="ms-2")], style={"fontSize": "11px", "fontWeight": 900, "color": MUTED_LIGHT_UI, "textTransform": "uppercase", "letterSpacing": ".04em"}),
+                                html.Div(source_label, style={"fontSize": "15px", "fontWeight": 900, "color": NAVY_PRIMARY, "marginTop": "4px"}),
+                            ],
+                            style={"border": "1px solid #e2e8f0", "borderRadius": "16px", "padding": "14px 16px", "background": "#ffffff", "height": "100%"},
+                        ),
+                        md=6,
+                        className="mb-3",
+                    ),
+                ],
+                className="g-2",
+            ),
+            dbc.Alert(
+                [fa_icon("fa-circle-info", 13, "#166534"), html.Span(" Phạm vi này được áp dụng tự động cho bộ lọc, biểu đồ, bảng và dữ liệu xuất trong dashboard.", className="ms-2")],
+                color="success",
+                className="mt-1 mb-0",
+                style={"borderRadius": "14px", "fontWeight": 700},
+            ),
+        ]
+    )
+
+
+def _account_modal_content(user: dict | None, mode: str = "info"):
+    return _account_scope_modal_content(user) if str(mode).strip().lower() == "scope" else _account_info_modal_content(user)
+
+
+@app.callback(
+    Output("account-menu", "label"),
+    Input("url", "pathname"),
+    Input("refresh-meta", "n_intervals"),
+)
+def update_account_panel(_pathname, _n_intervals):
+    user = current_auth_user()
+    if not isinstance(user, dict):
+        return html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2")], className="d-inline-flex align-items-center")
+    display_name = str(user.get("display_name") or user.get("username") or "Tài khoản").strip()
+    role = str(user.get("role", "region")).strip().lower()
+    badge = "Admin" if role == "admin" else "Khu vực"
+    return html.Span(
+        [
+            fa_icon("fa-user-shield" if role == "admin" else "fa-user", 13, "#166534"),
+            html.Span(display_name, className="ms-2", style={"maxWidth": "180px", "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap", "display": "inline-block", "verticalAlign": "bottom"}),
+            html.Span(badge, className="ms-2", style={"fontSize": "10px", "fontWeight": 900, "padding": "2px 6px", "borderRadius": "999px", "background": "#dcfce7", "color": "#166534"}),
+        ],
+        className="d-inline-flex align-items-center",
+    )
+
+
+@app.callback(
+    Output("account-modal", "is_open"),
+    Output("account-modal-title-text", "children"),
+    Output("account-modal-body", "children"),
+    Input("account-info-open", "n_clicks"),
+    Input("account-scope-open", "n_clicks"),
+    Input("account-modal-close", "n_clicks"),
+    State("account-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_account_modal(_info_clicks, _scope_clicks, _close_clicks, is_open):
+    trigger = getattr(ctx, "triggered_id", None)
+    user = current_auth_user()
+    if trigger == "account-info-open":
+        return True, " Thông tin tài khoản", _account_modal_content(user, "info")
+    if trigger == "account-scope-open":
+        return True, " Phạm vi truy cập", _account_modal_content(user, "scope")
+    if trigger == "account-modal-close":
+        return False, no_update, no_update
+    return bool(is_open), no_update, no_update
 
 if DASH_LOG_BOOT_TIMING:
     _perf_log("app_import_total", _BOOT_STARTED)
