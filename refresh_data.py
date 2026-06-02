@@ -1003,6 +1003,14 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
         if col in work.columns:
             work[col] = work[col].fillna("").astype(str).str.strip()
 
+    # Strengthen vehicle/driver keys before aggregation. Some SQL exports can
+    # have blank BKS while so_tai is present; without this fallback, driver-filter
+    # cache sheets may show revenue/trips but 0 active vehicles in Dash tables.
+    if "bks" in work.columns and "so_tai" in work.columns:
+        work["bks"] = work["bks"].where(work["bks"].fillna("").astype(str).str.strip().ne(""), work["so_tai"])
+    if "so_tai" in work.columns and "ho_ten" in work.columns:
+        work["so_tai"] = work["so_tai"].where(work["so_tai"].fillna("").astype(str).str.strip().ne(""), work["ho_ten"])
+
     # Daily revenue business rule:
     # Outside Phu Quoc, Khoan dien must be removed from every Daily metric
     # (revenue, trips, KM, active vehicles, averages, charts and detail tables).
@@ -1013,13 +1021,18 @@ def _prepare_daily_checker_outputs(df_source: pd.DataFrame):
     if bool(khoan_outside_pq.any()):
         print(f"[DAILY CHECKER PIPELINE] drop Khoan dien outside Phu Quoc rows={int(khoan_outside_pq.sum())}")
         work = work.loc[~khoan_outside_pq].copy()
-    work["bks_xe_kinh_doanh"] = work["bks"]
+    work["bks_xe_kinh_doanh"] = work["bks"].where(work["bks"].fillna("").astype(str).str.strip().ne(""), work["so_tai"])
 
     def _nunique_clean(series):
         return series.fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique()
 
     def _finalize_daily_group(grouped: pd.DataFrame) -> pd.DataFrame:
         grouped = grouped.copy()
+        has_activity = pd.to_numeric(grouped.get("tong_doanh_thu", 0), errors="coerce").fillna(0).gt(0) | pd.to_numeric(grouped.get("tong_so_cuoc", 0), errors="coerce").fillna(0).gt(0)
+        grouped["so_xe"] = pd.to_numeric(grouped.get("so_xe", 0), errors="coerce").fillna(0)
+        grouped["so_tai_xe"] = pd.to_numeric(grouped.get("so_tai_xe", 0), errors="coerce").fillna(0)
+        grouped.loc[has_activity & grouped["so_xe"].le(0), "so_xe"] = 1
+        grouped.loc[has_activity & grouped["so_tai_xe"].le(0), "so_tai_xe"] = 1
         grouped["doanh_thu_binh_quan_cuoc"] = grouped["tong_doanh_thu"] / grouped["tong_so_cuoc"].replace(0, 1)
         grouped["doanh_thu_binh_quan_xe"] = grouped["tong_doanh_thu"] / grouped["so_xe"].replace(0, 1)
         grouped["cuoc_binh_quan_xe"] = grouped["tong_so_cuoc"] / grouped["so_xe"].replace(0, 1)

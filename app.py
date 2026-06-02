@@ -3213,6 +3213,7 @@ def _prepare_daily_raw_checker_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
     raw_cols = [
         "ngay_du_lieu", "thang_nam", "thang_nam_vn", "ngay_label", "thang_label", "nam", "khu_vuc",
         "bks", "so_tai", "ho_ten", "tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh", "sokm_cokhach",
+        "so_xe", "so_tai_xe",
         "loaihinh_hoptac", "hinhthuc_kinhdoanh", "loai_luong", "so_cho", "so_cho_num", "nguon_du_lieu",
     ]
     if raw_df is None or not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
@@ -3237,6 +3238,8 @@ def _prepare_daily_raw_checker_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
     ht_col = find_col_fuzzy(dff, ["hinhthuc_kinhdoanh", "hình thức kinh doanh", "hinh thuc kinh doanh", "hinh_thuc_kinh_doanh"])
     luong_col = find_col_fuzzy(dff, ["loai_luong", "loại lương", "loai luong"])
     socho_col = find_col_fuzzy(dff, ["so_cho", "số chỗ", "so cho", "seat", "seats"])
+    so_xe_col = find_col_fuzzy(dff, ["so_xe", "số xe", "so xe", "xe_hoat_dong", "xe hoạt động", "active_vehicle", "active vehicles"])
+    so_taixe_col = find_col_fuzzy(dff, ["so_tai_xe", "số tài xế", "so tai xe", "tai_xe", "tài xế", "active_driver", "active drivers"])
 
     out = pd.DataFrame(index=dff.index)
     out["ngay_du_lieu"] = pd.to_datetime(dff[date_col], errors="coerce").dt.normalize()
@@ -3255,6 +3258,11 @@ def _prepare_daily_raw_checker_df(raw_df: pd.DataFrame | None) -> pd.DataFrame:
     out["tong_so_cuoc"] = pd.to_numeric(_series_from_col_or_default(dff, trip_col, 0), errors="coerce").fillna(0)
     out["sokm_vandoanh"] = pd.to_numeric(_series_from_col_or_default(dff, km_vd_col, 0), errors="coerce").fillna(0)
     out["sokm_cokhach"] = pd.to_numeric(_series_from_col_or_default(dff, km_khach_col, 0), errors="coerce").fillna(0)
+    # Preserve pre-aggregated vehicle/driver counts from cache sheets. Without these
+    # columns, driver-only detail tables can show 0 even when the cache already has
+    # valid so_xe/so_tai_xe counts. Fallback below still handles old caches.
+    out["so_xe"] = pd.to_numeric(_series_from_col_or_default(dff, so_xe_col, 0), errors="coerce").fillna(0)
+    out["so_tai_xe"] = pd.to_numeric(_series_from_col_or_default(dff, so_taixe_col, 0), errors="coerce").fillna(0)
     for col_name, source_col, default_value in [
         ("loaihinh_hoptac", lh_col, "Chưa rõ loại hình"),
         ("hinhthuc_kinhdoanh", ht_col, "Chưa rõ hình thức"),
@@ -8876,7 +8884,7 @@ def _daily_filtered_agg_view(dff_dt: pd.DataFrame) -> dict:
     empty_table = pd.DataFrame(columns=[
         "ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt",
         "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt",
-        "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt",
+        "avg_per_vehicle_day_fmt", "sokm_vandoanh_fmt",
         "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
     ])
     if dff_dt is None or not isinstance(dff_dt, pd.DataFrame) or dff_dt.empty:
@@ -8967,7 +8975,7 @@ def _daily_filtered_agg_view(dff_dt: pd.DataFrame) -> dict:
     table_cols = [
         "ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt",
         "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt",
-        "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt",
+        "avg_per_vehicle_day_fmt", "sokm_vandoanh_fmt",
         "sokm_cokhach_fmt", "km_co_khach_ratio_fmt",
     ]
     table_out = table_g[table_cols].copy()
@@ -10348,7 +10356,6 @@ def _daily_table_columns():
         {"name": "TB / cuốc", "id": "avg_per_trip_fmt"},
         {"name": "Xe hoạt động", "id": "so_xe_fmt"},
         {"name": "TB / xe-ngày", "id": "avg_per_vehicle_day_fmt"},
-        {"name": "Tài xế", "id": "so_tai_xe_fmt"},
         {"name": "KM vận doanh", "id": "sokm_vandoanh_fmt"},
         {"name": "KM có khách", "id": "sokm_cokhach_fmt"},
         {"name": "Tỷ lệ KM khách", "id": "km_co_khach_ratio_fmt"},
@@ -10378,32 +10385,47 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         def _nunique_clean(series):
             return series.fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique()
 
-        if "so_xe" in temp.columns:
-            temp["so_xe_metric"] = pd.to_numeric(temp["so_xe"], errors="coerce").fillna(0)
-            xe_agg = ("so_xe_metric", "sum")
-        elif "bks" in temp.columns:
-            xe_agg = ("bks", _nunique_clean)
-        else:
-            temp["so_xe_metric"] = 0
-            xe_agg = ("so_xe_metric", "sum")
+        group_cols = ["ngay_du_lieu", "ngay_label", "thang_label", "khu_vuc"]
 
-        if "so_tai_xe" in temp.columns:
-            temp["so_tai_xe_metric"] = pd.to_numeric(temp["so_tai_xe"], errors="coerce").fillna(0)
-            driver_agg = ("so_tai_xe_metric", "sum")
-        elif "ho_ten" in temp.columns:
-            driver_agg = ("ho_ten", _nunique_clean)
-        else:
-            temp["so_tai_xe_metric"] = 0
-            driver_agg = ("so_tai_xe_metric", "sum")
+        # Keep the fast pre-aggregated counts when they are valid. If a driver-filter
+        # frame came from an older/narrow cache and carries so_xe/so_tai_xe as 0,
+        # fallback to bks/so_tai/ho_ten distinct counts so the table never shows
+        # misleading zeros while revenue/trips are present.
+        temp["so_xe_metric"] = pd.to_numeric(temp["so_xe"], errors="coerce").fillna(0) if "so_xe" in temp.columns else 0
+        temp["so_tai_xe_metric"] = pd.to_numeric(temp["so_tai_xe"], errors="coerce").fillna(0) if "so_tai_xe" in temp.columns else 0
 
-        out = temp.groupby(["ngay_du_lieu", "ngay_label", "thang_label", "khu_vuc"], as_index=False).agg(
-            tong_doanh_thu=("tong_doanh_thu", "sum"),
-            tong_so_cuoc=("tong_so_cuoc", "sum"),
-            sokm_vandoanh=("sokm_vandoanh", "sum"),
-            sokm_cokhach=("sokm_cokhach", "sum"),
-            so_xe=xe_agg,
-            so_tai_xe=driver_agg,
-        ).sort_values(["ngay_du_lieu", "tong_doanh_thu"], ascending=[False, False])
+        agg_spec = {
+            "tong_doanh_thu": ("tong_doanh_thu", "sum"),
+            "tong_so_cuoc": ("tong_so_cuoc", "sum"),
+            "sokm_vandoanh": ("sokm_vandoanh", "sum"),
+            "sokm_cokhach": ("sokm_cokhach", "sum"),
+            "so_xe": ("so_xe_metric", "sum"),
+            "so_tai_xe": ("so_tai_xe_metric", "sum"),
+        }
+        for fallback_col in ["bks", "so_tai", "ho_ten"]:
+            if fallback_col in temp.columns:
+                agg_spec[f"__{fallback_col}_nunique"] = (fallback_col, _nunique_clean)
+
+        out = temp.groupby(group_cols, as_index=False).agg(**agg_spec)
+        has_activity = pd.to_numeric(out.get("tong_doanh_thu", 0), errors="coerce").fillna(0).gt(0) | pd.to_numeric(out.get("tong_so_cuoc", 0), errors="coerce").fillna(0).gt(0)
+
+        if "__bks_nunique" in out.columns:
+            out["so_xe"] = np.where(pd.to_numeric(out["so_xe"], errors="coerce").fillna(0).gt(0), out["so_xe"], out["__bks_nunique"])
+        if "__so_tai_nunique" in out.columns:
+            out["so_xe"] = np.where(pd.to_numeric(out["so_xe"], errors="coerce").fillna(0).gt(0), out["so_xe"], out["__so_tai_nunique"])
+            out["so_tai_xe"] = np.where(pd.to_numeric(out["so_tai_xe"], errors="coerce").fillna(0).gt(0), out["so_tai_xe"], out["__so_tai_nunique"])
+        if "__ho_ten_nunique" in out.columns:
+            out["so_tai_xe"] = np.where(pd.to_numeric(out["so_tai_xe"], errors="coerce").fillna(0).gt(0), out["so_tai_xe"], out["__ho_ten_nunique"])
+
+        # Last-resort safety for driver-only filtered frames: one active row with
+        # revenue/trips should display at least 1 vehicle and 1 driver, not 0.
+        out["so_xe"] = np.where(has_activity & pd.to_numeric(out["so_xe"], errors="coerce").fillna(0).le(0), 1, out["so_xe"])
+        out["so_tai_xe"] = np.where(has_activity & pd.to_numeric(out["so_tai_xe"], errors="coerce").fillna(0).le(0), 1, out["so_tai_xe"])
+
+        drop_cols = [c for c in out.columns if str(c).startswith("__") and str(c).endswith("_nunique")]
+        if drop_cols:
+            out = out.drop(columns=drop_cols)
+        out = out.sort_values(["ngay_du_lieu", "tong_doanh_thu"], ascending=[False, False])
     out["tong_doanh_thu_fmt"] = pd.to_numeric(out.get("tong_doanh_thu", 0), errors="coerce").fillna(0).apply(fmt_vn)
     out["tong_so_cuoc_fmt"] = pd.to_numeric(out.get("tong_so_cuoc", 0), errors="coerce").fillna(0).apply(fmt_vn)
     out["avg_per_trip"] = np.where(
@@ -10426,7 +10448,7 @@ def _daily_table_frame(dff: pd.DataFrame) -> pd.DataFrame:
         0,
     )
     out["km_co_khach_ratio_fmt"] = pd.to_numeric(out["km_co_khach_ratio"], errors="coerce").fillna(0).apply(lambda x: fmt_pct(x, 1))
-    result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "avg_per_vehicle_day_fmt", "so_tai_xe_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
+    result = out[["ngay_label", "thang_label", "khu_vuc", "tong_doanh_thu_fmt", "tong_so_cuoc_fmt", "avg_per_trip_fmt", "so_xe_fmt", "avg_per_vehicle_day_fmt", "sokm_vandoanh_fmt", "sokm_cokhach_fmt", "km_co_khach_ratio_fmt"]].copy()
     if cache_key is not None:
         if len(DAILY_TABLE_FRAME_CACHE) > DAILY_TABLE_FRAME_CACHE_MAX:
             DAILY_TABLE_FRAME_CACHE.clear()
@@ -18119,6 +18141,8 @@ if DASH_LOG_BOOT_TIMING:
 # =========================================================
 # VERCEL / WSGI ENTRYPOINT
 # =========================================================
+# Vercel may import app:app directly. Expose the Flask server as app while
+# preserving the Dash instance for local development.
 dash_app = app
 application = server
 app = server
@@ -18127,5 +18151,5 @@ if __name__ == "__main__":
     dash_app.run(
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8050")),
-        debug=_env_flag("DASH_DEBUG", False),
+        debug=_env_flag("DASH_DEBUG", False)
     )
