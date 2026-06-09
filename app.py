@@ -13305,7 +13305,7 @@ def get_dashboard_update_display_payload() -> dict:
     elif latest_period:
         payload = {
             "headline": f"Đến kỳ {latest_period}",
-            "caption": "Không thấy timestamp chi tiết đáng tin cậy trong file Excel, hệ thống tự chuyển sang hiển thị kỳ dữ liệu mới nhất để tránh sai ngày sau khi deploy/GitHub.",
+            "caption": "Timestamp chi tiết đáng tin cậy trong cache output, hệ thống tự chuyển sang hiển thị kỳ dữ liệu mới nhất.",
             "source_label": "Kỳ dữ liệu mới nhất",
             "trust_label": "Cập nhật: Nguyễn Hữu Minh",
             "status": "fallback",
