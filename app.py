@@ -9116,96 +9116,138 @@ def _daily_driver_index_df() -> pd.DataFrame:
         out = out[[c for c in ["ho_ten", "khu_vuc", "search_key"] if c in out.columns]].copy()
         if "ho_ten" in out.columns:
             out["ho_ten"] = out["ho_ten"].fillna("").astype(str).str.strip()
-            out = out[out["ho_ten"].ne("")].drop_duplicates(subset=["ho_ten"], keep="first")
+            out = out[out["ho_ten"].ne("")].copy()
+            # Keep the same name in different regions. Region filtering happens
+            # before names are collapsed for the browser dropdown.
+            dedupe_cols = ["ho_ten"]
+            if "khu_vuc" in out.columns:
+                out["khu_vuc"] = out["khu_vuc"].apply(lambda x: canon_region_name(x) or x)
+                dedupe_cols.append("khu_vuc")
+            out = out.drop_duplicates(subset=dedupe_cols, keep="first")
     DAILY_DRIVER_OPTIONS_CACHE["index_key"] = cache_key
     DAILY_DRIVER_OPTIONS_CACHE["index_df"] = out.copy(deep=False)
     return _return_df_cached(out)
 
 
+def _daily_driver_option_record(name) -> dict:
+    """Build one browser-searchable option, including an accent-free search alias."""
+    label = str(name or "").strip()
+    search_alias = norm_text(label)
+    search_text = f"{label} {search_alias}".strip()
+    return {"label": label, "value": label, "search": search_text}
+
+
 def _daily_driver_options_from_index(search_value=None, selected_values=None, regions=None, limit: int | None = None):
+    """Return driver options from the small index for browser-side searching.
+
+    ``search_value`` and ``limit`` remain accepted for backward compatibility,
+    but the normal Daily flow now sends the complete region-scoped index once
+    and lets dcc.Dropdown search locally without a server callback per keypress.
+    """
     search_norm = norm_text(search_value or "")
     selected_values = _normalize_multi_value(selected_values)
     idx = _daily_driver_index_df()
     if idx is None or not isinstance(idx, pd.DataFrame) or idx.empty or "ho_ten" not in idx.columns:
         return None
+
     scoped = apply_region_scope_to_df(idx)
     region_values = _normalize_multi_value(regions)
+    region_key = tuple(sorted(str(canon_region_name(x) or x) for x in region_values))
     if region_values and "khu_vuc" in scoped.columns:
-        region_set = {str(canon_region_name(x) or x) for x in region_values}
+        region_set = set(region_key)
         scoped = scoped[scoped["khu_vuc"].apply(lambda x: str(canon_region_name(x) or x)).isin(region_set)]
+
+    # Kept only for compatibility with any external/internal direct caller.
+    # The active callback no longer passes search_value.
     if search_norm:
         if "search_key" not in scoped.columns:
+            scoped = scoped.copy()
             scoped["search_key"] = scoped["ho_ten"].fillna("").astype(str).map(norm_text)
         scoped = scoped[scoped["search_key"].astype(str).str.contains(search_norm, regex=False, na=False)]
-    if limit is None:
-        limit = int(os.getenv("DASH_DAILY_DRIVER_OPTION_LIMIT", "80" if DASH_SERVERLESS_FAST_PRESET else "250"))
-    names = sorted(scoped["ho_ten"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
-    shown = names[:max(int(limit), 1)]
+
+    cache_key = (
+        "driver-browser-options-v2",
+        _daily_filter_cache_scope_key(),
+        region_key,
+        search_norm,
+        int(limit or 0),
+        str(DASH_DATA_VERSION),
+    )
+    if DAILY_DRIVER_OPTIONS_CACHE.get("browser_key") == cache_key:
+        base_options = list(DAILY_DRIVER_OPTIONS_CACHE.get("browser_value", []))
+    else:
+        names = sorted(
+            scoped["ho_ten"].fillna("").astype(str).str.strip()
+            .replace("", pd.NA).dropna().unique().tolist()
+        )
+        if limit is not None and int(limit or 0) > 0:
+            names = names[:max(int(limit), 1)]
+        base_options = [_daily_driver_option_record(x) for x in names if x]
+        DAILY_DRIVER_OPTIONS_CACHE["browser_key"] = cache_key
+        DAILY_DRIVER_OPTIONS_CACHE["browser_value"] = list(base_options)
+
+    shown_values = {str(opt.get("value", "")) for opt in base_options if isinstance(opt, dict)}
     for item in selected_values:
-        if item and item not in shown:
-            shown.append(item)
-    return [{"label": x, "value": x} for x in shown if x]
+        item = str(item or "").strip()
+        if item and item not in shown_values:
+            base_options.append(_daily_driver_option_record(item))
+            shown_values.add(item)
+    return base_options
+
 
 def _daily_driver_options(search_value=None, selected_values=None, regions=None, limit: int | None = None):
-    ensure_daily_data_loaded()
+    """Build the complete region-scoped option list for local browser search."""
     selected_values = _normalize_multi_value(selected_values)
-    search_value = str(search_value or "").strip()
-    search_norm = norm_text(search_value)
 
-    def _selected_driver_options_only(message=None):
-        opts = [{"label": str(x), "value": str(x)} for x in selected_values if str(x).strip()]
-        if message:
-            opts.append({"label": message, "value": "__daily_driver_hint__", "disabled": True})
-        return opts
-
-    # Do not load the 67k-row driver sheet just because the Daily page layout is built
-    # or because the user typed only 1-3 accidental characters in the searchable dropdown.
-    if DASH_DAILY_LAZY_DRIVER_OPTIONS and not search_value:
-        return _selected_driver_options_only()
-    if DASH_DAILY_LAZY_DRIVER_OPTIONS and len(search_norm) < DASH_DAILY_DRIVER_SEARCH_MIN_CHARS and not selected_values:
-        return _selected_driver_options_only(f"Nhập ít nhất {DASH_DAILY_DRIVER_SEARCH_MIN_CHARS} ký tự để tìm tài xế")
-
-    indexed_options = _daily_driver_options_from_index(search_value=search_value, selected_values=selected_values, regions=regions, limit=limit)
+    # Fast path: the prebuilt index is small and already contains only the
+    # fields required by this dropdown. Do not load Daily revenue data here.
+    indexed_options = _daily_driver_options_from_index(
+        search_value=None,
+        selected_values=selected_values,
+        regions=regions,
+        limit=None,
+    )
     if indexed_options is not None:
         return indexed_options
 
+    # Resilient fallback for deployments that have not built the driver index.
+    # This runs only once when the index cache is genuinely missing.
+    ensure_daily_data_loaded()
     _ensure_daily_driver_base_loaded()
     source = df_daily_taixe_checker if isinstance(df_daily_taixe_checker, pd.DataFrame) and not df_daily_taixe_checker.empty else df_daily_raw_checker
+    region_values = _normalize_multi_value(regions)
+    region_key = tuple(sorted(str(canon_region_name(x) or x) for x in region_values))
     cache_key = (
+        "driver-browser-fallback-v2",
         _df_cache_signature(source),
         _daily_filter_cache_scope_key(),
-        norm_text(search_value),
-        tuple(sorted(selected_values)),
-        tuple(sorted(_normalize_multi_value(regions))),
-        int(limit or 0),
+        region_key,
+        str(DASH_DATA_VERSION),
     )
-    if DAILY_DRIVER_OPTIONS_CACHE.get("key") == cache_key:
-        return DAILY_DRIVER_OPTIONS_CACHE.get("value", [])
-    if source is None or not isinstance(source, pd.DataFrame) or source.empty or "ho_ten" not in source.columns:
-        value = []
+    if DAILY_DRIVER_OPTIONS_CACHE.get("fallback_browser_key") == cache_key:
+        base_options = list(DAILY_DRIVER_OPTIONS_CACHE.get("fallback_browser_value", []))
+    elif source is None or not isinstance(source, pd.DataFrame) or source.empty or "ho_ten" not in source.columns:
+        base_options = []
     else:
         scoped = apply_region_scope_to_df(source)
-        region_values = _normalize_multi_value(regions)
         if region_values and "khu_vuc" in scoped.columns:
-            region_set = {str(canon_region_name(x) or x) for x in region_values}
+            region_set = set(region_key)
             scoped = scoped[scoped["khu_vuc"].apply(lambda x: str(canon_region_name(x) or x)).isin(region_set)]
-        names = scoped["ho_ten"].fillna("").astype(str).str.strip()
-        names = names[names.ne("")]
-        if search_value:
-            q = norm_text(search_value)
-            names = names[names.map(norm_text).str.contains(q, regex=False, na=False)]
-        unique_names = sorted(names.unique().tolist())
-        selected_set = set(selected_values)
-        if limit is None:
-            limit = int(os.getenv("DASH_DAILY_DRIVER_OPTION_LIMIT", "80" if DASH_SERVERLESS_FAST_PRESET else "250"))
-        shown = unique_names[:max(int(limit), 1)]
-        for item in selected_values:
-            if item and item not in shown:
-                shown.append(item)
-        value = [{"label": x, "value": x} for x in shown if x]
-    DAILY_DRIVER_OPTIONS_CACHE["key"] = cache_key
-    DAILY_DRIVER_OPTIONS_CACHE["value"] = value
-    return value
+        names = sorted(
+            scoped["ho_ten"].fillna("").astype(str).str.strip()
+            .replace("", pd.NA).dropna().unique().tolist()
+        )
+        base_options = [_daily_driver_option_record(x) for x in names if x]
+        DAILY_DRIVER_OPTIONS_CACHE["fallback_browser_key"] = cache_key
+        DAILY_DRIVER_OPTIONS_CACHE["fallback_browser_value"] = list(base_options)
+
+    shown_values = {str(opt.get("value", "")) for opt in base_options if isinstance(opt, dict)}
+    for item in selected_values:
+        item = str(item or "").strip()
+        if item and item not in shown_values:
+            base_options.append(_daily_driver_option_record(item))
+            shown_values.add(item)
+    return base_options
 
 
 DAILY_VEHICLE_TYPE_CANON = ["Xe Công ty", "Xe thương quyền trả góp", "Xe thương quyền hợp tác"]
@@ -10546,7 +10588,7 @@ def daily_latest_page():
                     options=_daily_driver_options(),
                     value=[],
                     multi=True,
-                    placeholder=f"Gõ ít nhất {DASH_DAILY_DRIVER_SEARCH_MIN_CHARS} ký tự để tìm tài xế",
+                    placeholder="Gõ tên tài xế để tìm",
                     clearable=True,
                 ),
                 html.Div([
@@ -13362,13 +13404,14 @@ def show_last_updated(_):
 
 @app.callback(
     Output("daily-driver", "options"),
-    Input("daily-driver", "search_value", allow_optional=True),
     Input("daily-region", "value", allow_optional=True),
     State("daily-driver", "value", allow_optional=True),
     prevent_initial_call=False,
 )
-def update_daily_driver_options(search_value, regions, selected_values):
-    return _daily_driver_options(search_value=search_value, selected_values=selected_values, regions=regions)
+def update_daily_driver_options(regions, selected_values):
+    # Options are refreshed only when the region changes. Typing a driver name
+    # is handled entirely by dcc.Dropdown in the browser.
+    return _daily_driver_options(selected_values=selected_values, regions=regions)
 
 
 @app.callback(
