@@ -11,6 +11,12 @@
     "regions": ["*"],
     "display_name": "Tài khoản Chủ Tịch"
   },
+  "nhuquynh": {
+    "password": "220977",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Ms. Quỳnh - Phó Tổng"
+  },
   "banlanhdao": {
     "password": "123",
     "role": "admin",
@@ -23,14 +29,20 @@
     "regions": ["*"],
     "display_name": "Tài khoản IT"
   },
-  "rachgia": {
-    "password": "123",
+  "vuthanhtuan": {
+    "password": "130882",
     "role": "region",
     "regions": ["Rạch Giá"],
     "display_name": "Quản lý Rạch Giá"
   },
-  "camau": {
-    "password": "123",
+  "nguyenbaoxia": {
+    "password": "180812",
+    "role": "region",
+    "regions": ["Cà Mau"],
+    "display_name": "Quản lý Cà Mau"
+  },
+  "truongtiep": {
+    "password": "061289",
     "role": "region",
     "regions": ["Cà Mau"],
     "display_name": "Quản lý Cà Mau"
@@ -47,8 +59,8 @@
     "regions": ["Phú Quốc"],
     "display_name": "Quản lý Phú Quốc"
   },
-  "soctrang": {
-    "password": "123",
+  "vuanhtuan": {
+    "password": "061965",
     "role": "region",
     "regions": ["Sóc Trăng"],
     "display_name": "Quản lý Sóc Trăng"
@@ -59,8 +71,8 @@
     "regions": ["Vĩnh Long"],
     "display_name": "Quản lý Vĩnh Long"
   },
-  "baclieu": {
-    "password": "123",
+  "tranthanhquy": {
+    "password": "quy90@",
     "role": "region",
     "regions": ["Bạc Liêu"],
     "display_name": "Quản lý Bạc Liêu"
@@ -78,9 +90,9 @@
     "display_name": "Quản lý Hậu Giang"
   },
   "hohoanganh": {
-    "password": "123",
+    "password": "123411",
     "role": "region",
-    "regions": ["Cần Thơ", "Hậu Giang", "Sóc Trăng"],
-    "display_name": "Quản lý Miền Tây"
+    "regions": ["Cần Thơ", "Hậu Giang", "Sóc Trăng", "Vĩnh Long"],
+    "display_name": "Mr. Hoang Anh - Giám Đốc Vùng"
   }
 }
