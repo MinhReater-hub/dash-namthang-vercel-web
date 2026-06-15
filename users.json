@@ -47,8 +47,8 @@
     "regions": ["Cà Mau"],
     "display_name": "Quản lý Cà Mau"
   },
-  "angiang": {
-    "password": "123",
+  "huynhchau": {
+    "password": "565656",
     "role": "region",
     "regions": ["An Giang"],
     "display_name": "Quản lý An Giang"
