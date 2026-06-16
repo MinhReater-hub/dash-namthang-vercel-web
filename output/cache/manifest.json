@@ -15,7 +15,7 @@
           "pkl": "output\\cache\\DoanhThu_Thang_KhuVuc.pkl"
         }
       },
-      "elapsed_s": 0.032
+      "elapsed_s": 0.039
     },
     "Tong_DoanhThu_KhuVuc": {
       "rows": 10,
@@ -26,7 +26,7 @@
           "pkl": "output\\cache\\Tong_DoanhThu_KhuVuc.pkl"
         }
       },
-      "elapsed_s": 0.008
+      "elapsed_s": 0.006
     },
     "DoanhThu_LoaiHinh": {
       "rows": 6,
@@ -37,7 +37,7 @@
           "pkl": "output\\cache\\DoanhThu_LoaiHinh.pkl"
         }
       },
-      "elapsed_s": 0.006
+      "elapsed_s": 0.007
     },
     "DoanhThu_LH_KhuVuc": {
       "rows": 31,
@@ -59,7 +59,7 @@
           "pkl": "output\\cache\\DoanhThu_LH_Thang.pkl"
         }
       },
-      "elapsed_s": 0.012
+      "elapsed_s": 0.011
     },
     "DoanhThu_LH_KV_Thang": {
       "rows": 389,
@@ -70,10 +70,10 @@
           "pkl": "output\\cache\\DoanhThu_LH_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.029
+      "elapsed_s": 0.028
     },
     "DoanhThu_Ngay_Checker": {
-      "rows": 676,
+      "rows": 685,
       "cols": 19,
       "written": {
         "DoanhThu_Ngay_Checker": {
@@ -81,10 +81,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_Checker.pkl"
         }
       },
-      "elapsed_s": 0.151
+      "elapsed_s": 0.16
     },
     "DoanhThu_Ngay_LH_Checker": {
-      "rows": 1668,
+      "rows": 1690,
       "cols": 20,
       "written": {
         "DoanhThu_Ngay_LH_Checker": {
@@ -92,10 +92,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_LH_Checker.pkl"
         }
       },
-      "elapsed_s": 0.286
+      "elapsed_s": 0.303
     },
     "DoanhThu_Ngay_HinhThuc": {
-      "rows": 978,
+      "rows": 990,
       "cols": 20,
       "written": {
         "DoanhThu_Ngay_HinhThuc": {
@@ -103,10 +103,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_HinhThuc.pkl"
         }
       },
-      "elapsed_s": 0.211
+      "elapsed_s": 0.188
     },
     "DoanhThu_Ngay_LH_HinhThuc": {
-      "rows": 1953,
+      "rows": 1978,
       "cols": 21,
       "written": {
         "DoanhThu_Ngay_LH_HinhThuc": {
@@ -114,10 +114,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_LH_HinhThuc.pkl"
         }
       },
-      "elapsed_s": 0.454
+      "elapsed_s": 0.378
     },
     "DoanhThu_Ngay_Luong": {
-      "rows": 944,
+      "rows": 956,
       "cols": 20,
       "written": {
         "DoanhThu_Ngay_Luong": {
@@ -125,10 +125,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_Luong.pkl"
         }
       },
-      "elapsed_s": 0.327
+      "elapsed_s": 0.155
     },
     "DoanhThu_Ngay_SoCho": {
-      "rows": 1421,
+      "rows": 1440,
       "cols": 21,
       "written": {
         "DoanhThu_Ngay_SoCho": {
@@ -136,10 +136,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_SoCho.pkl"
         }
       },
-      "elapsed_s": 0.256
+      "elapsed_s": 0.252
     },
     "DoanhThu_Ngay_TaiXe": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 20,
       "written": {
         "DoanhThu_Ngay_TaiXe": {
@@ -147,10 +147,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe.pkl"
         }
       },
-      "elapsed_s": 15.408
+      "elapsed_s": 14.908
     },
     "DoanhThu_Ngay_TaiXe_LH": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 21,
       "written": {
         "DoanhThu_Ngay_TaiXe_LH": {
@@ -158,10 +158,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_LH.pkl"
         }
       },
-      "elapsed_s": 15.359
+      "elapsed_s": 14.445
     },
     "DoanhThu_Ngay_TaiXe_HinhThuc": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 21,
       "written": {
         "DoanhThu_Ngay_TaiXe_HinhThuc": {
@@ -169,10 +169,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_HinhThuc.pkl"
         }
       },
-      "elapsed_s": 14.688
+      "elapsed_s": 15.469
     },
     "DoanhThu_Ngay_TaiXe_LH_HinhThuc": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 22,
       "written": {
         "DoanhThu_Ngay_TaiXe_LH_HinhThuc": {
@@ -180,10 +180,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_LH_HinhThuc.pkl"
         }
       },
-      "elapsed_s": 14.236
+      "elapsed_s": 14.893
     },
     "DoanhThu_Ngay_TaiXe_Luong": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 21,
       "written": {
         "DoanhThu_Ngay_TaiXe_Luong": {
@@ -191,10 +191,10 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_Luong.pkl"
         }
       },
-      "elapsed_s": 13.282
+      "elapsed_s": 15.214
     },
     "DoanhThu_Ngay_TaiXe_SoCho": {
-      "rows": 83055,
+      "rows": 84143,
       "cols": 22,
       "written": {
         "DoanhThu_Ngay_TaiXe_SoCho": {
@@ -202,7 +202,7 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_TaiXe_SoCho.pkl"
         }
       },
-      "elapsed_s": 15.402
+      "elapsed_s": 15.041
     },
     "DoanhThu_Ngay_Raw_Checker": {
       "rows": 0,
@@ -213,7 +213,7 @@
           "pkl": "output\\cache\\DoanhThu_Ngay_Raw_Checker.pkl"
         }
       },
-      "elapsed_s": 0.011
+      "elapsed_s": 0.01
     },
     "HopDong_Tong": {
       "rows": 3,
@@ -224,7 +224,7 @@
           "pkl": "output\\cache\\HopDong_Tong.pkl"
         }
       },
-      "elapsed_s": 0.005
+      "elapsed_s": 0.007
     },
     "HopDong_KhuVuc": {
       "rows": 28,
@@ -257,7 +257,7 @@
           "pkl": "output\\cache\\HopDong_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.028
+      "elapsed_s": 0.024
     },
     "NhanSu_NhanVien_KV_Thang": {
       "rows": 1423,
@@ -268,7 +268,7 @@
           "pkl": "output\\cache\\NhanSu_NhanVien_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.214
+      "elapsed_s": 0.232
     },
     "NhanSu_TaiXe_KV_Thang": {
       "rows": 322,
@@ -279,10 +279,10 @@
           "pkl": "output\\cache\\NhanSu_TaiXe_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.055
+      "elapsed_s": 0.076
     },
     "KinhDoanh_DiemTiepThi_KV_Thang": {
-      "rows": 115,
+      "rows": 122,
       "cols": 18,
       "written": {
         "KinhDoanh_DiemTiepThi_KV_Thang": {
@@ -290,10 +290,10 @@
           "pkl": "output\\cache\\KinhDoanh_DiemTiepThi_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.025
+      "elapsed_s": 0.035
     },
     "DiemTiepThi_KV_Thang": {
-      "rows": 115,
+      "rows": 122,
       "cols": 18,
       "written": {
         "DiemTiepThi_KV_Thang": {
@@ -301,7 +301,7 @@
           "pkl": "output\\cache\\DiemTiepThi_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.025
+      "elapsed_s": 0.038
     },
     "PhuongTien_XeTrucThuoc_KV_Thang": {
       "rows": 49,
@@ -312,7 +312,7 @@
           "pkl": "output\\cache\\PhuongTien_XeTrucThuoc_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.013
+      "elapsed_s": 0.015
     },
     "XeTrucThuoc_KV_Thang": {
       "rows": 49,
@@ -323,7 +323,7 @@
           "pkl": "output\\cache\\XeTrucThuoc_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.012
+      "elapsed_s": 0.015
     },
     "PhuongTien_XePhanQuyen_KV_Thang": {
       "rows": 37,
@@ -334,7 +334,7 @@
           "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.015
+      "elapsed_s": 0.011
     },
     "XePhanQuyen_KV_Thang": {
       "rows": 37,
@@ -345,10 +345,10 @@
           "pkl": "output\\cache\\XePhanQuyen_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.015
+      "elapsed_s": 0.021
     },
     "XeDangCo_XeTrucThuoc_KV_Ngay": {
-      "rows": 302032,
+      "rows": 303056,
       "cols": 11,
       "written": {
         "XeDangCo_XeTrucThuoc_KV_Ngay": {
@@ -356,10 +356,10 @@
           "pkl": "output\\cache\\XeDangCo_XeTrucThuoc_KV_Ngay.pkl"
         }
       },
-      "elapsed_s": 22.945
+      "elapsed_s": 24.176
     },
     "PhuongTien_XeTrucThuoc_KV_Ngay": {
-      "rows": 302032,
+      "rows": 303056,
       "cols": 11,
       "written": {
         "PhuongTien_XeTrucThuoc_KV_Ngay": {
@@ -367,10 +367,10 @@
           "pkl": "output\\cache\\PhuongTien_XeTrucThuoc_KV_Ngay.pkl"
         }
       },
-      "elapsed_s": 23.684
+      "elapsed_s": 24.214
     },
     "XeDangCo_XePhanQuyen_KV_Ngay": {
-      "rows": 50821,
+      "rows": 51120,
       "cols": 11,
       "written": {
         "XeDangCo_XePhanQuyen_KV_Ngay": {
@@ -378,10 +378,10 @@
           "pkl": "output\\cache\\XeDangCo_XePhanQuyen_KV_Ngay.pkl"
         }
       },
-      "elapsed_s": 4.293
+      "elapsed_s": 4.151
     },
     "PhuongTien_XePhanQuyen_KV_Ngay": {
-      "rows": 50821,
+      "rows": 51120,
       "cols": 11,
       "written": {
         "PhuongTien_XePhanQuyen_KV_Ngay": {
@@ -389,7 +389,7 @@
           "pkl": "output\\cache\\PhuongTien_XePhanQuyen_KV_Ngay.pkl"
         }
       },
-      "elapsed_s": 4.094
+      "elapsed_s": 4.299
     },
     "KinhDoanh_BienBan_KV_Thang": {
       "rows": 164,
@@ -400,7 +400,7 @@
           "pkl": "output\\cache\\KinhDoanh_BienBan_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.036
+      "elapsed_s": 0.031
     },
     "BienBan_KV_Thang": {
       "rows": 164,
@@ -411,7 +411,7 @@
           "pkl": "output\\cache\\BienBan_KV_Thang.pkl"
         }
       },
-      "elapsed_s": 0.022
+      "elapsed_s": 0.031
     },
     "TOP10_An Giang": {
       "rows": 10,
@@ -426,7 +426,7 @@
           "pkl": "output\\cache\\TOP10_An_Giang.pkl"
         }
       },
-      "elapsed_s": 0.012
+      "elapsed_s": 0.014
     },
     "TOP10_Bạc Liêu": {
       "rows": 10,
@@ -441,7 +441,7 @@
           "pkl": "output\\cache\\TOP10_B_c_Li_u.pkl"
         }
       },
-      "elapsed_s": 0.01
+      "elapsed_s": 0.013
     },
     "TOP10_CT": {
       "rows": 10,
@@ -467,7 +467,7 @@
           "pkl": "output\\cache\\TOP10_C_Mau.pkl"
         }
       },
-      "elapsed_s": 0.011
+      "elapsed_s": 0.014
     },
     "TOP10_HG": {
       "rows": 10,
@@ -493,7 +493,7 @@
           "pkl": "output\\cache\\TOP10_Ph_Qu_c.pkl"
         }
       },
-      "elapsed_s": 0.012
+      "elapsed_s": 0.051
     },
     "TOP10_Rạch Giá": {
       "rows": 10,
@@ -508,7 +508,7 @@
           "pkl": "output\\cache\\TOP10_R_ch_Gi.pkl"
         }
       },
-      "elapsed_s": 0.01
+      "elapsed_s": 0.026
     },
     "TOP10_ST": {
       "rows": 10,
@@ -519,7 +519,7 @@
           "pkl": "output\\cache\\TOP10_ST.pkl"
         }
       },
-      "elapsed_s": 0.008
+      "elapsed_s": 0.007
     },
     "TOP10_Vĩnh Long": {
       "rows": 10,
@@ -534,10 +534,10 @@
           "pkl": "output\\cache\\TOP10_V_nh_Long.pkl"
         }
       },
-      "elapsed_s": 0.009
+      "elapsed_s": 0.014
     },
     "Daily_Driver_Options": {
-      "rows": 1512,
+      "rows": 1515,
       "cols": 3,
       "written": {
         "Daily_Driver_Options": {
@@ -549,8 +549,8 @@
           "pkl": "output\\cache\\Driver_Options.pkl"
         }
       },
-      "elapsed_s": 14.229
+      "elapsed_s": 14.446
     }
   },
-  "elapsed_s": 160.638
+  "elapsed_s": 164.786
 }
