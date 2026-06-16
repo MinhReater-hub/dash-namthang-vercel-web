@@ -77,11 +77,11 @@
     "regions": ["Bạc Liêu"],
     "display_name": "Quản lý Bạc Liêu"
   },
-  "cantho": {
-    "password": "123",
+  "nguyenvanthanh": {
+    "password": "982982",
     "role": "region",
-    "regions": ["Cần Thơ"],
-    "display_name": "Quản lý Cần Thơ"
+    "regions": ["Cần Thơ", "Hậu Giang"],
+    "display_name": "Quản lý Cần Thơ - Hậu Giang"
   },
   "haugiang": {
     "password": "123",
