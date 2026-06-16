@@ -53,8 +53,14 @@
     "regions": ["An Giang"],
     "display_name": "Quản lý An Giang"
   },
-  "phuquoc": {
-    "password": "123",
+  "theduy": {
+    "password": "113322",
+    "role": "region",
+    "regions": ["Phú Quốc"],
+    "display_name": "Quản lý Phú Quốc"
+  },
+  "hoangthelinh": {
+    "password": "123456",
     "role": "region",
     "regions": ["Phú Quốc"],
     "display_name": "Quản lý Phú Quốc"
