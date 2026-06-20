@@ -65,8 +65,8 @@
     "regions": ["Phú Quốc"],
     "display_name": "Quản lý Phú Quốc"
   },
-  "vuanhtuan": {
-    "password": "061965",
+  "admin": {
+    "password": "040997",
     "role": "region",
     "regions": ["Sóc Trăng"],
     "display_name": "Quản lý Sóc Trăng"
