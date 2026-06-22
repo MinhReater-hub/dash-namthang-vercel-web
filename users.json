@@ -1,6 +1,6 @@
 {
   "admin": {
-    "password": "123",
+    "password": "040997",
     "role": "admin",
     "regions": ["*"],
     "display_name": "Tài khoản DEV"
@@ -11,13 +11,13 @@
     "regions": ["*"],
     "display_name": "Tài khoản Chủ Tịch"
   },
-  "nhuquynh": {
+  "nq": {
     "password": "220977",
     "role": "admin",
     "regions": ["*"],
     "display_name": "Ms. Quỳnh - Phó Tổng"
   },
-  "banlanhdao": {
+  "bld": {
     "password": "123",
     "role": "admin",
     "regions": ["*"],
@@ -29,73 +29,73 @@
     "regions": ["*"],
     "display_name": "Tài khoản IT"
   },
-  "vuthanhtuan": {
+  "vtt": {
     "password": "130882",
     "role": "region",
     "regions": ["Rạch Giá"],
     "display_name": "Quản lý Rạch Giá"
   },
-  "nguyenbaoxia": {
+  "nbx": {
     "password": "180812",
     "role": "region",
     "regions": ["Cà Mau"],
     "display_name": "Quản lý Cà Mau"
   },
-  "truongtiep": {
+  "tt": {
     "password": "061289",
     "role": "region",
     "regions": ["Cà Mau"],
     "display_name": "Quản lý Cà Mau"
   },
-  "huynhchau": {
+  "hc": {
     "password": "565656",
     "role": "region",
     "regions": ["An Giang"],
     "display_name": "Quản lý An Giang"
   },
-  "theduy": {
+  "td": {
     "password": "113322",
     "role": "region",
     "regions": ["Phú Quốc"],
     "display_name": "Quản lý Phú Quốc"
   },
-  "hoangthelinh": {
+  "htl": {
     "password": "123456",
     "role": "region",
     "regions": ["Phú Quốc"],
     "display_name": "Quản lý Phú Quốc"
   },
-  "admin": {
+  "st": {
     "password": "040997",
     "role": "region",
     "regions": ["Sóc Trăng"],
     "display_name": "Quản lý Sóc Trăng"
   },
-  "vinhlong": {
+  "vl": {
     "password": "123",
     "role": "region",
     "regions": ["Vĩnh Long"],
     "display_name": "Quản lý Vĩnh Long"
   },
-  "tranthanhquy": {
+  "tt": {
     "password": "quy90@",
     "role": "region",
     "regions": ["Bạc Liêu"],
     "display_name": "Quản lý Bạc Liêu"
   },
-  "nguyenvanthanh": {
-    "password": "982982",
+  "nvt": {
+    "password": "040997",
     "role": "region",
     "regions": ["Cần Thơ", "Hậu Giang"],
     "display_name": "Quản lý Cần Thơ - Hậu Giang"
   },
-  "haugiang": {
+  "hg": {
     "password": "123",
     "role": "region",
     "regions": ["Hậu Giang"],
     "display_name": "Quản lý Hậu Giang"
   },
-  "hohoanganh": {
+  "hha": {
     "password": "123411",
     "role": "region",
     "regions": ["Cần Thơ", "Hậu Giang", "Sóc Trăng", "Vĩnh Long"],
