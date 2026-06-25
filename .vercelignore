@@ -10,3 +10,5 @@ venv/
 *.pyc
 refresh_data.py
 build_dash_cache.py
+output/cache/*.parquet
+output/cache/XeDangCo_*.pkl
