@@ -1,0 +1,5 @@
+-r requirements.txt
+python-dotenv
+pyodbc
+matplotlib
+xlsxwriter

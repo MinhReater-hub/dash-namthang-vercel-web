@@ -4,9 +4,6 @@ plotly
 pandas
 numpy
 openpyxl
-python-dotenv
-pyodbc
-matplotlib
 Flask
 Werkzeug
 gunicorn
