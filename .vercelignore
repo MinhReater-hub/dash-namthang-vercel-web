@@ -5,4 +5,8 @@ __pycache__/
 venv/
 .env
 *.ipynb
-.git/
+.git/ngrok.exe
+*.log
+*.pyc
+refresh_data.py
+build_dash_cache.py
