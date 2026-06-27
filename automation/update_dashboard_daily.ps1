@@ -190,6 +190,33 @@ function Clear-GeneratedCache {
     New-Item -ItemType Directory -Force -Path $cachePath | Out-Null
 }
 
+function Remove-UnusedTop10Caches {
+    $cacheRoot = Join-Path $RepoPath "output\cache"
+
+    if (-not (Test-Path -LiteralPath $cacheRoot -PathType Container)) {
+        return
+    }
+
+    $top10Files = @(
+        Get-ChildItem `
+            -LiteralPath $cacheRoot `
+            -File `
+            -Filter "TOP10_*" `
+            -ErrorAction SilentlyContinue
+    )
+
+    if ($top10Files.Count -eq 0) {
+        return
+    }
+
+    foreach ($file in $top10Files) {
+        Remove-Item -LiteralPath $file.FullName -Force
+    }
+
+    Write-Log "Đã loại $($top10Files.Count) cache TOP10 không còn sử dụng."
+}
+
+
 function Assert-RequiredCaches {
     $requiredCaches = @(
         "DoanhThu_Thang_KhuVuc.pkl",
@@ -239,13 +266,18 @@ function Assert-RequiredCaches {
 }
 
 function Assert-OnlyCacheIsStaged {
-    $stagedPaths = @(& git diff --cached --name-only 2>&1)
+    $stagedPaths = @(& git -c core.quotepath=false diff --cached --name-only 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "Không đọc được danh sách file đã stage." }
 
     $unexpected = @(
         $stagedPaths |
-            ForEach-Object { ([string]$_).Replace("\", "/") } |
-            Where-Object { -not $_.StartsWith("output/cache/") }
+            ForEach-Object {
+                ([string]$_).Trim().Trim('"').Replace("\", "/")
+            } |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                -not $_.StartsWith("output/cache/")
+            }
     )
 
     if ($unexpected.Count -gt 0) {
@@ -302,6 +334,7 @@ try {
 
     Invoke-Native -FilePath $PythonLauncher -Arguments @($PythonVersion, "refresh_data.py") -StepName "Cập nhật dữ liệu SQL" | Out-Null
 
+    Remove-UnusedTop10Caches
     Assert-RequiredCaches
 
     & git restore --worktree -- "output/bao_cao_doanh_thu_tong_hop.xlsx" 2>$null
@@ -352,7 +385,7 @@ try {
         throw "Không kiểm tra được thay đổi cache, exit code $cacheDiffExitCode."
     }
 
-    $changedFiles = @(& git diff --cached --name-only -- "output/cache")
+    $changedFiles = @(& git -c core.quotepath=false diff --cached --name-only -- "output/cache")
     $changedCount = $changedFiles.Count
     $commitMessage = "Auto update dashboard cache $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
 

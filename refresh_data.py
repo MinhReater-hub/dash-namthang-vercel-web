@@ -1803,8 +1803,6 @@ with _excel_writer as writer:
     _write_sheet(writer, bienban_kv_thang, "KinhDoanh_BienBan_KV_Thang")
     _write_sheet(writer, bienban_kv_thang, "BienBan_KV_Thang")
 
-    for kv, d in top10_driver.groupby("khu_vuc"):
-        _write_sheet(writer, d, f"TOP10_{kv[:25]}")
 
 print("PIPELINE COMPLETED")
 print("Excel output:", EXCEL_FILE)
