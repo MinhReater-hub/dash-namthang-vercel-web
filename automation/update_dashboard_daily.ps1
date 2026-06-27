@@ -22,9 +22,19 @@ $LockAcquired = $false
 
 function Write-Log {
     param(
-        [Parameter(Mandatory = $true)][string]$Message,
-        [ValidateSet("INFO", "WARN", "ERROR", "CMD")][string]$Level = "INFO"
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Message,
+
+        [ValidateSet("INFO", "WARN", "ERROR", "CMD")]
+        [string]$Level = "INFO"
     )
+
+    # Một số chương trình native (đặc biệt Python/Git) có thể trả về
+    # dòng trống trong mảng output. Không coi dòng trống là lỗi.
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return
+    }
 
     $line = "{0} [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Message
     Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
@@ -114,9 +124,16 @@ function Invoke-Native {
     }
 
     foreach ($item in @($output)) {
-        if ($null -ne $item) {
-            Write-Log ([string]$item) "CMD"
+        if ($null -eq $item) {
+            continue
         }
+
+        $outputLine = [string]$item
+        if ([string]::IsNullOrWhiteSpace($outputLine)) {
+            continue
+        }
+
+        Write-Log -Message $outputLine -Level "CMD"
     }
 
     if ($AllowedExitCodes -notcontains $exitCode) {
