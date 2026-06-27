@@ -98,11 +98,25 @@ function Invoke-Native {
     )
 
     Write-Log "$FilePath $($Arguments -join ' ')" "CMD"
-    $output = & $FilePath @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+
+    # Git thường ghi các thông báo bình thường như "From https://..."
+    # ra stderr. Với Windows PowerShell + ErrorActionPreference=Stop,
+    # những dòng này có thể bị hiểu nhầm là lỗi kết thúc script.
+    # Tạm chuyển về Continue và chỉ đánh giá kết quả bằng exit code.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $FilePath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     foreach ($item in @($output)) {
-        if ($null -ne $item) { Write-Log ([string]$item) "CMD" }
+        if ($null -ne $item) {
+            Write-Log ([string]$item) "CMD"
+        }
     }
 
     if ($AllowedExitCodes -notcontains $exitCode) {
