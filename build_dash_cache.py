@@ -7,7 +7,7 @@ Environment variables:
   DASH_EXCEL_FILE / OUTPUT_EXCEL_FILE: source workbook path
   DASH_CACHE_DIR: output cache directory, default output/cache
   DASH_CACHE_SHEETS: optional comma-separated sheet names to cache
-  DASH_CACHE_FORMATS: comma-separated formats: parquet,feather,pkl (default: parquet,pkl)
+  DASH_CACHE_FORMATS: comma-separated formats: parquet,feather,pkl (default: pkl)
 
 The dashboard can read .parquet, .feather, and .pkl from DASH_CACHE_DIR.
 This script is safe for Vercel build steps: if no workbook is found it exits 0.
@@ -56,7 +56,12 @@ def build_driver_options_cache(df_source: pd.DataFrame) -> pd.DataFrame:
         "ho_ten": df_source[name_col].fillna("").astype(str).str.strip(),
         "khu_vuc": df_source[region_col].fillna("Tổng hợp").astype(str).str.strip() if region_col else "Tổng hợp",
     })
-    out = out[out["ho_ten"].ne("")].drop_duplicates(subset=["ho_ten"], keep="first").reset_index(drop=True)
+    out.loc[out["khu_vuc"].eq(""), "khu_vuc"] = "Tổng hợp"
+    out = (
+        out[out["ho_ten"].ne("")]
+        .drop_duplicates(subset=["ho_ten", "khu_vuc"], keep="first")
+        .reset_index(drop=True)
+    )
     out["search_key"] = out["ho_ten"].map(norm_key)
     return out
 
@@ -124,7 +129,7 @@ def main() -> int:
         "/mnt/data/bao_cao_doanh_thu_tong_hop.xlsx",
     ])
     cache_dir = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
-    formats = {x.strip().lower() for x in os.getenv("DASH_CACHE_FORMATS", "parquet,pkl").split(",") if x.strip()}
+    formats = {x.strip().lower() for x in os.getenv("DASH_CACHE_FORMATS", "pkl").split(",") if x.strip()}
     formats = formats & {"parquet", "feather", "pkl"}
     if not formats:
         formats = {"pkl"}

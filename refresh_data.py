@@ -85,6 +85,16 @@ EXCEL_FILE = BASE_DIR / os.getenv("OUTPUT_EXCEL_NAME", "bao_cao_doanh_thu_tong_h
 # but the Dash app should read these smaller cache files first on Vercel.
 CACHE_DIR = Path(os.getenv("OUTPUT_CACHE_DIR", str(BASE_DIR / "cache")))
 EXPORT_DASH_CACHE = str(os.getenv("EXPORT_DASH_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Keep one runtime cache format by default to avoid duplicate Parquet/Pickle files
+# inflating the Git repository and Vercel function bundle. Override only when
+# explicitly needed, e.g. DASH_CACHE_FORMATS=parquet or parquet,pkl.
+DASH_CACHE_FORMATS = {
+    x.strip().lower()
+    for x in os.getenv("DASH_CACHE_FORMATS", "pkl").split(",")
+    if x.strip()
+} & {"parquet", "feather", "pkl"}
+if not DASH_CACHE_FORMATS:
+    DASH_CACHE_FORMATS = {"pkl"}
 CACHE_DIR.mkdir(exist_ok=True)
 
 SQL_QUERY_TIMEOUT = int(os.getenv("SQL_QUERY_TIMEOUT", "90"))
@@ -1666,9 +1676,12 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+
     safe_name = _cache_safe_sheet_name(sheet_name)
-    # Remove old fallback formats first so Dash never reads a stale .parquet/.pkl
-    # when the current export falls back to another format.
+
+    # Remove every old format before writing the selected one(s). This guarantees
+    # that a previous .parquet/.feather file cannot remain beside the current .pkl
+    # and be committed/deployed as a duplicate cache.
     for suffix in [".parquet", ".feather", ".pkl"]:
         try:
             old_fp = CACHE_DIR / f"{safe_name}{suffix}"
@@ -1676,25 +1689,34 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
                 old_fp.unlink()
         except Exception as e:
             print(f"[CACHE EXPORT] could not remove old cache {sheet_name}{suffix}: {e}")
-    # Prefer Parquet for fast cold-start reads and always write a pickle fallback.
+
     wrote_any = False
-    try:
-        df.to_parquet(CACHE_DIR / f"{safe_name}.parquet", index=False)
-        wrote_any = True
-    except Exception as e:
-        print(f"[CACHE EXPORT] parquet failed for {sheet_name}: {e}")
-    try:
-        df.to_pickle(CACHE_DIR / f"{safe_name}.pkl")
-        wrote_any = True
-    except Exception as e:
-        print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
-    if not wrote_any:
+
+    if "parquet" in DASH_CACHE_FORMATS:
+        try:
+            df.to_parquet(CACHE_DIR / f"{safe_name}.parquet", index=False)
+            wrote_any = True
+        except Exception as e:
+            print(f"[CACHE EXPORT] parquet failed for {sheet_name}: {e}")
+
+    if "feather" in DASH_CACHE_FORMATS:
         try:
             df.reset_index(drop=True).to_feather(CACHE_DIR / f"{safe_name}.feather")
+            wrote_any = True
         except Exception as e:
             print(f"[CACHE EXPORT] feather failed for {sheet_name}: {e}")
 
+    if "pkl" in DASH_CACHE_FORMATS:
+        try:
+            df.to_pickle(CACHE_DIR / f"{safe_name}.pkl")
+            wrote_any = True
+        except Exception as e:
+            print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
 
+    if not wrote_any:
+        raise RuntimeError(
+            f"Không ghi được cache {sheet_name}. Formats={sorted(DASH_CACHE_FORMATS)}"
+        )
 
 
 def _export_daily_driver_options_cache(df_source: pd.DataFrame) -> None:
@@ -1710,7 +1732,12 @@ def _export_daily_driver_options_cache(df_source: pd.DataFrame) -> None:
             "ho_ten": df_source[name_col].fillna("").astype(str).str.strip(),
             "khu_vuc": df_source[region_col].fillna("Tổng hợp").astype(str).str.strip() if region_col else "Tổng hợp",
         })
-        out = out[out["ho_ten"].ne("")].drop_duplicates(subset=["ho_ten"], keep="first").reset_index(drop=True)
+        out.loc[out["khu_vuc"].eq(""), "khu_vuc"] = "Tổng hợp"
+        out = (
+            out[out["ho_ten"].ne("")]
+            .drop_duplicates(subset=["ho_ten", "khu_vuc"], keep="first")
+            .reset_index(drop=True)
+        )
         out["search_key"] = out["ho_ten"].apply(_norm_key)
         _export_cache_sheet(out, "Daily_Driver_Options")
         _export_cache_sheet(out, "Driver_Options")
