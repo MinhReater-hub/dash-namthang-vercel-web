@@ -12,3 +12,6 @@ refresh_data.py
 build_dash_cache.py
 output/cache/*.parquet
 output/cache/XeDangCo_*.pkl
+vietnam_provinces.json
+data/vietnam_provinces.json
+automation/
