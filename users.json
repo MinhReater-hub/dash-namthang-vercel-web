@@ -11,8 +11,8 @@
     "regions": ["*"],
     "display_name": "Tài khoản Chủ Tịch"
   },
-  "phannhuthao": {
-    "password": "363636",
+  "pnthao.ntrg@namthanggroup.vn": {
+    "password": "Mar.nt@123",
     "role": "admin",
     "regions": ["*"],
     "display_name": "Trợ Lý Chủ Tịch"
