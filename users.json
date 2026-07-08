@@ -11,6 +11,12 @@
     "regions": ["*"],
     "display_name": "Tài khoản Chủ Tịch"
   },
+  "phannhuthao": {
+    "password": "363636",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Trợ Lý Chủ Tịch"
+  },
   "nq": {
     "password": "220977",
     "role": "admin",
@@ -22,6 +28,12 @@
     "role": "admin",
     "regions": ["*"],
     "display_name": "Tài khoản Ban Lãnh Đạo"
+  },
+  "tranthimy": {
+    "password": "120422",
+    "role": "admin",
+    "regions": ["*"],
+    "display_name": "Mrs. Mỹ - Ban Kiểm Soát"
   },
   "it": {
     "password": "123",
