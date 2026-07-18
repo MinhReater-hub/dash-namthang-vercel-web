@@ -1124,6 +1124,49 @@ DASH_AUTH_ALLOW_PLAINTEXT = _env_flag("DASH_AUTH_ALLOW_PLAINTEXT", not DASH_AUTH
 DASH_WARM_REQUIRE_TOKEN = _env_flag("DASH_WARM_REQUIRE_TOKEN", DASH_AUTH_STRICT)
 
 
+_MOJIBAKE_MARKERS = (
+    "Ã", "Â", "Ä", "Æ", "áº", "á»", "â€", "ï¿½", "�",
+)
+
+
+def _mojibake_score(value: str) -> int:
+    text = "" if value is None else str(value)
+    return sum(text.count(marker) for marker in _MOJIBAKE_MARKERS)
+
+
+def _repair_utf8_mojibake(value) -> str:
+    """Repair UTF-8 text accidentally decoded as Windows-1252.
+
+    Windows PowerShell 5.1 reads a UTF-8 file without a BOM as the active ANSI
+    code page unless ``-Encoding UTF8`` is supplied. That can turn Vietnamese
+    labels such as ``Tài khoản`` into mojibake before DASH_USERS_JSON reaches
+    Vercel. Only accept a repaired candidate when the marker score improves so
+    already-correct names remain unchanged.
+    """
+    original = "" if value is None else str(value)
+    best = original
+    best_score = _mojibake_score(best)
+    if best_score <= 0:
+        return unicodedata.normalize("NFC", best)
+
+    for _ in range(2):
+        improved = False
+        for source_encoding in ("cp1252", "latin1"):
+            try:
+                candidate = best.encode(source_encoding).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            candidate_score = _mojibake_score(candidate)
+            if candidate_score < best_score:
+                best = candidate
+                best_score = candidate_score
+                improved = True
+                break
+        if not improved or best_score <= 0:
+            break
+    return unicodedata.normalize("NFC", best)
+
+
 def _auth_env_users_text() -> str:
     """Return the Vercel-friendly JSON user store without logging its contents."""
     return str(os.getenv("DASH_USERS_JSON", "") or "").strip()
@@ -1196,7 +1239,7 @@ def _normalize_region_list(values) -> list[str]:
     values = values if isinstance(values, list) else ([values] if values not in [None, ""] else [])
     out = []
     for item in values:
-        canon = canon_region_name(item)
+        canon = canon_region_name(_repair_utf8_mojibake(item))
         if canon is None:
             continue
         canon = str(canon).strip()
@@ -1214,9 +1257,10 @@ def _normalize_auth_user_record(username: str, raw: dict) -> dict:
     role_raw = str(raw.get("role", "")).strip().lower()
     regions_norm = _normalize_region_list(regions)
     is_admin = role_raw in {"admin", "super", "global", "all"} or ("*" in [str(x).strip() for x in regions if x is not None])
+    display_name = _repair_utf8_mojibake(raw.get("display_name") or raw.get("full_name") or username).strip()
     return {
         "username": str(username).strip(),
-        "display_name": str(raw.get("display_name") or raw.get("full_name") or username).strip(),
+        "display_name": display_name,
         "role": "admin" if is_admin else "region",
         "regions": [] if is_admin else regions_norm,
         "password": raw.get("password"),
@@ -11364,6 +11408,9 @@ def page_1(prefix, title=None):
             dbc.Col(make_graph_card(f"{prefix}-p1-pie", f"{prefix}-p1-pie", height="390px"), md=6),
             dbc.Col(make_graph_card(f"{prefix}-p1-advanced", f"{prefix}-p1-advanced", height="390px"), md=6),
         ], className="mb-3 g-3"),
+        dbc.Row([
+            dbc.Col(make_graph_card(f"{prefix}-p1-deepdive", f"{prefix}-p1-deepdive", height="430px"), md=12),
+        ], className="mb-3 g-3"),
     ])
 
 
@@ -12727,9 +12774,275 @@ DATA_STATUS_CONTRAST_HOTFIX_CSS = """
 }
 """
 
+
+DASHBOARD_V2_RESPONSIVE_CSS = """
+/* =====================================================================
+   DASHBOARD V2 - responsive navigation, touch targets and mobile charts.
+   This is the final CSS layer so it can safely override legacy inline-era
+   dashboard rules without changing any data or callback behaviour.
+   ===================================================================== */
+.top-nav-menu-col,
+.top-nav-action-col{
+  flex:0 0 auto !important;
+  width:auto !important;
+}
+.top-nav-title-col{
+  flex:1 1 auto !important;
+  width:auto !important;
+  min-width:0 !important;
+}
+.top-navigation-actions,
+.account-label-shell{
+  min-width:0;
+}
+.account-dropdown .dropdown-toggle{
+  max-width:min(330px, 40vw);
+  min-height:38px;
+  display:inline-flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+}
+.account-display-name{
+  display:inline-block;
+  max-width:190px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  vertical-align:bottom;
+}
+.account-role-badge{
+  display:inline-flex;
+  align-items:center;
+  padding:2px 7px;
+  border-radius:999px;
+  background:#dcfce7;
+  color:#166534;
+  font-size:10px !important;
+  font-weight:900 !important;
+  line-height:1.25;
+  white-space:nowrap;
+}
+.company-brand{
+  flex:0 0 auto;
+  white-space:nowrap;
+}
+.company-brand-compact{
+  display:none;
+}
+.data-status-column{
+  width:100%;
+}
+.data-status-card .data-status-inner > div:first-child{
+  min-width:0;
+}
+.executive-graph-card .modebar{
+  top:6px !important;
+  right:6px !important;
+}
+.executive-table-card .dash-table-container,
+.executive-table-card .dash-spreadsheet-container{
+  max-width:100%;
+  overflow-x:auto !important;
+  -webkit-overflow-scrolling:touch;
+}
+
+@media(max-width:991px){
+  .top-navigation-shell{
+    --bs-gutter-x:0 !important;
+    gap:7px;
+  }
+  .top-navigation-shell #top-title{
+    max-width:none !important;
+  }
+  .account-dropdown .dropdown-toggle{
+    max-width:220px;
+  }
+  .exec-header-card{
+    padding:20px 22px !important;
+  }
+  .exec-chip-row{
+    justify-content:flex-start !important;
+  }
+  .ai-premium-offcanvas.offcanvas-end{
+    width:min(92vw, 500px) !important;
+  }
+  #sidebar.offcanvas-start{
+    width:min(90vw, 380px) !important;
+  }
+}
+
+@media(max-width:768px){
+  #_dash-app-content > .container-fluid{
+    --bs-gutter-x:.85rem;
+    padding-bottom:88px !important;
+  }
+  .top-navigation-shell{
+    position:sticky !important;
+    padding:5px 4px !important;
+    gap:5px;
+  }
+  .top-nav-menu-col,
+  .top-nav-action-col,
+  .top-nav-title-col{
+    padding-left:2px !important;
+    padding-right:2px !important;
+  }
+  .top-navigation-shell #top-title{
+    font-size:11.5px !important;
+    max-width:none !important;
+    width:100%;
+  }
+  .account-dropdown .dropdown-toggle{
+    max-width:none;
+    min-width:42px;
+    min-height:36px;
+    padding:7px 9px !important;
+    border-radius:11px !important;
+  }
+  .account-display-name{
+    display:none !important;
+  }
+  .company-brand-logo{
+    max-width:74px !important;
+    object-fit:contain !important;
+  }
+  .company-brand-wordmark{
+    padding:7px 9px !important;
+    font-size:11px !important;
+  }
+  .data-status-card,
+  .exec-header-card,
+  .executive-control-dock,
+  .executive-filter-panel,
+  .executive-kpi-card,
+  .executive-graph-card,
+  .executive-table-card{
+    border-radius:20px !important;
+  }
+  .data-status-card .card-body{
+    padding:16px !important;
+  }
+  .data-status-inner{
+    align-items:stretch !important;
+    gap:12px !important;
+  }
+  .data-status-cta{
+    min-height:44px;
+    width:100%;
+    justify-content:center;
+  }
+  .data-status-main{
+    font-size:21px !important;
+  }
+  .data-status-caption{
+    line-height:1.45 !important;
+  }
+  .exec-header-card{
+    padding:18px !important;
+    margin-bottom:12px !important;
+  }
+  .exec-title{
+    font-size:22px !important;
+    overflow-wrap:anywhere;
+  }
+  .exec-subtitle{
+    font-size:12px !important;
+    line-height:1.5 !important;
+  }
+  .exec-chip-row{
+    display:flex;
+    flex-wrap:nowrap !important;
+    gap:8px !important;
+    overflow-x:auto;
+    padding:2px 2px 6px;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+  .exec-chip-row::-webkit-scrollbar{display:none;}
+  .summary-pill,
+  .exec-chip{
+    flex:0 0 auto;
+    white-space:nowrap;
+  }
+  .executive-kpi-card .card-body,
+  .executive-graph-card .card-body,
+  .executive-table-card .card-body{
+    padding:14px !important;
+  }
+  .executive-graph-card .dash-graph{
+    height:350px !important;
+    min-height:350px !important;
+  }
+  .executive-graph-card .modebar-btn{
+    width:28px !important;
+    height:28px !important;
+  }
+  .executive-filter-panel .card-body,
+  .executive-control-dock .card-body{
+    padding-left:14px !important;
+    padding-right:14px !important;
+  }
+  .Select-control,
+  .executive-date-picker .DateRangePickerInput{
+    min-height:48px !important;
+  }
+  .page-nav-btn{
+    width:42px !important;
+    height:42px !important;
+    min-width:42px !important;
+    opacity:.88;
+  }
+  .modal-dialog{
+    margin:.5rem !important;
+  }
+  #zoom-graph{
+    height:72vh !important;
+  }
+}
+
+@media(max-width:520px){
+  .account-role-badge{
+    display:none !important;
+  }
+  .company-brand-full{
+    display:none !important;
+  }
+  .company-brand-compact{
+    display:inline !important;
+  }
+  .company-brand-wordmark{
+    min-width:38px;
+    text-align:center;
+    padding:7px 8px !important;
+  }
+  .top-navigation-shell #top-title{
+    font-size:10.5px !important;
+    letter-spacing:.05px !important;
+  }
+  .data-status-pill-row{
+    gap:6px !important;
+  }
+  .data-status-pill{
+    padding:6px 8px !important;
+    font-size:10px !important;
+  }
+  .executive-graph-card .dash-graph{
+    height:330px !important;
+    min-height:330px !important;
+  }
+  .exec-title{
+    font-size:20px !important;
+  }
+  .page-loading-hero{
+    padding:18px !important;
+    border-radius:20px !important;
+  }
+}
+"""
+
 app.index_string = app.index_string.replace(
     "</head>",
-    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{AI_COPILOT_PRO_DOCK_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{PREMIUM_LOADING_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}\n{PREMIUM_DETAIL_TABLE_CSS}\n{DEVELOPER_CREDIT_CSS}\n{PREMIUM_V2_INTERACTION_CSS}\n{PREMIUM_ROUNDED_POLISH_CSS}\n{TOP_NAV_AND_CHART_TITLE_CSS}\n{PREMIUM_TEXT_MASTER_CSS}\n{DATA_STATUS_CONTRAST_HOTFIX_CSS}</style></head>"
+    f"<style>{DROPDOWN_FIX_CSS}\n{PAGINATION_PRO_CSS}\n{AI_CHAT_CSS}\n{AI_COPILOT_PRO_DOCK_CSS}\n{PREMIUM_DATA_STATUS_CSS}\n{AI_LAUNCHER_CSS}\n{PREMIUM_LOADING_CSS}\n{GREEN_UI_CSS}\n{EXECUTIVE_UI_CSS}\n{MENU_TREE_CSS}\n{PREMIUM_FILTER_NAV_CSS}\n{NEXT_LEVEL_HOME_UI_CSS}\n{UI_HOTFIX_DROPDOWN_FONT_CSS}\n{TYPOGRAPHY_UNIFY_CSS}\n{PREMIUM_DETAIL_TABLE_CSS}\n{DEVELOPER_CREDIT_CSS}\n{PREMIUM_V2_INTERACTION_CSS}\n{PREMIUM_ROUNDED_POLISH_CSS}\n{TOP_NAV_AND_CHART_TITLE_CSS}\n{PREMIUM_TEXT_MASTER_CSS}\n{DATA_STATUS_CONTRAST_HOTFIX_CSS}\n{DASHBOARD_V2_RESPONSIVE_CSS}</style></head>"
 )
 
 ZOOM_TARGETS = [
@@ -12741,7 +13054,7 @@ ZOOM_TARGETS = [
 for p in DASH_PREFIXES:
     ZOOM_TARGETS += [f"{p}-p1-kpi1", f"{p}-p1-kpi2", f"{p}-p1-kpi3"]
     ZOOM_TARGETS += [f"{p}-kpi1", f"{p}-kpi2", f"{p}-kpi3"]
-    ZOOM_TARGETS += [f"{p}-p1-line-kv", f"{p}-p1-line", f"{p}-p1-bar", f"{p}-p1-pie", f"{p}-p1-advanced"]
+    ZOOM_TARGETS += [f"{p}-p1-line-kv", f"{p}-p1-line", f"{p}-p1-bar", f"{p}-p1-pie", f"{p}-p1-advanced", f"{p}-p1-deepdive"]
     ZOOM_TARGETS += [f"{p}-p2-line", f"{p}-p2-bar", f"{p}-p2-pie"]
 
 def _zoomable_wrap(kind: str, target: str):
@@ -12871,13 +13184,15 @@ app.layout = dbc.Container(
         dbc.Row([
             dbc.Col(
                 dbc.Button([ICON_MENU], id="open-menu", color="secondary", outline=True, className="me-2"),
-                width="auto"
+                width="auto",
+                className="top-nav-menu-col"
             ),
             dbc.Col(
                 html.Div(
                     id="top-title",
                     style={"fontSize": "18px", "fontWeight": "700", "letterSpacing": "1px", "color": TEXT_LIGHT_UI}
-                )
+                ),
+                className="top-nav-title-col"
             ),
             dbc.Col(
                 html.Div(
@@ -12891,7 +13206,7 @@ app.layout = dbc.Container(
                         ),
                         dbc.DropdownMenu(
                             id="account-menu",
-                            label=html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2")], className="d-inline-flex align-items-center"),
+                            label=html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2 account-display-name")], className="d-inline-flex align-items-center account-label-shell"),
                             children=[
                                 dbc.DropdownMenuItem([fa_icon("fa-id-card", 13, "#166534"), html.Span(" Thông tin tài khoản", className="ms-2")], id="account-info-open", n_clicks=0),
                                 dbc.DropdownMenuItem([fa_icon("fa-shield-halved", 13, "#166534"), html.Span(" Phạm vi truy cập", className="ms-2")], id="account-scope-open", n_clicks=0),
@@ -12913,6 +13228,7 @@ app.layout = dbc.Container(
                         ),
                         html.Img(
                             src=COMPANY_LOGO_SRC,
+                            className="company-brand company-brand-logo",
                             style={
                                 "height": "54px",
                                 "width": "auto",
@@ -12924,7 +13240,11 @@ app.layout = dbc.Container(
                                 "boxShadow": f"0 4px 14px {GREEN_SHADOW}"
                             }
                         ) if COMPANY_LOGO_SRC else html.Div(
-                            "NAM THANG GROUP",
+                            [
+                                html.Span("NAM THANG GROUP", className="company-brand-full"),
+                                html.Span("NTG", className="company-brand-compact"),
+                            ],
+                            className="company-brand company-brand-wordmark",
                             style={
                                 "fontWeight": "900",
                                 "fontSize": "14px",
@@ -12937,11 +13257,12 @@ app.layout = dbc.Container(
                             }
                         )
                     ],
-                    className="d-flex align-items-center justify-content-end gap-2"
+                    className="d-flex align-items-center justify-content-end gap-2 top-navigation-actions"
                 ),
-                width="auto"
+                width="auto",
+                className="top-nav-action-col"
             )
-        ], className="my-2 align-items-center top-navigation-shell"),
+        ], className="my-2 align-items-center flex-nowrap top-navigation-shell"),
 
         dbc.Modal(
             [
@@ -12990,9 +13311,10 @@ app.layout = dbc.Container(
                     className="data-status-card"
                 ),
                 md=12,
-                lg=8
+                lg=12,
+                className="data-status-column"
             )
-        ], className="mb-3"),
+        ], className="mb-3 data-status-row"),
 
         dbc.Offcanvas(
             id="sidebar",
@@ -14501,6 +14823,203 @@ for _advanced_prefix in DASH_PREFIXES:
         if menu != _prefix or page_value != 1:
             raise PreventUpdate
         fig, rows, meta = _build_p1_advanced_chart(_prefix, filters, theme or "light")
+        return fig, pack_fig_store(fig, rows=rows, meta=meta)
+
+
+def _build_p1_deepdive_chart(prefix: str, filters: dict | None, theme: str):
+    """Build a decision-oriented sixth chart for every Page 1 menu.
+
+    Time-based datasets receive a compact momentum view (monthly value, rolling
+    three-period average and month-over-month growth). Fleet datasets have no
+    time filter, so they receive a scale-versus-diversity quadrant instead.
+    """
+    theme = theme or "light"
+    cfg = get_menu_config(prefix)
+    dff, context = _advanced_p1_filter_frame(prefix, filters)
+    caption = _advanced_filter_caption(context)
+    metric_col = cfg.get("value_col")
+    metric_label = cfg.get("metric_label", "Giá trị")
+
+    if dff is None or dff.empty or not metric_col or metric_col not in dff.columns:
+        fig = empty_figure(f"Không có dữ liệu chuyên sâu {metric_label.lower()}", theme)
+        return fig, [], {"chart": "deepdive_empty", "metric_label": metric_label}
+
+    if prefix in FLEET_MENU_PREFIXES:
+        fleet = dff.copy(deep=False)
+        if "khu_vuc" not in fleet.columns:
+            fleet = fleet.copy()
+            fleet["khu_vuc"] = "Tổng hợp"
+        if "loai_xe" not in fleet.columns:
+            fleet = fleet.copy()
+            fleet["loai_xe"] = "Tổng xe"
+        fleet[metric_col] = pd.to_numeric(fleet[metric_col], errors="coerce").fillna(0)
+        grouped = (
+            fleet.groupby("khu_vuc", as_index=False)
+            .agg(metric_value=(metric_col, "sum"), type_diversity=("loai_xe", "nunique"))
+        )
+        grouped = grouped[grouped["metric_value"] > 0].sort_values("metric_value", ascending=False).reset_index(drop=True)
+        if grouped.empty:
+            fig = empty_figure("Không có dữ liệu ma trận quy mô đội xe", theme)
+            return fig, [], {"chart": "fleet_scale_diversity_empty", "metric_label": metric_label}
+
+        total = float(grouped["metric_value"].sum())
+        grouped["share_pct"] = grouped["metric_value"] / total * 100.0 if total > 0 else 0.0
+        grouped["metric_fmt"] = grouped["metric_value"].apply(fmt_vn)
+        grouped["share_fmt"] = grouped["share_pct"].apply(lambda value: f"{float(value):.1f}%")
+        max_value = max(float(grouped["metric_value"].max()), 1.0)
+        size_ref = 2.0 * max_value / (58.0 ** 2)
+        labels = grouped["khu_vuc"].where(grouped.index < 12, "")
+
+        fig = go.Figure(
+            go.Scatter(
+                x=grouped["metric_value"],
+                y=grouped["type_diversity"],
+                mode="markers+text",
+                text=labels,
+                textposition="top center",
+                textfont={"size": 10},
+                customdata=grouped[["khu_vuc", "metric_fmt", "share_fmt", "type_diversity"]].to_numpy(),
+                marker={
+                    "size": grouped["metric_value"],
+                    "sizemode": "area",
+                    "sizeref": size_ref,
+                    "sizemin": 11,
+                    "color": grouped["share_pct"],
+                    "colorscale": [[0, "#bbf7d0"], [0.55, "#22c55e"], [1, "#14532d"]],
+                    "showscale": True,
+                    "colorbar": {"title": "Tỷ trọng", "ticksuffix": "%", "thickness": 12},
+                    "line": {"color": "#ffffff", "width": 1.5},
+                    "opacity": 0.88,
+                },
+                hovertemplate=(
+                    "Khu vực: %{customdata[0]}<br>"
+                    f"{metric_label}: %{{customdata[1]}}<br>"
+                    "Tỷ trọng: %{customdata[2]}<br>"
+                    "Số nhóm xe: %{customdata[3]}<extra></extra>"
+                ),
+                cliponaxis=False,
+                name="Khu vực",
+            )
+        )
+        median_value = float(grouped["metric_value"].median())
+        median_diversity = float(grouped["type_diversity"].median())
+        fig.add_vline(x=median_value, line_width=1.2, line_dash="dash", line_color="#94a3b8")
+        fig.add_hline(y=median_diversity, line_width=1.2, line_dash="dash", line_color="#94a3b8")
+        fig.add_annotation(
+            x=1,
+            y=1,
+            xref="paper",
+            yref="paper",
+            text="Quy mô cao • Cơ cấu đa dạng",
+            showarrow=False,
+            xanchor="right",
+            yanchor="top",
+            font={"size": 10, "color": "#166534" if theme == "light" else "#86efac"},
+            bgcolor="rgba(220,252,231,.82)" if theme == "light" else "rgba(20,83,45,.72)",
+            borderpad=5,
+        )
+        title = f"Ma trận quy mô × đa dạng đội xe • {metric_label}<br>{caption}"
+        fig = apply_exec_layout(fig, theme=theme, title=title, top=220, x_title=metric_label, y_title="Số nhóm loại xe")
+        fig.update_xaxes(rangemode="tozero")
+        fig.update_yaxes(rangemode="tozero", dtick=1)
+        rows = grouped.to_dict("records")
+        return fig, rows, {"chart": "fleet_scale_diversity", "metric_label": metric_label, "series_field": "khu_vuc"}
+
+    if "thang_nam_vn" not in dff.columns:
+        fig = empty_figure(f"Không có trục thời gian cho {metric_label.lower()}", theme)
+        return fig, [], {"chart": "momentum_empty", "metric_label": metric_label}
+
+    monthly = dff[["thang_nam_vn", metric_col]].copy()
+    monthly["thang_nam_vn"] = pd.to_datetime(monthly["thang_nam_vn"], errors="coerce")
+    monthly[metric_col] = pd.to_numeric(monthly[metric_col], errors="coerce").fillna(0)
+    monthly = monthly.dropna(subset=["thang_nam_vn"])
+    grouped = monthly.groupby("thang_nam_vn", as_index=False)[metric_col].sum().sort_values("thang_nam_vn")
+    if grouped.empty:
+        fig = empty_figure(f"Không có dữ liệu động lượng {metric_label.lower()}", theme)
+        return fig, [], {"chart": "momentum_empty", "metric_label": metric_label}
+
+    grouped["rolling_3"] = grouped[metric_col].rolling(window=3, min_periods=1).mean()
+    grouped["mom_pct"] = grouped[metric_col].pct_change(fill_method=None) * 100.0
+    grouped["mom_pct"] = grouped["mom_pct"].replace([np.inf, -np.inf], np.nan)
+    total_periods = len(grouped)
+    grouped = grouped.tail(18).copy()
+    grouped["thang_label"] = grouped["thang_nam_vn"].dt.strftime("%m/%Y")
+    grouped["metric_fmt"] = grouped[metric_col].apply(fmt_vn)
+    grouped["rolling_fmt"] = grouped["rolling_3"].apply(fmt_vn)
+    grouped["mom_fmt"] = grouped["mom_pct"].apply(lambda value: "—" if pd.isna(value) else f"{float(value):+.1f}%")
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Bar(
+            x=grouped["thang_nam_vn"],
+            y=grouped[metric_col],
+            name=metric_label,
+            marker={"color": GREEN_PRIMARY, "line": {"color": "#166534", "width": 0.5}},
+            customdata=grouped[["metric_fmt"]].to_numpy(),
+            hovertemplate=f"Tháng: %{{x|%m/%Y}}<br>{metric_label}: %{{customdata[0]}}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["thang_nam_vn"],
+            y=grouped["rolling_3"],
+            name="Trung bình trượt 3 kỳ",
+            mode="lines+markers",
+            line={"color": NAVY_PRIMARY, "width": 3},
+            marker={"size": 6, "color": "#ffffff", "line": {"color": NAVY_PRIMARY, "width": 2}},
+            customdata=grouped[["rolling_fmt"]].to_numpy(),
+            hovertemplate="Tháng: %{x|%m/%Y}<br>MA3: %{customdata[0]}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["thang_nam_vn"],
+            y=grouped["mom_pct"],
+            name="Tăng trưởng MoM",
+            mode="lines+markers",
+            line={"color": "#f59e0b", "width": 2, "dash": "dot"},
+            marker={"size": 7, "color": "#f59e0b"},
+            customdata=grouped[["mom_fmt"]].to_numpy(),
+            hovertemplate="Tháng: %{x|%m/%Y}<br>MoM: %{customdata[0]}<extra></extra>",
+            connectgaps=False,
+        ),
+        secondary_y=True,
+    )
+    scope_note = "18 kỳ gần nhất" if total_periods > 18 else f"{total_periods} kỳ dữ liệu"
+    title = f"Động lượng {metric_label} • Giá trị, MA3 và tăng trưởng tháng<br>{caption} • {scope_note}"
+    fig = apply_exec_layout(fig, theme=theme, title=title, top=225, x_title="Tháng")
+    fig = apply_time_axis(fig)
+    fig.update_yaxes(title_text=metric_label, rangemode="tozero", secondary_y=False)
+    fig.update_yaxes(title_text="Tăng trưởng MoM", ticksuffix="%", showgrid=False, zeroline=True, zerolinecolor="#cbd5e1", secondary_y=True)
+    fig.update_layout(
+        hovermode="x unified",
+        bargap=0.28,
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.10, "xanchor": "left", "x": 0},
+    )
+    rows = grouped.to_dict("records")
+    return fig, rows, {"chart": "momentum_ma3_mom", "metric_label": metric_label, "series_field": "thang_label"}
+
+
+for _deepdive_prefix in DASH_PREFIXES:
+    @app.callback(
+        Output(f"{_deepdive_prefix}-p1-deepdive", "figure"),
+        Output({"type": "zoom-store", "target": f"{_deepdive_prefix}-p1-deepdive"}, "data"),
+        Input(f"filters-{_deepdive_prefix}-p1", "data"),
+        Input("theme", "data"),
+        State("menu", "data"),
+        State("page", "data"),
+        prevent_initial_call=False,
+    )
+    def _update_p1_deepdive_chart(filters, theme, menu, page, _prefix=_deepdive_prefix):
+        try:
+            page_value = int(page)
+        except Exception:
+            page_value = 0
+        if menu != _prefix or page_value != 1:
+            raise PreventUpdate
+        fig, rows, meta = _build_p1_deepdive_chart(_prefix, filters, theme or "light")
         return fig, pack_fig_store(fig, rows=rows, meta=meta)
 
 
@@ -18780,17 +19299,17 @@ def _account_modal_content(user: dict | None, mode: str = "info"):
 def update_account_panel(_pathname, _n_intervals):
     user = current_auth_user()
     if not isinstance(user, dict):
-        return html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2")], className="d-inline-flex align-items-center")
-    display_name = str(user.get("display_name") or user.get("username") or "Tài khoản").strip()
+        return html.Span([fa_icon("fa-user-shield", 13, "#166534"), html.Span("Tài khoản", className="ms-2 account-display-name")], className="d-inline-flex align-items-center account-label-shell")
+    display_name = _repair_utf8_mojibake(user.get("display_name") or user.get("username") or "Tài khoản").strip()
     role = str(user.get("role", "region")).strip().lower()
     badge = "Admin" if role == "admin" else "Khu vực"
     return html.Span(
         [
             fa_icon("fa-user-shield" if role == "admin" else "fa-user", 13, "#166534"),
-            html.Span(display_name, className="ms-2", style={"maxWidth": "180px", "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap", "display": "inline-block", "verticalAlign": "bottom"}),
-            html.Span(badge, className="ms-2", style={"fontSize": "10px", "fontWeight": 900, "padding": "2px 6px", "borderRadius": "999px", "background": "#dcfce7", "color": "#166534"}),
+            html.Span(display_name, className="ms-2 account-display-name"),
+            html.Span(badge, className="ms-2 account-role-badge"),
         ],
-        className="d-inline-flex align-items-center",
+        className="d-inline-flex align-items-center account-label-shell",
     )
 
 
