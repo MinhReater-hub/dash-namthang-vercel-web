@@ -175,6 +175,10 @@ DASH_ZOOM_COMPACT_FIGURE = str(os.getenv("DASH_ZOOM_COMPACT_FIGURE", "1" if DASH
 DASH_ZOOM_OPEN_CACHE_MAX = int(os.getenv("DASH_ZOOM_OPEN_CACHE_MAX", "96" if DASH_SERVERLESS_FAST_PRESET else "160"))
 DASH_ZOOM_DRILL_CACHE_MAX = int(os.getenv("DASH_ZOOM_DRILL_CACHE_MAX", "160" if DASH_SERVERLESS_FAST_PRESET else "256"))
 DASH_DAILY_LOAD_SEAT_DATA = str(os.getenv("DASH_DAILY_LOAD_SEAT_DATA", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+# Pre-aggregated Daily caches already contain one row per report dimension.
+# Keep the legacy groupby path as a fallback for raw/duplicate inputs, but skip
+# thousands of Python aggregation calls when the cache contract is satisfied.
+DASH_FAST_PREAGGREGATED_DAILY = str(os.getenv("DASH_FAST_PREAGGREGATED_DAILY", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Daily menu speed mode: avoid duplicated Plotly figure payloads in hidden zoom stores.
 # The browser already has the visible graph figure, so zoom retrieves it lazily on click.
 DASH_DAILY_LAZY_ZOOM_FIGURES = str(os.getenv("DASH_DAILY_LAZY_ZOOM_FIGURES", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -618,7 +622,7 @@ def _cache_file_candidates_boot_fast(sheet_name: str) -> list[Path]:
     for name in names:
         if not str(name).strip():
             continue
-        for suffix in (".parquet", ".feather", ".pkl"):
+        for suffix in (".parquet", ".feather", ".pkl.gz", ".pkl"):
             fp = DASH_CACHE_DIR / f"{name}{suffix}"
             key = str(fp)
             if key not in seen:
@@ -847,6 +851,8 @@ def _cache_file_candidates(sheet_name: str) -> list[Path]:
             continue
         out.append(DASH_CACHE_DIR / f"{name}.parquet")
         out.append(DASH_CACHE_DIR / f"{name}.feather")
+        # Prefer the compressed pickle over a legacy raw pickle when both exist.
+        out.append(DASH_CACHE_DIR / f"{name}.pkl.gz")
         out.append(DASH_CACHE_DIR / f"{name}.pkl")
     seen = set()
     unique = []
@@ -946,6 +952,8 @@ def _parse_cached_sheet(sheet_name: str) -> pd.DataFrame | None:
                 out = pd.read_parquet(fp)
             elif suffix == ".feather":
                 out = pd.read_feather(fp)
+            elif fp.name.lower().endswith(".pkl.gz"):
+                out = pd.read_pickle(fp, compression="gzip")
             elif suffix == ".pkl":
                 out = pd.read_pickle(fp)
             else:
@@ -1109,6 +1117,17 @@ def _env_flag(name: str, default: bool = False) -> bool:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
 
+
+DASH_PRODUCTION = _env_flag("DASH_PRODUCTION", _env_flag("VERCEL", False))
+DASH_AUTH_STRICT = _env_flag("DASH_AUTH_STRICT", DASH_PRODUCTION)
+DASH_AUTH_ALLOW_PLAINTEXT = _env_flag("DASH_AUTH_ALLOW_PLAINTEXT", not DASH_AUTH_STRICT)
+DASH_WARM_REQUIRE_TOKEN = _env_flag("DASH_WARM_REQUIRE_TOKEN", DASH_AUTH_STRICT)
+
+
+def _auth_env_users_text() -> str:
+    """Return the Vercel-friendly JSON user store without logging its contents."""
+    return str(os.getenv("DASH_USERS_JSON", "") or "").strip()
+
 def _auth_users_candidates() -> list[Path]:
     out = []
     env_path = os.getenv("DASH_USERS_FILE")
@@ -1130,6 +1149,10 @@ def _auth_users_candidates() -> list[Path]:
     return [Path(x) for x in seen]
 
 def _default_user_store() -> dict:
+    if DASH_AUTH_STRICT:
+        # Production must be configured with password hashes. Never expose a
+        # predictable fallback administrator when strict mode is enabled.
+        return {}
     return {
         "admin": {
             "display_name": "Quản trị tổng",
@@ -1139,10 +1162,13 @@ def _default_user_store() -> dict:
         }
     }
 
-AUTH_USER_STORE_CACHE = {"signature": None, "source": None, "users": None}
+AUTH_USER_STORE_CACHE = {"signature": None, "source": None, "users": None, "error": None}
 
 
 def _auth_user_store_signature():
+    env_text = _auth_env_users_text()
+    if env_text:
+        return ("environment", hashlib.sha256(env_text.encode("utf-8")).hexdigest())
     for candidate in _auth_users_candidates():
         try:
             if candidate.exists():
@@ -1150,7 +1176,7 @@ def _auth_user_store_signature():
                 return ("file", str(candidate.resolve()), int(st.st_size), int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))))
         except Exception:
             continue
-    return ("default", str(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")))
+    return ("default", bool(DASH_AUTH_STRICT), str(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")))
 
 
 def _auth_store_source() -> str:
@@ -1158,7 +1184,9 @@ def _auth_store_source() -> str:
     if AUTH_USER_STORE_CACHE.get("signature") == sig and AUTH_USER_STORE_CACHE.get("source"):
         return AUTH_USER_STORE_CACHE["source"]
     source = "default"
-    if sig and len(sig) >= 2 and sig[0] == "file":
+    if sig and len(sig) >= 1 and sig[0] == "environment":
+        source = "environment"
+    elif sig and len(sig) >= 2 and sig[0] == "file":
         source = str(sig[1])
     AUTH_USER_STORE_CACHE["signature"] = sig
     AUTH_USER_STORE_CACHE["source"] = source
@@ -1202,24 +1230,46 @@ def load_auth_user_store() -> dict:
         return AUTH_USER_STORE_CACHE["users"]
 
     store = None
-    for candidate in _auth_users_candidates():
+    source = "default"
+    config_error = None
+    env_text = _auth_env_users_text()
+    if env_text:
         try:
-            if candidate.exists():
-                store = json.loads(candidate.read_text(encoding="utf-8"))
-                break
-        except Exception:
-            continue
+            store = json.loads(env_text)
+            if not isinstance(store, dict):
+                raise ValueError("DASH_USERS_JSON phải là một JSON object.")
+            source = "environment"
+        except Exception as exc:
+            config_error = f"DASH_USERS_JSON không hợp lệ: {exc}"
+            store = {} if DASH_AUTH_STRICT else None
+
+    if store is None:
+        for candidate in _auth_users_candidates():
+            try:
+                if candidate.exists():
+                    store = json.loads(candidate.read_text(encoding="utf-8"))
+                    source = str(candidate.resolve())
+                    break
+            except Exception as exc:
+                config_error = f"Không đọc được cấu hình tài khoản: {exc}"
+                if DASH_AUTH_STRICT:
+                    store = {}
+                    break
     if store is None:
         store = _default_user_store()
     users = {}
     if isinstance(store, dict):
         for username, payload in store.items():
             rec = _normalize_auth_user_record(username, payload if isinstance(payload, dict) else {})
+            has_secure_password = bool(str(rec.get("password_hash") or "").strip())
+            if DASH_AUTH_STRICT and not has_secure_password:
+                continue
             if rec["username"] and rec.get("is_active", True):
                 users[rec["username"]] = rec
     AUTH_USER_STORE_CACHE["signature"] = sig
-    AUTH_USER_STORE_CACHE["source"] = "default" if not sig or sig[0] != "file" else str(sig[1])
+    AUTH_USER_STORE_CACHE["source"] = source
     AUTH_USER_STORE_CACHE["users"] = users
+    AUTH_USER_STORE_CACHE["error"] = config_error
     return users
 
 def _verify_password(user_record: dict, password: str) -> bool:
@@ -1233,9 +1283,27 @@ def _verify_password(user_record: dict, password: str) -> bool:
         except Exception:
             return False
     plain = user_record.get("password")
-    if plain is None:
+    if plain is None or not DASH_AUTH_ALLOW_PLAINTEXT:
         return False
     return hmac.compare_digest(str(plain), raw_password)
+
+
+def _auth_configuration_message() -> str | None:
+    load_auth_user_store()
+    if AUTH_USER_STORE_CACHE.get("error"):
+        return "Cấu hình đăng nhập chưa hợp lệ. Vui lòng kiểm tra DASH_USERS_JSON."
+    if DASH_AUTH_STRICT and not AUTH_USER_STORE_CACHE.get("users"):
+        return "Chưa cấu hình tài khoản bảo mật cho môi trường production."
+    return None
+
+
+def _auth_source_label() -> str:
+    source = _auth_store_source()
+    if source == "environment":
+        return "Biến môi trường bảo mật"
+    if source == "default":
+        return "Tài khoản mặc định (chỉ local)"
+    return "Tệp tài khoản"
 
 def current_auth_user() -> dict | None:
     if not has_request_context():
@@ -1492,12 +1560,15 @@ LOGIN_PAGE_TEMPLATE = """
       {% if error %}
       <div class="error">{{ error }}</div>
       {% endif %}
+      {% if auth_config_error %}
+      <div class="error">{{ auth_config_error }}</div>
+      {% endif %}
       <label for="username">Tài khoản</label>
       <input id="username" name="username" type="text" autocomplete="username" placeholder="Nhập tài khoản" required>
       <label for="password">Mật khẩu</label>
       <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" required>
       <button type="submit">Đăng nhập vào dashboard</button>
-      {% if default_hint %}
+      {% if default_hint and not auth_config_error %}
       <div class="hint"><strong>Lưu ý:</strong> Chưa tìm thấy file <code>users.json</code>, hệ thống đang dùng user mặc định để bạn test nhanh: <strong>admin / admin123</strong>. Hãy tạo file <code>users.json</code> trước khi public.</div>
       {% endif %}
     </form>
@@ -3091,15 +3162,61 @@ def _prepare_daily_checker_menu_df(raw_df: pd.DataFrame | None, category_candida
         return float(s.fillna("").astype(str).str.strip().replace({"": pd.NA}).dropna().nunique())
 
     group_cols = ["ngay_du_lieu", "thang_nam", "khu_vuc"] + ([category_name] if category_name else [])
-    out = work.groupby(group_cols, as_index=False, dropna=False).agg(
-        tong_doanh_thu=("tong_doanh_thu", "sum"),
-        tong_so_cuoc=("tong_so_cuoc", "sum"),
-        sokm_vandoanh=("sokm_vandoanh", "sum"),
-        sokm_cokhach=("sokm_cokhach", "sum"),
-        so_xe=("so_xe_raw", _count_or_nunique),
-        so_tai_xe=("so_tai_xe_raw", _count_or_nunique),
-        so_tai=("so_tai_raw", _count_or_nunique),
-    )
+    metric_cols = ["tong_doanh_thu", "tong_so_cuoc", "sokm_vandoanh", "sokm_cokhach"]
+    count_source_map = {
+        "so_xe_raw": "so_xe",
+        "so_tai_xe_raw": "so_tai_xe",
+        "so_tai_raw": "so_tai",
+    }
+
+    # refresh_data.py exports these sheets pre-aggregated. For that contract,
+    # each grouping key is unique and each count field is already numeric, so a
+    # second groupby with a Python callable is redundant. The guarded fast path
+    # is exact for that shape; raw/duplicate/text identifier inputs still use the
+    # original aggregation below.
+    numeric_count_work = None
+    count_columns_fully_numeric = bool(DASH_FAST_PREAGGREGATED_DAILY)
+    if count_columns_fully_numeric:
+        numeric_count_work = work.copy(deep=False)
+        for source_col in count_source_map:
+            raw_values = work[source_col]
+            numeric_values = pd.to_numeric(raw_values, errors="coerce")
+            # All-null means the source column is absent and the legacy result is
+            # zero. Mixed/text identifier columns intentionally fall back.
+            if not (numeric_values.notna().all() or raw_values.isna().all()):
+                count_columns_fully_numeric = False
+                break
+            numeric_count_work[source_col] = numeric_values.fillna(0).astype(float)
+
+    group_keys_are_unique = not work.duplicated(subset=group_cols, keep=False).any()
+    if count_columns_fully_numeric and group_keys_are_unique:
+        out = numeric_count_work[group_cols + metric_cols + list(count_source_map)].copy()
+        out = out.rename(columns=count_source_map)
+        # Match groupby(sort=True) ordering before the common final sort below.
+        out = out.sort_values(group_cols).reset_index(drop=True)
+    elif count_columns_fully_numeric:
+        # A few historical region aliases (for example ST/Sóc Trăng) can merge
+        # after canonicalisation. Built-in sums preserve the original result and
+        # avoid invoking a Python aggregation function once per group/column.
+        out = numeric_count_work.groupby(group_cols, as_index=False, dropna=False).agg(
+            tong_doanh_thu=("tong_doanh_thu", "sum"),
+            tong_so_cuoc=("tong_so_cuoc", "sum"),
+            sokm_vandoanh=("sokm_vandoanh", "sum"),
+            sokm_cokhach=("sokm_cokhach", "sum"),
+            so_xe=("so_xe_raw", "sum"),
+            so_tai_xe=("so_tai_xe_raw", "sum"),
+            so_tai=("so_tai_raw", "sum"),
+        )
+    else:
+        out = work.groupby(group_cols, as_index=False, dropna=False).agg(
+            tong_doanh_thu=("tong_doanh_thu", "sum"),
+            tong_so_cuoc=("tong_so_cuoc", "sum"),
+            sokm_vandoanh=("sokm_vandoanh", "sum"),
+            sokm_cokhach=("sokm_cokhach", "sum"),
+            so_xe=("so_xe_raw", _count_or_nunique),
+            so_tai_xe=("so_tai_xe_raw", _count_or_nunique),
+            so_tai=("so_tai_raw", _count_or_nunique),
+        )
     out["doanh_thu_binh_quan_cuoc"] = out["tong_doanh_thu"] / out["tong_so_cuoc"].replace(0, 1)
     out["doanh_thu_binh_quan_xe"] = out["tong_doanh_thu"] / out["so_xe"].replace(0, 1)
     out["cuoc_binh_quan_xe"] = out["tong_so_cuoc"] / out["so_xe"].replace(0, 1)
@@ -6890,13 +7007,21 @@ def _apply_export_filters(menu: str, page: int, filt: dict) -> pd.DataFrame:
 FA_CDN = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
 
 server = Flask(__name__)
-server.secret_key = os.getenv("SECRET_KEY", "change-this-secret-key-before-production")
+_secret_key = str(os.getenv("SECRET_KEY", "") or "").strip()
+_insecure_secret_values = {
+    "",
+    "change-this-secret-key-before-production",
+    "change-me-to-a-long-random-secret",
+    "change-me",
+}
+if DASH_AUTH_STRICT and (_secret_key.lower() in _insecure_secret_values or len(_secret_key) < 32):
+    raise RuntimeError("Production requires a strong SECRET_KEY environment variable.")
+server.secret_key = _secret_key or "change-this-secret-key-before-production"
 server.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=_env_flag("SESSION_COOKIE_SECURE", DASH_AUTH_STRICT),
 )
-if _env_flag("SESSION_COOKIE_SECURE", False):
-    server.config["SESSION_COOKIE_SECURE"] = True
 
 @server.after_request
 def add_fast_cache_headers(response):
@@ -6904,6 +7029,14 @@ def add_fast_cache_headers(response):
         path = request.path or ""
         if path.startswith("/assets/") or path == "/company-logo":
             response.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
+        elif path in {"/login", "/logout"}:
+            response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if DASH_AUTH_STRICT:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     except Exception:
         pass
     return response
@@ -6961,9 +7094,11 @@ def warm_endpoint():
     không thay đổi session/filter/UI/logic dashboard.
     """
     token = str(os.getenv("DASH_WARM_TOKEN", "")).strip()
-    if token:
+    if DASH_WARM_REQUIRE_TOKEN and not token:
+        return {"ok": False, "error": "warm_token_not_configured"}, 503
+    if token or DASH_WARM_REQUIRE_TOKEN:
         incoming = str(request.args.get("token", "")).strip()
-        if not hmac.compare_digest(incoming, token):
+        if not token or not hmac.compare_digest(incoming, token):
             return {"ok": False, "error": "forbidden"}, 403
 
     if request.method == "HEAD":
@@ -7073,6 +7208,7 @@ def login():
         users = load_auth_user_store()
         user_record = users.get(username)
         if user_record and _verify_password(user_record, password):
+            session.clear()
             session["dash_auth_user"] = {
                 "username": user_record["username"],
                 "display_name": user_record.get("display_name") or user_record["username"],
@@ -7098,6 +7234,7 @@ def login():
         error=error_msg,
         next_path=next_path,
         default_hint=_auth_store_source() == "default",
+        auth_config_error=_auth_configuration_message(),
     )
 
 @server.get("/logout")
@@ -11225,6 +11362,7 @@ def page_1(prefix, title=None):
         ], className="mb-3 g-3"),
         dbc.Row([
             dbc.Col(make_graph_card(f"{prefix}-p1-pie", f"{prefix}-p1-pie", height="390px"), md=6),
+            dbc.Col(make_graph_card(f"{prefix}-p1-advanced", f"{prefix}-p1-advanced", height="390px"), md=6),
         ], className="mb-3 g-3"),
     ])
 
@@ -12603,7 +12741,7 @@ ZOOM_TARGETS = [
 for p in DASH_PREFIXES:
     ZOOM_TARGETS += [f"{p}-p1-kpi1", f"{p}-p1-kpi2", f"{p}-p1-kpi3"]
     ZOOM_TARGETS += [f"{p}-kpi1", f"{p}-kpi2", f"{p}-kpi3"]
-    ZOOM_TARGETS += [f"{p}-p1-line-kv", f"{p}-p1-line", f"{p}-p1-bar", f"{p}-p1-pie"]
+    ZOOM_TARGETS += [f"{p}-p1-line-kv", f"{p}-p1-line", f"{p}-p1-bar", f"{p}-p1-pie", f"{p}-p1-advanced"]
     ZOOM_TARGETS += [f"{p}-p2-line", f"{p}-p2-bar", f"{p}-p2-pie"]
 
 def _zoomable_wrap(kind: str, target: str):
@@ -14113,6 +14251,258 @@ def _register_simple_menu_callbacks(prefix: str):
 
 for _prefix in EXTRA_DYNAMIC_PREFIXES:
     _register_simple_menu_callbacks(_prefix)
+
+
+def _advanced_p1_filter_frame(prefix: str, filters: dict | None) -> tuple[pd.DataFrame, dict]:
+    """Apply the existing Page 1 filters for the additional executive chart."""
+    ensure_menu_data_loaded(prefix)
+    cfg = get_menu_config(prefix)
+    filters = filters if isinstance(filters, dict) else {}
+    year_val = filters.get("year")
+    months = _normalize_multi_value(filters.get("months"))
+    regions = _normalize_multi_value(filters.get("dims"))
+    type_filter = _normalize_multi_value(filters.get("type_filter"))
+    business_filter = _normalize_multi_value(filters.get("business_filter"))
+    departments = _normalize_multi_value(filters.get("departments"))
+    seat_filter = _normalize_multi_value(filters.get("seat_filter"))
+    kind = cfg.get("type_filter_kind")
+
+    if prefix in HR_MENU_PREFIXES:
+        dff = _hr_filter_df(cfg["df"], year_val, months, regions, departments)
+    elif prefix in FLEET_MENU_PREFIXES:
+        dff = apply_region_scope_to_df(cfg["df"])
+        dff = _latest_fleet_snapshot_df(dff)
+    else:
+        source_df = _lh_business_monthly_source_df() if prefix == "lh" and business_filter else cfg["df"]
+        dff = apply_common_filters(source_df, year_val=year_val, months=months, dims=regions, real_cutoff=True)
+
+    if kind == "lh" and type_filter and LH_COL in dff.columns:
+        dff = dff[dff[LH_COL].astype(str).isin(type_filter)]
+    elif kind == "hd" and type_filter and HD_COL in dff.columns:
+        dff = dff[dff[HD_COL].astype(str).isin(type_filter)]
+    elif kind == "fleet" and type_filter and "loai_xe" in dff.columns:
+        dff = dff[dff["loai_xe"].astype(str).isin(type_filter)]
+
+    if kind == "lh" and business_filter:
+        dff = _apply_lh_business_filter_frame(dff, business_filter)
+
+    if kind == "fleet" and seat_filter and isinstance(dff, pd.DataFrame) and not dff.empty:
+        seat_values = []
+        for value in seat_filter:
+            try:
+                seat_values.append(int(float(value)))
+            except Exception:
+                continue
+        seat_values = sorted({x for x in seat_values if x > 0})
+        seat_col = "so_cho_loc" if "so_cho_loc" in dff.columns else ("so_cho_binh_quan_xe" if "so_cho_binh_quan_xe" in dff.columns else None)
+        if seat_values and seat_col:
+            seats = pd.to_numeric(dff[seat_col], errors="coerce").fillna(0).round().astype(int)
+            dff = dff[seats.isin(seat_values)]
+
+    if prefix in FLEET_MENU_PREFIXES and (dff is None or dff.empty):
+        dff = apply_region_scope_to_df(_fleet_emergency_display_df(prefix, cfg["df"]))
+        dff = _latest_fleet_snapshot_df(dff)
+
+    context = {
+        "year": year_val,
+        "months": months,
+        "regions": regions,
+        "type_filter": type_filter,
+        "business_filter": business_filter,
+        "departments": departments,
+        "seat_filter": seat_filter,
+    }
+    return (dff.copy(deep=False) if isinstance(dff, pd.DataFrame) else pd.DataFrame()), context
+
+
+def _advanced_filter_caption(context: dict) -> str:
+    year_val = context.get("year")
+    months = context.get("months") or []
+    regions = context.get("regions") or []
+    year_text = f"Năm {int(year_val)}" if year_val not in [None, ""] else "Tất cả thời gian"
+    month_text = months[0] if len(months) == 1 else (f"{len(months)} tháng" if months else "Tất cả tháng")
+    region_text = regions[0] if len(regions) == 1 else (f"{len(regions)} khu vực" if regions else "Theo phạm vi tài khoản")
+    return f"{year_text} • {month_text} • {region_text}"
+
+
+def _advanced_heatmap(
+    grouped: pd.DataFrame,
+    row_col: str,
+    col_col: str,
+    value_col: str,
+    title: str,
+    metric_label: str,
+    theme: str,
+) -> go.Figure:
+    if grouped is None or grouped.empty or any(c not in grouped.columns for c in [row_col, col_col, value_col]):
+        return empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+    matrix = grouped.pivot_table(index=row_col, columns=col_col, values=value_col, aggfunc="sum", fill_value=0)
+    if matrix.empty:
+        return empty_figure(f"Không có dữ liệu {metric_label.lower()}", theme)
+    z_values = matrix.to_numpy(dtype=float)
+    formatted = [[fmt_vn(value) if float(value) != 0 else "" for value in row] for row in z_values]
+    hover_values = [[fmt_vn(value) for value in row] for row in z_values]
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z_values,
+            x=[str(x) for x in matrix.columns],
+            y=[str(y) for y in matrix.index],
+            text=formatted,
+            texttemplate="%{text}",
+            textfont={"size": 10},
+            customdata=hover_values,
+            colorscale=[
+                [0.0, "#f0fdf4"],
+                [0.25, "#bbf7d0"],
+                [0.55, "#4ade80"],
+                [0.8, "#16a34a"],
+                [1.0, "#14532d"],
+            ],
+            colorbar={"title": metric_label, "thickness": 12},
+            hovertemplate=f"{row_col}: %{{y}}<br>{col_col}: %{{x}}<br>{metric_label}: %{{customdata}}<extra></extra>",
+        )
+    )
+    fig = apply_exec_layout(fig, theme=theme, title=title, top=210)
+    fig.update_xaxes(showgrid=False, tickangle=-25)
+    fig.update_yaxes(showgrid=False, autorange="reversed")
+    return fig
+
+
+def _build_p1_advanced_chart(prefix: str, filters: dict | None, theme: str):
+    theme = theme or "light"
+    cfg = get_menu_config(prefix)
+    dff, context = _advanced_p1_filter_frame(prefix, filters)
+    caption = _advanced_filter_caption(context)
+    if dff.empty:
+        fig = empty_figure(f"Không có dữ liệu {cfg.get('metric_label', 'phân tích')}", theme)
+        return fig, [], {"chart": "advanced_empty", "metric_label": cfg.get("metric_label", "Giá trị")}
+
+    if prefix in FLEET_MENU_PREFIXES:
+        if "khu_vuc" not in dff.columns:
+            dff = dff.copy()
+            dff["khu_vuc"] = "Tổng hợp"
+        if "loai_xe" not in dff.columns:
+            dff = dff.copy()
+            dff["loai_xe"] = "Tổng xe"
+        metric_col = "so_luong_xe" if "so_luong_xe" in dff.columns else cfg.get("value_col")
+        if not metric_col or metric_col not in dff.columns:
+            fig = empty_figure("Không có dữ liệu số lượng xe", theme)
+            return fig, [], {"chart": "fleet_heatmap", "metric_label": "Số lượng xe"}
+        grouped = dff.groupby(["khu_vuc", "loai_xe"], as_index=False)[metric_col].sum()
+        title = f"Ma trận đội xe • Khu vực × loại xe<br>{caption}"
+        fig = _advanced_heatmap(grouped, "khu_vuc", "loai_xe", metric_col, title, cfg.get("metric_label", "Số lượng xe"), theme)
+        rows = grouped.assign(metric_fmt=grouped[metric_col].apply(fmt_vn)).to_dict("records")
+        return fig, rows, {"chart": "fleet_heatmap", "metric_label": cfg.get("metric_label", "Số lượng xe"), "series_field": "loai_xe"}
+
+    if prefix in HR_MENU_PREFIXES:
+        metric_col = "so_luong_nhan_su"
+        if "thang_nam_vn" not in dff.columns or "khu_vuc" not in dff.columns or metric_col not in dff.columns:
+            fig = empty_figure("Không có dữ liệu ma trận nhân sự", theme)
+            return fig, [], {"chart": "hr_heatmap", "metric_label": cfg.get("metric_label", "Nhân sự")}
+        grouped = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False)[metric_col].sum()
+        grouped["thang_label"] = pd.to_datetime(grouped["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+        title = f"Ma trận nhân sự • Tháng × khu vực<br>{caption}"
+        fig = _advanced_heatmap(grouped, "khu_vuc", "thang_label", metric_col, title, cfg.get("metric_label", "Nhân sự"), theme)
+        rows = grouped.assign(metric_fmt=grouped[metric_col].apply(fmt_vn)).to_dict("records")
+        return fig, rows, {"chart": "hr_heatmap", "metric_label": cfg.get("metric_label", "Nhân sự"), "series_field": "khu_vuc"}
+
+    if prefix == "bb":
+        metric_col = "so_tien_con_no" if "so_tien_con_no" in dff.columns and safe_number(pd.to_numeric(dff["so_tien_con_no"], errors="coerce").fillna(0).sum()) > 0 else cfg.get("value_col")
+        metric_label = "Số tiền chênh lệch" if metric_col == "so_tien_con_no" else cfg.get("metric_label", "Giá trị")
+        if "thang_nam_vn" not in dff.columns or "khu_vuc" not in dff.columns or metric_col not in dff.columns:
+            fig = empty_figure("Không có dữ liệu ma trận biên bản", theme)
+            return fig, [], {"chart": "bb_heatmap", "metric_label": metric_label}
+        grouped = dff.groupby(["thang_nam_vn", "khu_vuc"], as_index=False)[metric_col].sum()
+        grouped["thang_label"] = pd.to_datetime(grouped["thang_nam_vn"], errors="coerce").dt.strftime("%m/%Y")
+        title = f"Ma trận biên bản • Khu vực × tháng<br>{caption}"
+        fig = _advanced_heatmap(grouped, "khu_vuc", "thang_label", metric_col, title, metric_label, theme)
+        rows = grouped.assign(metric_fmt=grouped[metric_col].apply(fmt_vn)).to_dict("records")
+        return fig, rows, {"chart": "bb_heatmap", "metric_label": metric_label, "series_field": "khu_vuc"}
+
+    value_col = cfg.get("value_col")
+    metric_label = cfg.get("metric_label", "Giá trị")
+    if "khu_vuc" not in dff.columns or not value_col or value_col not in dff.columns:
+        fig = empty_figure(f"Không có dữ liệu Pareto {metric_label.lower()}", theme)
+        return fig, [], {"chart": "pareto", "metric_label": metric_label}
+    grouped = dff.groupby("khu_vuc", as_index=False)[value_col].sum()
+    grouped[value_col] = pd.to_numeric(grouped[value_col], errors="coerce").fillna(0)
+    grouped = grouped[grouped[value_col] > 0].sort_values(value_col, ascending=False).reset_index(drop=True)
+    total = float(grouped[value_col].sum()) if not grouped.empty else 0.0
+    if total <= 0:
+        fig = empty_figure(f"Không có dữ liệu Pareto {metric_label.lower()}", theme)
+        return fig, [], {"chart": "pareto", "metric_label": metric_label}
+    grouped["luy_ke_pct"] = grouped[value_col].cumsum() / total * 100.0
+    grouped["metric_fmt"] = grouped[value_col].apply(fmt_vn)
+    grouped["luy_ke_fmt"] = grouped["luy_ke_pct"].apply(lambda value: f"{float(value):.1f}%")
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Bar(
+            x=grouped["khu_vuc"],
+            y=grouped[value_col],
+            name=metric_label,
+            marker_color=GREEN_PRIMARY,
+            customdata=grouped[["metric_fmt"]].to_numpy(),
+            hovertemplate=f"Khu vực: %{{x}}<br>{metric_label}: %{{customdata[0]}}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["khu_vuc"],
+            y=grouped["luy_ke_pct"],
+            name="Tỷ lệ lũy kế",
+            mode="lines+markers+text",
+            line={"color": NAVY_PRIMARY, "width": 3},
+            marker={"size": 7},
+            text=grouped["luy_ke_fmt"] if len(grouped) <= 10 else ["" for _ in range(len(grouped))],
+            textposition="top center",
+            customdata=grouped[["luy_ke_fmt"]].to_numpy(),
+            hovertemplate="Khu vực: %{x}<br>Lũy kế: %{customdata[0]}<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=grouped["khu_vuc"],
+            y=[80.0] * len(grouped),
+            name="Ngưỡng Pareto 80%",
+            mode="lines",
+            line={"color": "#f59e0b", "width": 1.5, "dash": "dash"},
+            hoverinfo="skip",
+        ),
+        secondary_y=True,
+    )
+    title = f"Pareto đóng góp theo khu vực • {metric_label}<br>{caption}"
+    fig = apply_exec_layout(fig, theme=theme, title=title, top=215, x_title="Khu vực")
+    fig.update_yaxes(title_text=metric_label, secondary_y=False)
+    fig.update_yaxes(title_text="Tỷ lệ lũy kế", ticksuffix="%", range=[0, 108], secondary_y=True)
+    fig.update_xaxes(tickangle=-25)
+    fig.update_layout(legend={"orientation": "h", "yanchor": "bottom", "y": 1.10, "xanchor": "left", "x": 0})
+    rows = grouped.to_dict("records")
+    return fig, rows, {"chart": "pareto", "metric_label": metric_label, "series_field": "khu_vuc"}
+
+
+for _advanced_prefix in DASH_PREFIXES:
+    @app.callback(
+        Output(f"{_advanced_prefix}-p1-advanced", "figure"),
+        Output({"type": "zoom-store", "target": f"{_advanced_prefix}-p1-advanced"}, "data"),
+        Input(f"filters-{_advanced_prefix}-p1", "data"),
+        Input("theme", "data"),
+        State("menu", "data"),
+        State("page", "data"),
+        prevent_initial_call=False,
+    )
+    def _update_p1_advanced_chart(filters, theme, menu, page, _prefix=_advanced_prefix):
+        try:
+            page_value = int(page)
+        except Exception:
+            page_value = 0
+        if menu != _prefix or page_value != 1:
+            raise PreventUpdate
+        fig, rows, meta = _build_p1_advanced_chart(_prefix, filters, theme or "light")
+        return fig, pack_fig_store(fig, rows=rows, meta=meta)
+
 
 def _home_prev_period_metrics(dff_full: pd.DataFrame, selected_regions=None, current_month_ts=None):
     base = apply_region_scope_to_df(dff_full)
@@ -18244,8 +18634,7 @@ def _account_info_modal_content(user: dict | None):
     display_name = str(user.get("display_name", username)).strip() or username
     role_label = _account_role_label(user.get("role"))
     regions_label = _account_regions_label(user)
-    source = _auth_store_source()
-    source_label = "users.json" if source != "default" else "Tài khoản mặc định"
+    source_label = _auth_source_label()
 
     cards = [
         ("Tên hiển thị", display_name, "fa-user"),
@@ -18290,8 +18679,7 @@ def _account_scope_modal_content(user: dict | None):
     role = str(user.get("role", "region")).strip().lower()
     is_admin = role == "admin"
     regions = _normalize_region_list(user.get("regions", []))
-    source = _auth_store_source()
-    source_label = "users.json" if source != "default" else "Tài khoản mặc định"
+    source_label = _auth_source_label()
 
     if is_admin:
         scope_title = "Toàn bộ dữ liệu"
@@ -18304,7 +18692,7 @@ def _account_scope_modal_content(user: dict | None):
         )
     else:
         scope_title = "Dữ liệu theo khu vực được phân quyền"
-        scope_desc = "Tài khoản khu vực chỉ xem các dòng dữ liệu thuộc khu vực được cấu hình trong users.json."
+        scope_desc = "Tài khoản khu vực chỉ xem các dòng dữ liệu thuộc khu vực được cấu hình trong nguồn tài khoản bảo mật."
         region_block = html.Div(
             [
                 html.Div("Khu vực được xem", style={"fontSize": "11px", "fontWeight": 900, "color": MUTED_LIGHT_UI, "textTransform": "uppercase", "letterSpacing": ".04em", "marginBottom": "8px"}),

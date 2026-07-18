@@ -7,9 +7,9 @@ Environment variables:
   DASH_EXCEL_FILE / OUTPUT_EXCEL_FILE: source workbook path
   DASH_CACHE_DIR: output cache directory, default output/cache
   DASH_CACHE_SHEETS: optional comma-separated sheet names to cache
-  DASH_CACHE_FORMATS: comma-separated formats: parquet,feather,pkl (default: pkl)
+  DASH_CACHE_FORMATS: comma-separated formats: parquet,feather,pkl.gz,pkl (default: pkl.gz)
 
-The dashboard can read .parquet, .feather, and .pkl from DASH_CACHE_DIR.
+The dashboard can read .parquet, .feather, .pkl.gz, and .pkl from DASH_CACHE_DIR.
 This script is safe for Vercel build steps: if no workbook is found it exits 0.
 """
 from __future__ import annotations
@@ -83,9 +83,9 @@ def write_cache(df: pd.DataFrame, out_base: Path, formats: set[str]) -> dict:
     # Remove stale alternate formats before writing the current cache.
     # This prevents app.py from reading an old .parquet when the new export
     # only succeeds as .pkl/.feather, or vice versa.
-    for suffix in [".parquet", ".feather", ".pkl"]:
+    for suffix in [".parquet", ".feather", ".pkl.gz", ".pkl"]:
         try:
-            fp = out_base.with_suffix(suffix)
+            fp = Path(f"{out_base}{suffix}")
             if fp.exists():
                 fp.unlink()
         except Exception as exc:
@@ -115,6 +115,17 @@ def write_cache(df: pd.DataFrame, out_base: Path, formats: set[str]) -> dict:
         except Exception as exc:
             written["pkl_error"] = str(exc)
 
+    if "pkl.gz" in formats:
+        try:
+            fp = Path(f"{out_base}.pkl.gz")
+            df.to_pickle(
+                fp,
+                compression={"method": "gzip", "compresslevel": 1, "mtime": 0},
+            )
+            written["pkl.gz"] = str(fp)
+        except Exception as exc:
+            written["pkl.gz_error"] = str(exc)
+
     return written
 
 
@@ -129,10 +140,10 @@ def main() -> int:
         "/mnt/data/bao_cao_doanh_thu_tong_hop.xlsx",
     ])
     cache_dir = Path(os.getenv("DASH_CACHE_DIR", "output/cache"))
-    formats = {x.strip().lower() for x in os.getenv("DASH_CACHE_FORMATS", "pkl").split(",") if x.strip()}
-    formats = formats & {"parquet", "feather", "pkl"}
+    formats = {x.strip().lower() for x in os.getenv("DASH_CACHE_FORMATS", "pkl.gz").split(",") if x.strip()}
+    formats = formats & {"parquet", "feather", "pkl.gz", "pkl"}
     if not formats:
-        formats = {"pkl"}
+        formats = {"pkl.gz"}
 
     if excel_file is None:
         print("[dash-cache] No Excel workbook found. Skipping cache build.")
@@ -169,7 +180,20 @@ def main() -> int:
         "sheets": {},
     }
 
+    cache_aliases = {
+        "DiemTiepThi_KV_Thang": "KinhDoanh_DiemTiepThi_KV_Thang",
+        "BienBan_KV_Thang": "KinhDoanh_BienBan_KV_Thang",
+        "XeTrucThuoc_KV_Thang": "PhuongTien_XeTrucThuoc_KV_Thang",
+        "XePhanQuyen_KV_Thang": "PhuongTien_XePhanQuyen_KV_Thang",
+        "XeDangCo_XeTrucThuoc_KV_Ngay": "PhuongTien_XeTrucThuoc_KV_Ngay",
+        "XeDangCo_XePhanQuyen_KV_Ngay": "PhuongTien_XePhanQuyen_KV_Ngay",
+    }
+
     for sheet_name in sheet_names:
+        canonical_name = cache_aliases.get(str(sheet_name))
+        if canonical_name and canonical_name in book.sheet_names:
+            print(f"[dash-cache] Skip duplicate alias {sheet_name}; canonical={canonical_name}")
+            continue
         try:
             t0 = time.perf_counter()
             df = book.parse(sheet_name=sheet_name)
@@ -198,7 +222,7 @@ def main() -> int:
             driver_df = book.parse(sheet_name="DoanhThu_Ngay_TaiXe")
             driver_options = build_driver_options_cache(driver_df)
             driver_info = {"rows": int(len(driver_options)), "cols": int(len(driver_options.columns)), "written": {}, "elapsed_s": None}
-            for name in ["Daily_Driver_Options", "Driver_Options"]:
+            for name in ["Daily_Driver_Options"]:
                 driver_info["written"][name] = write_cache(driver_options, cache_dir / name, formats)
             driver_info["elapsed_s"] = round(time.perf_counter() - t0, 3)
             manifest["sheets"]["Daily_Driver_Options"] = driver_info

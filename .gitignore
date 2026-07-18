@@ -23,6 +23,12 @@ __pycache__/
 .env.local
 .vercel/
 
+# Authentication and local operational files must never be committed.
+users.json
+users.secure.json
+backup-cd/
+ngrok.exe
+
 # =========================
 # Virtual environments
 # =========================

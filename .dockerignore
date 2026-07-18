@@ -5,3 +5,7 @@ __pycache__/
 .env
 .git/
 .gitignore
+ngrok.exe
+backup-cd/
+users.json
+users.secure.json
