@@ -1,26 +1,16 @@
 {
-  "tong": {
-    "password": "Tong@123456",
+  "admin": {
+    "password_hash": "REPLACE_WITH_WERKZEUG_PASSWORD_HASH",
     "role": "admin",
     "regions": ["*"],
-    "display_name": "Tài khoản tổng"
+    "display_name": "Quản trị tổng",
+    "is_active": true
   },
   "cantho": {
-    "password": "CanTho@123456",
+    "password_hash": "REPLACE_WITH_WERKZEUG_PASSWORD_HASH",
     "role": "region",
     "regions": ["Cần Thơ"],
-    "display_name": "Quản lý Cần Thơ"
-  },
-  "haugiang": {
-    "password": "HauGiang@123456",
-    "role": "region",
-    "regions": ["Hậu Giang"],
-    "display_name": "Quản lý Hậu Giang"
-  },
-  "mientay": {
-    "password": "MienTay@123456",
-    "role": "region",
-    "regions": ["Cần Thơ", "Hậu Giang", "Sóc Trăng"],
-    "display_name": "Quản lý Miền Tây"
+    "display_name": "Quản lý Cần Thơ",
+    "is_active": true
   }
 }

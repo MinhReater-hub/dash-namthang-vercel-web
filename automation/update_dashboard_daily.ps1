@@ -219,16 +219,16 @@ function Remove-UnusedTop10Caches {
 
 function Assert-RequiredCaches {
     $requiredCaches = @(
-        "DoanhThu_Thang_KhuVuc.pkl",
-        "DoanhThu_Ngay_Checker.pkl",
-        "DoanhThu_Ngay_TaiXe.pkl",
-        "Daily_Driver_Options.pkl",
-        "KinhDoanh_DiemTiepThi_KV_Thang.pkl",
-        "KinhDoanh_BienBan_KV_Thang.pkl",
-        "NhanSu_NhanVien_KV_Thang.pkl",
-        "NhanSu_TaiXe_KV_Thang.pkl",
-        "PhuongTien_XeTrucThuoc_KV_Ngay.pkl",
-        "PhuongTien_XePhanQuyen_KV_Ngay.pkl"
+        "DoanhThu_Thang_KhuVuc.pkl.gz",
+        "DoanhThu_Ngay_Checker.pkl.gz",
+        "DoanhThu_Ngay_TaiXe.pkl.gz",
+        "Daily_Driver_Options.pkl.gz",
+        "KinhDoanh_DiemTiepThi_KV_Thang.pkl.gz",
+        "KinhDoanh_BienBan_KV_Thang.pkl.gz",
+        "NhanSu_NhanVien_KV_Thang.pkl.gz",
+        "NhanSu_TaiXe_KV_Thang.pkl.gz",
+        "PhuongTien_XeTrucThuoc_KV_Ngay.pkl.gz",
+        "PhuongTien_XePhanQuyen_KV_Ngay.pkl.gz"
     )
 
     $cacheRoot = Join-Path $RepoPath "output\cache"

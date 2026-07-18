@@ -87,14 +87,14 @@ CACHE_DIR = Path(os.getenv("OUTPUT_CACHE_DIR", str(BASE_DIR / "cache")))
 EXPORT_DASH_CACHE = str(os.getenv("EXPORT_DASH_CACHE", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 # Keep one runtime cache format by default to avoid duplicate Parquet/Pickle files
 # inflating the Git repository and Vercel function bundle. Override only when
-# explicitly needed, e.g. DASH_CACHE_FORMATS=parquet or parquet,pkl.
+# explicitly needed, e.g. DASH_CACHE_FORMATS=parquet or parquet,pkl.gz.
 DASH_CACHE_FORMATS = {
     x.strip().lower()
-    for x in os.getenv("DASH_CACHE_FORMATS", "pkl").split(",")
+    for x in os.getenv("DASH_CACHE_FORMATS", "pkl.gz").split(",")
     if x.strip()
-} & {"parquet", "feather", "pkl"}
+} & {"parquet", "feather", "pkl.gz", "pkl"}
 if not DASH_CACHE_FORMATS:
-    DASH_CACHE_FORMATS = {"pkl"}
+    DASH_CACHE_FORMATS = {"pkl.gz"}
 CACHE_DIR.mkdir(exist_ok=True)
 
 SQL_QUERY_TIMEOUT = int(os.getenv("SQL_QUERY_TIMEOUT", "90"))
@@ -1680,9 +1680,9 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
     safe_name = _cache_safe_sheet_name(sheet_name)
 
     # Remove every old format before writing the selected one(s). This guarantees
-    # that a previous .parquet/.feather file cannot remain beside the current .pkl
+    # that a previous alternate file cannot remain beside the current cache
     # and be committed/deployed as a duplicate cache.
-    for suffix in [".parquet", ".feather", ".pkl"]:
+    for suffix in [".parquet", ".feather", ".pkl.gz", ".pkl"]:
         try:
             old_fp = CACHE_DIR / f"{safe_name}{suffix}"
             if old_fp.exists():
@@ -1713,6 +1713,16 @@ def _export_cache_sheet(df: pd.DataFrame, sheet_name: str) -> None:
         except Exception as e:
             print(f"[CACHE EXPORT] pickle failed for {sheet_name}: {e}")
 
+    if "pkl.gz" in DASH_CACHE_FORMATS:
+        try:
+            df.to_pickle(
+                CACHE_DIR / f"{safe_name}.pkl.gz",
+                compression={"method": "gzip", "compresslevel": 1, "mtime": 0},
+            )
+            wrote_any = True
+        except Exception as e:
+            print(f"[CACHE EXPORT] compressed pickle failed for {sheet_name}: {e}")
+
     if not wrote_any:
         raise RuntimeError(
             f"Không ghi được cache {sheet_name}. Formats={sorted(DASH_CACHE_FORMATS)}"
@@ -1740,13 +1750,13 @@ def _export_daily_driver_options_cache(df_source: pd.DataFrame) -> None:
         )
         out["search_key"] = out["ho_ten"].apply(_norm_key)
         _export_cache_sheet(out, "Daily_Driver_Options")
-        _export_cache_sheet(out, "Driver_Options")
     except Exception as e:
         print(f"[CACHE EXPORT] driver options failed: {e}")
 
-def _write_sheet(writer, df: pd.DataFrame, sheet_name: str) -> None:
+def _write_sheet(writer, df: pd.DataFrame, sheet_name: str, export_cache: bool = True) -> None:
     df.to_excel(writer, sheet_name=sheet_name, index=False)
-    _export_cache_sheet(df, sheet_name)
+    if export_cache:
+        _export_cache_sheet(df, sheet_name)
 
 
 EXCEL_WRITER_ENGINE = os.getenv("OUTPUT_EXCEL_ENGINE", "xlsxwriter").strip() or "xlsxwriter"
@@ -1789,19 +1799,19 @@ with _excel_writer as writer:
     _write_sheet(writer, nhansu_taixe_kv_thang, "NhanSu_TaiXe_KV_Thang")
 
     _write_sheet(writer, diemtiepthi_kv_thang, "KinhDoanh_DiemTiepThi_KV_Thang")
-    _write_sheet(writer, diemtiepthi_kv_thang, "DiemTiepThi_KV_Thang")
+    _write_sheet(writer, diemtiepthi_kv_thang, "DiemTiepThi_KV_Thang", export_cache=False)
 
     _write_sheet(writer, xe_truc_thuoc_kv_thang, "PhuongTien_XeTrucThuoc_KV_Thang")
-    _write_sheet(writer, xe_truc_thuoc_kv_thang, "XeTrucThuoc_KV_Thang")
+    _write_sheet(writer, xe_truc_thuoc_kv_thang, "XeTrucThuoc_KV_Thang", export_cache=False)
     _write_sheet(writer, xe_phan_quyen_kv_thang, "PhuongTien_XePhanQuyen_KV_Thang")
-    _write_sheet(writer, xe_phan_quyen_kv_thang, "XePhanQuyen_KV_Thang")
-    _write_sheet(writer, xe_dang_co_xdt_kv_ngay, "XeDangCo_XeTrucThuoc_KV_Ngay")
+    _write_sheet(writer, xe_phan_quyen_kv_thang, "XePhanQuyen_KV_Thang", export_cache=False)
+    _write_sheet(writer, xe_dang_co_xdt_kv_ngay, "XeDangCo_XeTrucThuoc_KV_Ngay", export_cache=False)
     _write_sheet(writer, xe_dang_co_xdt_kv_ngay, "PhuongTien_XeTrucThuoc_KV_Ngay")
-    _write_sheet(writer, xe_dang_co_xpq_kv_ngay, "XeDangCo_XePhanQuyen_KV_Ngay")
+    _write_sheet(writer, xe_dang_co_xpq_kv_ngay, "XeDangCo_XePhanQuyen_KV_Ngay", export_cache=False)
     _write_sheet(writer, xe_dang_co_xpq_kv_ngay, "PhuongTien_XePhanQuyen_KV_Ngay")
 
     _write_sheet(writer, bienban_kv_thang, "KinhDoanh_BienBan_KV_Thang")
-    _write_sheet(writer, bienban_kv_thang, "BienBan_KV_Thang")
+    _write_sheet(writer, bienban_kv_thang, "BienBan_KV_Thang", export_cache=False)
 
 
 print("PIPELINE COMPLETED")
