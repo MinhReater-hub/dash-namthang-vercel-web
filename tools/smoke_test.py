@@ -57,17 +57,29 @@ def main() -> int:
         raise RuntimeError(f"Trang đăng nhập thất bại: HTTP {login.status_code}")
 
     advanced_targets = [target for target in app.ZOOM_TARGETS if target.endswith("p1-advanced")]
+    deepdive_targets = [target for target in app.ZOOM_TARGETS if target.endswith("p1-deepdive")]
     if len(advanced_targets) != len(app.DASH_PREFIXES):
         raise RuntimeError("Chưa đăng ký đủ biểu đồ nâng cao/zoom cho các menu.")
+    if len(deepdive_targets) != len(app.DASH_PREFIXES):
+        raise RuntimeError("Chưa đăng ký đủ biểu đồ chuyên sâu V2/zoom cho các menu.")
     for prefix in app.DASH_PREFIXES:
         filters = {"year": None if prefix in app.FLEET_MENU_PREFIXES else app.DEFAULT_YEAR, "months": []}
         figure, _rows, meta = app._build_p1_advanced_chart(prefix, filters, "light")
         if figure is None or not isinstance(meta, dict):
             raise RuntimeError(f"Không dựng được biểu đồ nâng cao cho menu {prefix}.")
+        deep_figure, _deep_rows, deep_meta = app._build_p1_deepdive_chart(prefix, filters, "light")
+        if deep_figure is None or not isinstance(deep_meta, dict):
+            raise RuntimeError(f"Không dựng được biểu đồ chuyên sâu V2 cho menu {prefix}.")
+
+    if app._repair_utf8_mojibake("TÃ i khoáº£n DEV") != "Tài khoản DEV":
+        raise RuntimeError("Không sửa được mojibake tên tài khoản.")
+    if app._normalize_region_list(["Ráº¡ch GiÃ¡"]) != ["Rạch Giá"]:
+        raise RuntimeError("Không sửa được mojibake phạm vi khu vực.")
 
     print(
         f"SMOKE TEST OK | cache={len(REQUIRED_CACHES)} file/{checked_rows:,} dòng | "
         f"callback={len(app.dash_app.callback_map)} | advanced_chart={len(advanced_targets)} | "
+        f"deepdive_chart={len(deepdive_targets)} | utf8_repair=ok | "
         f"elapsed={time.perf_counter() - started:.2f}s"
     )
     return 0

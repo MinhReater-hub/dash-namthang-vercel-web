@@ -322,6 +322,16 @@ try {
 
     Invoke-Native -FilePath "git" -Arguments @("rev-parse", "--is-inside-work-tree") -StepName "Kiểm tra Git" | Out-Null
 
+    $currentBranch = [string](& git branch --show-current 2>&1 | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Không xác định được nhánh Git hiện tại."
+    }
+    $currentBranch = $currentBranch.Trim()
+    if ($currentBranch -ne "main") {
+        throw "Automation chỉ chạy trên nhánh main; nhánh hiện tại là '$currentBranch'. Hãy chạy: git switch main"
+    }
+    Write-Log "Đã xác nhận nhánh automation: main."
+
     Assert-NoManualChanges
     Restore-GeneratedFiles
     Assert-NoManualChanges

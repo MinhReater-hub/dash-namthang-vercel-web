@@ -115,7 +115,7 @@ Trước khi push code mới, vào **Vercel → Project → Settings → Environ
 Để đưa JSON lên clipboard ở dạng một dòng:
 
 ```powershell
-$users = Get-Content .\users.secure.json -Raw | ConvertFrom-Json
+$users = Get-Content .\users.secure.json -Raw -Encoding UTF8 | ConvertFrom-Json
 $users | ConvertTo-Json -Depth 10 -Compress | Set-Clipboard
 ```
 
