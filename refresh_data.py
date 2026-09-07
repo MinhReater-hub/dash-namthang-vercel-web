@@ -1133,10 +1133,19 @@ def _build_hr_monthly_summary(df_source):
     status_norm = dff["TRANG_THAI"].apply(_norm_text)
     dff["is_nghi_viec"] = status_norm.str.contains("nghi viec", regex=False)
 
-    dff["ngay_ket_thuc"] = dff["NGAY_NGHI_VIEC"]
-    dff.loc[dff["is_nghi_viec"] & dff["ngay_ket_thuc"].isna(), "ngay_ket_thuc"] = dff.loc[
-        dff["is_nghi_viec"] & dff["ngay_ket_thuc"].isna(), "UpdatedAt"
-    ]
+    dff["ngay_ket_thuc"] = pd.to_datetime(
+        dff["NGAY_NGHI_VIEC"], errors="coerce"
+    )
+
+    mask_fallback = (
+        dff["is_nghi_viec"]
+        & dff["ngay_ket_thuc"].isna()
+    )
+
+    dff.loc[mask_fallback, "ngay_ket_thuc"] = (
+        dff.loc[mask_fallback, "UpdatedAt"]
+        .astype("datetime64[s]")
+    )
     dff["ngay_ket_thuc"] = dff["ngay_ket_thuc"].fillna(END_DATE)
 
     dff = dff[dff["ngay_bat_dau"].notna()].copy()
