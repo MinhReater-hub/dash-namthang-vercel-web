@@ -1118,8 +1118,10 @@ def _classify_lifecycle(years_value):
 def _build_hr_monthly_summary(df_source):
     dff = df_source.copy()
 
+    # Chuẩn hóa tất cả datetime về cùng độ chính xác để tránh lỗi khi
+    # pandas gán datetime64[us] vào Series datetime64[s].
     for col in ["NGAY_THU_VIEC", "NGAY_CHINH_THUC", "NGAY_NGHI_VIEC", "UpdatedAt"]:
-        dff[col] = pd.to_datetime(dff[col], errors="coerce")
+        dff[col] = pd.to_datetime(dff[col], errors="coerce").astype("datetime64[ns]")
 
     dff["VONG_DOI"] = pd.to_numeric(dff.get("VONG_DOI"), errors="coerce")
     dff["ngay_bat_dau"] = dff["NGAY_CHINH_THUC"].combine_first(dff["NGAY_THU_VIEC"])
@@ -1128,10 +1130,10 @@ def _build_hr_monthly_summary(df_source):
     status_norm = dff["TRANG_THAI"].apply(_norm_text)
     dff["is_nghi_viec"] = status_norm.str.contains("nghi viec", regex=False)
 
-    dff["ngay_ket_thuc"] = dff["NGAY_NGHI_VIEC"]
-    dff.loc[dff["is_nghi_viec"] & dff["ngay_ket_thuc"].isna(), "ngay_ket_thuc"] = dff.loc[
-        dff["is_nghi_viec"] & dff["ngay_ket_thuc"].isna(), "UpdatedAt"
-    ]
+    # Luôn tạo ngay_ket_thuc với cùng dtype datetime64[ns].
+    dff["ngay_ket_thuc"] = dff["NGAY_NGHI_VIEC"].copy()
+    mask = dff["is_nghi_viec"] & dff["ngay_ket_thuc"].isna()
+    dff.loc[mask, "ngay_ket_thuc"] = dff.loc[mask, "UpdatedAt"].astype("datetime64[ns]")
     dff["ngay_ket_thuc"] = dff["ngay_ket_thuc"].fillna(END_DATE)
 
     dff = dff[dff["ngay_bat_dau"].notna()].copy()
