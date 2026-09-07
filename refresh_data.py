@@ -1119,12 +1119,12 @@ def _build_hr_monthly_summary(df_source):
     dff = df_source.copy()
 
     for col in ["NGAY_THU_VIEC", "NGAY_CHINH_THUC", "NGAY_NGHI_VIEC", "UpdatedAt"]:
-    dff[col] = pd.to_datetime(
-        dff[col].where(
-            dff[col].astype(str).str[:4].between("1900", "2262")
-        ),
-        errors="coerce"
-    )
+        dff[col] = pd.to_datetime(
+            dff[col].where(
+                dff[col].astype(str).str[:4].between("1900", "2262")
+            ),
+            errors="coerce"
+        )
 
     dff["VONG_DOI"] = pd.to_numeric(dff.get("VONG_DOI"), errors="coerce")
     dff["ngay_bat_dau"] = dff["NGAY_CHINH_THUC"].combine_first(dff["NGAY_THU_VIEC"])
