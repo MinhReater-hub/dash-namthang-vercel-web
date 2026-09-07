@@ -1121,7 +1121,7 @@ def _build_hr_monthly_summary(df_source):
     # Chuẩn hóa tất cả datetime về cùng độ chính xác để tránh lỗi khi
     # pandas gán datetime64[us] vào Series datetime64[s].
     for col in ["NGAY_THU_VIEC", "NGAY_CHINH_THUC", "NGAY_NGHI_VIEC", "UpdatedAt"]:
-        dff[col] = pd.to_datetime(dff[col], errors="coerce").astype("datetime64[ns]")
+        dff[col] = pd.to_datetime(dff[col], errors="coerce")
 
     dff["VONG_DOI"] = pd.to_numeric(dff.get("VONG_DOI"), errors="coerce")
     dff["ngay_bat_dau"] = dff["NGAY_CHINH_THUC"].combine_first(dff["NGAY_THU_VIEC"])
